@@ -99,8 +99,17 @@ Rectangle {
         autoPlay: true
         loops: MediaPlayer.Infinite
         muted: true
+        // PERF: decode only while the video is actually on screen. It used to
+        // decode 1080p30 nonstop through all four scenes + splash — the single
+        // biggest CPU cost of the greeter. Pausing while hidden is invisible:
+        // the scene-cycle timer re-seeks to a random point on every entry anyway.
+        property bool shouldPlay: bgVideo.opacity > 0.001
+        onShouldPlayChanged: shouldPlay ? play() : pause()
         onError: console.log("[bgPlayer] error", error, errorString)
-        onStatusChanged: console.log("[bgPlayer] status", status)
+        onStatusChanged: {
+            console.log("[bgPlayer] status", status)
+            if (!shouldPlay && playbackState === MediaPlayer.PlayingState) pause()
+        }
         onSourceChanged: console.log("[bgPlayer] source =", source)
     }
     VideoOutput {
@@ -298,6 +307,11 @@ Rectangle {
         id: ringsCanvas
         anchors.fill: parent
         z: 0
+        // PERF: render off the GUI thread into a GPU texture (same setup as
+        // the matrix canvas) — the spin repaints continuously while scene 1
+        // is up and used to block the main thread.
+        renderStrategy: Canvas.Threaded
+        renderTarget: Canvas.FramebufferObject
         opacity: root.bgScene === 1 ? 0.75 : 0
         Behavior on opacity { NumberAnimation { duration: 1200; easing.type: Easing.InOutCubic } }
         property real spin: 0
@@ -375,6 +389,10 @@ Rectangle {
                      : root.accent2
                 opacity: 0.18 + Math.random() * 0.25
                 SequentialAnimation on height {
+                    // PERF: the skyline scene is currently disabled (parent is
+                    // hardcoded invisible) but these 64 animations kept running
+                    // at frame rate anyway. Gate them on actual visibility.
+                    running: skyline.visible
                     loops: Animation.Infinite
                     PauseAnimation { duration: (index * 53) % 900 }
                     NumberAnimation { from: 60 + (index * 17) % 220
@@ -405,6 +423,7 @@ Rectangle {
                     color: parent.color
                     opacity: 0.9
                     NumberAnimation on x {
+                        running: skyline.visible
                         loops: Animation.Infinite
                         from: -240
                         to: root.width + 240
@@ -455,18 +474,21 @@ Rectangle {
     }
 
     // CRT scanlines — repeated horizontal lines
-    Item {
+    // PERF: was a Repeater with ~360 Rectangle items the scene graph walked
+    // every frame. One canvas painted once draws the exact same pixels.
+    Canvas {
         anchors.fill: parent
         z: 2
         opacity: 0.12
-        Repeater {
-            model: Math.ceil(root.height / 3)
-            Rectangle {
-                width: root.width
-                height: 1
-                y: index * 3
-                color: "#000000"
-            }
+        onWidthChanged: requestPaint()
+        onHeightChanged: requestPaint()
+        Component.onCompleted: requestPaint()
+        onPaint: {
+            var ctx = getContext("2d")
+            ctx.reset()
+            ctx.fillStyle = "#000000"
+            for (var y = 0; y < height; y += 3)
+                ctx.fillRect(0, y, width, 1)
         }
     }
 
@@ -491,18 +513,24 @@ Rectangle {
         id: gridCanvas
         anchors.fill: parent
         z: 0
-        opacity: 0.18
+        // PERF: the pulse used to re-stroke the whole grid EVERY FRAME, forever
+        // (onPulseChanged -> requestPaint). Since every stroke shares the same
+        // alpha, pulsing the item's opacity is pixel-identical — so the grid is
+        // painted ONCE and the animation costs nothing.
+        opacity: 0.18 * pulse
         property real pulse: 0.5
         SequentialAnimation on pulse {
             loops: Animation.Infinite
             NumberAnimation { from: 0.3; to: 0.9; duration: 3200; easing.type: Easing.InOutSine }
             NumberAnimation { from: 0.9; to: 0.3; duration: 3200; easing.type: Easing.InOutSine }
         }
-        onPulseChanged: requestPaint()
+        onWidthChanged: requestPaint()
+        onHeightChanged: requestPaint()
+        Component.onCompleted: requestPaint()
         onPaint: {
             var ctx = getContext("2d")
             ctx.reset()
-            ctx.strokeStyle = Qt.rgba(0.71, 0.54, 1.0, 0.35 * pulse)
+            ctx.strokeStyle = Qt.rgba(0.71, 0.54, 1.0, 0.35)
             ctx.lineWidth = 1
             var step = 64
             for (var x = 0; x < width; x += step) {
@@ -512,7 +540,7 @@ Rectangle {
                 ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke()
             }
             // accent crosshair
-            ctx.strokeStyle = Qt.rgba(0.2, 1.0, 1.0, 0.55 * pulse)
+            ctx.strokeStyle = Qt.rgba(0.2, 1.0, 1.0, 0.55)
             ctx.beginPath(); ctx.moveTo(width/2, 0); ctx.lineTo(width/2, height); ctx.stroke()
             ctx.beginPath(); ctx.moveTo(0, height/2); ctx.lineTo(width, height/2); ctx.stroke()
         }
@@ -659,7 +687,7 @@ Rectangle {
                 source: "skull.gif"
                 anchors.fill: parent
                 fillMode: Image.PreserveAspectFit
-                playing: true
+                playing: dedsecFx.opacity > 0.05
                 opacity: 0.55
                 transform: Translate { id: skullCyanT; x: -4; y: 0 }
                 layer.enabled: true
@@ -680,7 +708,7 @@ Rectangle {
                 source: "skull.gif"
                 anchors.fill: parent
                 fillMode: Image.PreserveAspectFit
-                playing: true
+                playing: dedsecFx.opacity > 0.05
                 opacity: 0.55
                 transform: Translate { id: skullMagentaT; x: 4; y: 0 }
                 layer.enabled: true
@@ -701,12 +729,14 @@ Rectangle {
                 source: "skull.gif"
                 anchors.fill: parent
                 fillMode: Image.PreserveAspectFit
-                playing: true
+                playing: dedsecFx.opacity > 0.05
                 transform: Translate { id: skullMainT; x: 0; y: 0 }
             }
 
             Timer {
-                interval: 90; repeat: true; running: true
+                // PERF: jitter only while the skull layer is actually visible
+                // (it fades out during splash/success).
+                interval: 90; repeat: true; running: dedsecFx.opacity > 0.05
                 onTriggered: {
                     if (Math.random() < 0.20) {
                         skullCyanT.x    = -4 + (Math.random() - 0.5) * 14
