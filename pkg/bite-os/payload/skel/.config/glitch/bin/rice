@@ -194,7 +194,7 @@ cmd_load() {
     say ""
     say "  Old config preserved at: ${c_dim}${park/$HOME/~}${c_rst}"
     say "  Undo with: ${c_grn}rice rollback${c_rst}"
-    say "  Apply changes:  ${c_dim}hyprctl reload && pkill -x qs && nohup caelestia shell -d &${c_rst}"
+    say "  Apply changes:  ${c_dim}~/.config/glitch/bin/dots-switch.sh ${name}${c_rst}  (kills BOTH shells: qs AND quickshell)"
 
     notify-send -a "$APP" -i "applications-graphics" \
         "Rice loaded: ${name}" \
@@ -219,7 +219,7 @@ cmd_rollback() {
     # active name is unclear after rollback — clear it
     rm -f "$ACTIVE_FILE"
     ok "rolled back. Active rice unset (was '$last')."
-    say "  Apply: ${c_dim}hyprctl reload && pkill -x qs && nohup caelestia shell -d &${c_rst}"
+    say "  Apply: ${c_dim}hyprctl reload; pkill -x qs; pkill -x quickshell; then relaunch your shell (dots-switch.sh does all of this)${c_rst}"
 }
 
 cmd_diff() {

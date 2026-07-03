@@ -35,17 +35,37 @@ notify() {
 
 # ─── shell-specific launchers ──────────────────────────────────────────────
 launch_caelestia_shell() {
-    nohup caelestia shell -d >/tmp/caelestia.log 2>&1 &
-    disown
+    # launch_qs.sh is the single source of truth when present — it tears down
+    # stray instances before starting exactly one.
+    if [[ -x "$HOME/.config/hypr/scripts/launch_qs.sh" ]]; then
+        "$HOME/.config/hypr/scripts/launch_qs.sh"
+    else
+        nohup caelestia shell -d >/tmp/caelestia.log 2>&1 &
+        disown
+    fi
+    # kill_any_shell tears down the cliphist watchers + hypridle, and exec-once
+    # won't re-run them until next login — bring them back for this rice too.
+    if command -v wl-paste >/dev/null && command -v cliphist >/dev/null; then
+        setsid -f bash -c 'wl-paste --type text  --watch cliphist store' </dev/null >/dev/null 2>&1
+        setsid -f bash -c 'wl-paste --type image --watch cliphist store' </dev/null >/dev/null 2>&1
+    fi
+    [[ -f "$HOME/.config/hypr/hypridle.conf" ]] && command -v hypridle >/dev/null && \
+        setsid -f hypridle </dev/null >/dev/null 2>&1
 }
 launch_ilyamiro_shell() {
     # His autostart runs his shell too, but exec-once doesn't re-run on hyprctl
     # reload. Launch it + the autostart helpers explicitly so the swap takes
     # effect immediately and the bar/binds behave like a fresh login.
-    nohup qs -p "$HOME/.config/hypr/scripts/quickshell/Shell.qml" -d >/tmp/ilyamiro-qs.log 2>&1 &
+    # The 2026-06-14 upstream update renamed the entrypoint Shell.qml -> Main.qml
+    # and it runs under the `quickshell` binary name (not `qs`) — launch
+    # whichever entry the rice actually ships.
+    local qml="$HOME/.config/hypr/scripts/quickshell/Main.qml"
+    [[ -f "$qml" ]] || qml="$HOME/.config/hypr/scripts/quickshell/Shell.qml"
+    nohup quickshell -p "$qml" >/tmp/ilyamiro-qs.log 2>&1 &
     disown
     # Helpers from his hypr autostart.conf — fire-and-forget, fail silent if missing.
-    command -v hypridle    >/dev/null && { setsid -f hypridle </dev/null >/dev/null 2>&1; }
+    [[ -f "$HOME/.config/hypr/hypridle.conf" ]] && command -v hypridle >/dev/null && \
+        setsid -f hypridle </dev/null >/dev/null 2>&1
     command -v playerctld  >/dev/null && { setsid -f playerctld </dev/null >/dev/null 2>&1; }
     command -v awww-daemon >/dev/null && { setsid -f awww-daemon </dev/null >/dev/null 2>&1; }
     if command -v wl-paste >/dev/null && command -v cliphist >/dev/null; then
@@ -56,16 +76,20 @@ launch_ilyamiro_shell() {
         setsid -f "$HOME/.config/hypr/scripts/settings_watcher.sh" </dev/null >/dev/null 2>&1
     [[ -x "$HOME/.config/hypr/scripts/volume_listener.sh"  ]] && \
         setsid -f "$HOME/.config/hypr/scripts/volume_listener.sh"  </dev/null >/dev/null 2>&1
+    [[ -x "$HOME/.config/hypr/scripts/update_notifier.sh"  ]] && \
+        setsid -f "$HOME/.config/hypr/scripts/update_notifier.sh"  </dev/null >/dev/null 2>&1
     [[ -f "$HOME/.config/hypr/scripts/quickshell/focustime/focus_daemon.py" ]] && command -v python3 >/dev/null && \
         setsid -f python3 "$HOME/.config/hypr/scripts/quickshell/focustime/focus_daemon.py" </dev/null >/dev/null 2>&1
 }
 
 # ─── alive checks (proc name, not just any qs) ────────────────────────────
 caelestia_alive() {
-    pgrep -af "qs -c caelestia" | grep -v "$$" | grep -qv zsh
+    pgrep -f "qs -c caelestia" >/dev/null
 }
 ilyamiro_alive() {
-    pgrep -af "qs .*/scripts/quickshell/Shell\\.qml" | grep -v "$$" | grep -qv zsh
+    # Matches both the current layout (quickshell -p .../Main.qml) and the
+    # pre-update one (qs -p .../Shell.qml).
+    pgrep -f "scripts/quickshell/(Main|Shell)\.qml" >/dev/null
 }
 
 # ─── kill the currently-running shell (whichever it is) ───────────────────
@@ -74,12 +98,22 @@ ilyamiro_alive() {
 # caelestia (and vice-versa), holding sockets and confusing the new bar.
 kill_any_shell() {
     pkill -x qs 2>/dev/null
+    # ilyamiro's shell runs under the binary name `quickshell` (NOT `qs`) since
+    # the 2026-06-14 upstream update — missing it here meant his shell SURVIVED
+    # every swap and kept owning org.freedesktop.Notifications, so popups
+    # stayed ilyamiro-styled no matter which rice was active.
+    pkill -x quickshell 2>/dev/null
     pkill -f "caelestia shell" 2>/dev/null
-    # ilyamiro-specific helpers
+    # ilyamiro-specific helpers (current Main.qml layout + old Shell.qml one)
     pkill -f "scripts/quickshell/Shell.qml" 2>/dev/null
+    pkill -f "scripts/quickshell/Main.qml" 2>/dev/null
     pkill -f "scripts/quickshell/focustime/focus_daemon.py" 2>/dev/null
     pkill -f "scripts/settings_watcher.sh" 2>/dev/null
     pkill -f "scripts/volume_listener.sh"  2>/dev/null
+    pkill -f "scripts/update_notifier.sh"  2>/dev/null
+    pkill -f "scripts/quickshell/watchers/" 2>/dev/null
+    # Orphaned file-watchers the processes above leave behind
+    pkill -f "inotifywait.*quickshell" 2>/dev/null
     pkill -x awww-daemon 2>/dev/null
     pkill -x hypridle    2>/dev/null
     pkill -x playerctld  2>/dev/null

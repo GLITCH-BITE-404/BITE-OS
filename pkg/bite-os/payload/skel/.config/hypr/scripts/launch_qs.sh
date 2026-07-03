@@ -15,13 +15,18 @@ set -u
 
 # 1. Tear down any running quickshell instances (prevents the stacking you saw).
 #    SIGTERM first for a clean exit, SIGKILL only stragglers.
-if pgrep -x qs >/dev/null; then
+#    NOTE: the ilyamiro shell runs under the binary name `quickshell` (not
+#    `qs`) — it must die too, or it keeps owning the notification D-Bus
+#    service and popups stay styled like the other rice.
+if pgrep -x qs >/dev/null || pgrep -x quickshell >/dev/null; then
     pkill -TERM -x qs 2>/dev/null || true
+    pkill -TERM -x quickshell 2>/dev/null || true
     for _ in 1 2 3 4 5; do
-        pgrep -x qs >/dev/null || break
+        pgrep -x qs >/dev/null || pgrep -x quickshell >/dev/null || break
         sleep 0.1
     done
     pkill -KILL -x qs 2>/dev/null || true
+    pkill -KILL -x quickshell 2>/dev/null || true
 fi
 
 # 2. Launch a single detached instance. setsid so it survives this script
