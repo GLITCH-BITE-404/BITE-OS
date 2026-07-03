@@ -20,6 +20,15 @@ Rectangle {
     property int lockRemaining: 0
     property bool inputBusy: false
 
+    // Who actually gets logged in. lastUser is EMPTY on a fresh install (sddm has
+    // no state yet), so fall back to the first real account in userModel — without
+    // this, sddm.login() is called with "" and every password is rejected.
+    readonly property string loginUser: (userModel.lastUser && userModel.lastUser.length > 0)
+        ? userModel.lastUser
+        : (userModel.count > 0
+            ? userModel.data(userModel.index(Math.max(0, userModel.lastIndex), 0), Qt.UserRole + 1)
+            : "")
+
     property bool revealMode: false
     property int  revealedCount: 0
     onRevealModeChanged: if (!revealMode) revealedCount = 0
@@ -1418,7 +1427,7 @@ Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
                     }
                     Text {
-                        text: userModel.lastUser ? userModel.lastUser : "user"
+                        text: root.loginUser.length > 0 ? root.loginUser : "user"
                         color: root.accent
                         font.family: root.mono
                         font.pixelSize: 18
@@ -2075,7 +2084,7 @@ Rectangle {
         errMsg.text = ""
         root.inputBusy = true
         root.lastSubmittedWord = pwField.text
-        sddm.login(userModel.lastUser, pwField.text, sessionModel.lastIndex)
+        sddm.login(root.loginUser, pwField.text, sessionModel.lastIndex)
     }
 
     function startLockout() {

@@ -264,11 +264,18 @@ for C in /etc/calamares/modules/shellprocess.conf \
     #       these, but it's WantedBy=multi-user.target with NO ordering vs sddm.service,
     #       so on first boot sddm can read the stale autologin (deleted user + deleted
     #       session) BEFORE cleanup runs -> the broken/failed login. Removing them here
-    #       (before the target ever boots) makes the installed login deterministic, and
-    #       the `-userdel` is belt-and-suspenders in case the removeuser module hiccups.
+    #       (before the target ever boots) makes the installed login deterministic.
+    #       NO `userdel bite` here: this step runs AFTER the `users` module, so if the
+    #       person typed "bite" as their username it would DELETE their fresh account
+    #       (+home) — the "password doesn't save" bug. The live `bite` user is removed
+    #       by the removeuser module, which runs BEFORE `users` and can never collide.
+    #       Also drop /var/lib/sddm/state.conf: unpackfs leaks the LIVE sddm state
+    #       (lastUser=bite, a user that no longer exists) onto the target, and the
+    #       greeter theme resolves the login name from lastUser — stale state means
+    #       every password is rejected for a nonexistent user.
     if ! grep -q '99-bite-os-autologin.conf' "$C"; then
-        sed -i 's#    - "-rm /etc/systemd/system/etc-pacman.d-gnupg.mount"#    - "-rm -f /etc/sddm.conf.d/99-bite-os-autologin.conf /etc/sddm.conf.d/00-live-autologin.conf"\n    - "-rm -f /usr/share/wayland-sessions/bite-os-install.desktop /usr/local/bin/bite-os-installer-session /usr/local/bin/bite-os-kiosk /usr/local/bin/bite-os-launch-installer /usr/local/bin/install-bite-os"\n    - "-rm -f /etc/sudoers.d/00-bite-live"\n    - "-userdel -r -f bite"\n    - "-systemctl enable sddm.service"\n    - "-rm /etc/systemd/system/etc-pacman.d-gnupg.mount"#' "$C"
-        echo "[customize_airootfs] shellprocess(post): strips live autologin/installer/sudoers + leftover 'bite' user from the target (deterministic, pre-first-boot) ($C)"
+        sed -i 's#    - "-rm /etc/systemd/system/etc-pacman.d-gnupg.mount"#    - "-rm -f /etc/sddm.conf.d/99-bite-os-autologin.conf /etc/sddm.conf.d/00-live-autologin.conf"\n    - "-rm -f /usr/share/wayland-sessions/bite-os-install.desktop /usr/local/bin/bite-os-installer-session /usr/local/bin/bite-os-kiosk /usr/local/bin/bite-os-launch-installer /usr/local/bin/install-bite-os"\n    - "-rm -f /etc/sudoers.d/00-bite-live"\n    - "-rm -f /var/lib/sddm/state.conf"\n    - "-systemctl enable sddm.service"\n    - "-rm /etc/systemd/system/etc-pacman.d-gnupg.mount"#' "$C"
+        echo "[customize_airootfs] shellprocess(post): strips live autologin/installer/sudoers + stale sddm state from the target (deterministic, pre-first-boot) ($C)"
     fi
     # 3d-1b. Force the installed system to boot GRAPHICAL (THE "boots to tty as root"
     #        fix). archiso bakes the live squashfs with default.target = multi-user
