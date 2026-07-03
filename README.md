@@ -149,8 +149,11 @@ The system maps directly to these custom core inputs for elite navigation:
 | `SUPER + T` | **Open Terminal** | Launches the pre-configured terminal environment instantly |
 | `SUPER + Q` | **Close Window** | Safely terminates the active focused window |
 | `SUPER + ALT + SPACE` | **Toggle Floating Mode** | Forces the active window into a floating layer |
-| `SUPER + BACKSPACE` | **Hot-Swap to Ilyamiro** | Executes a rapid swap directly to the `ilyamiro` dots profile |
-| `CTRL + SUPER + D` | **Hot-Swap to Caelestia** | Executes a rapid swap straight back to the `caelestia` dots profile |
+| `CTRL + SUPER + D` | **Hot-Swap Rice** | Toggles between the `caelestia` and `ilyamiro` dots profiles |
+| `SUPER + BACKSPACE` | **Hot-Swap Rice** | Same toggle — works from either rice |
+| `SUPER + ESCAPE` | **Hot-Swap Rice** | Same toggle — works from either rice |
+| `CTRL + ALT + BACKSPACE` | **Hot-Swap Rice** | Same toggle — works from either rice |
+| `SUPER + SHIFT + C` | **Force Caelestia** | Jumps straight back to the `caelestia` dots profile from anywhere |
 | `SUPER + R` | **Reload Waybar** | Instantly recompiles and hot-reloads the Waybar panel |
 | `SUPER + U` | **Update BITE-OS** | Full system update (kernel, apps, rice) with logs — stays BITE-OS |
 
@@ -160,9 +163,9 @@ The system maps directly to these custom core inputs for elite navigation:
 
 > The ISO (~5.5 GB) is hosted off-GitHub due to file-size limits.
 
-**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_20260630/bite-os-1.0-x86_64.iso)**
+**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_202607/bite-os-1.0-x86_64.iso)**
 
-`SHA256`: `d749a5a3dcfb37c82d968f0955f52d6aa053233c6508ca1c31392fd87699559a`
+`SHA256`: `62ebe8854641e8b7c028558951ae2677a86a081a613ea3508ae568043177a6ac`
 
 Verify the download before flashing — anything that doesn't match this hash is not the ISO I built:
 
