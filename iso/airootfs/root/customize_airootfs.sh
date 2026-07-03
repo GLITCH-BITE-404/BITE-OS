@@ -60,6 +60,24 @@ for f in /usr/share/calamares/settings.conf \
 done
 echo "[customize_airootfs] calamares rebranded to bite-os"
 
+# 3a-0. Keep the installer's own log ON the installed system. When an install
+#       misbehaves (user/password, services, anything), /var/log/Calamares.log
+#       on the TARGET holds the full session — readable even when you can't
+#       log in (live USB: mount the disk and cat it). The preservefiles module
+#       ships with cachyos-calamares and its stock config already writes
+#       /var/log/Calamares.log + the install-choices JSON; it just isn't in
+#       the exec sequence. Insert it right before umount (must run mounted).
+for f in /usr/share/calamares/settings.conf /usr/share/calamares/settings_offline.conf; do
+    [ -f "$f" ] || continue
+    grep -qE '^\s*- preservefiles' "$f" && continue
+    sed -i 's/^  - umount$/  - preservefiles\n  - umount/' "$f"
+done
+if grep -qE '^\s*- preservefiles' /usr/share/calamares/settings.conf; then
+    echo "[customize_airootfs] preservefiles: full installer log lands in /var/log/Calamares.log on every install"
+else
+    echo "[customize_airootfs] WARNING: could not inject preservefiles into the exec sequence (umount anchor changed?)" >&2
+fi
+
 # The offline 'removeuser' step deletes the live user from the target after the
 # squashfs copy; point it at our live user 'bite' (cachyos defaults to 'liveuser').
 # CRITICAL: cachyos ships removeuser.conf with NO `username:` line, so a plain
