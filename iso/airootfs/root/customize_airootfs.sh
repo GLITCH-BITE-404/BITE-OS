@@ -1,30 +1,28 @@
 #!/usr/bin/env bash
 # ━━━ BITE-OS — archiso build-time customisation ━━━
-# Runs inside the airootfs chroot once, after pacstrap. Sets up the LIVE ISO as
-# a dedicated Calamares installer kiosk: it autologins the `bite` user and cage
-# runs the installer fullscreen. No Hyprland/caelestia in the live session, so
-# nothing can crash and hijack it. The full rice ships untouched in /etc/skel,
-# so users INSTALLED to disk get the real BITE-OS desktop.
+# Runs inside the airootfs chroot once, after pacstrap. The LIVE ISO autologins
+# the `bite` user into the FULL BITE-OS rice (bite-os-hyprland session) with the
+# Calamares installer auto-opened on top — the live demo IS the product. VMs get
+# software rendering forced by bite-os-hyprland-session so the rice can't
+# black-screen there, and two rescue layers remain: a minimal read-only Hyprland
+# config if the rice config is missing, and the cage installer kiosk as a
+# selectable SDDM session. The same rice ships in /etc/skel for installs.
 set -uo pipefail
 echo "[customize_airootfs] start"
 
-# 1. Live user + creds (bite/bite, root/bite). bite just needs to exist so the
-#    kiosk autologin works; its home content is irrelevant (cage ignores it).
+# 1. Live user + creds (bite/bite, root/bite). useradd -m seeds /home/bite from
+#    /etc/skel — the FULL rice — which is exactly what the live session runs.
 if ! id bite &>/dev/null; then
     useradd -m -u 1000 -G wheel,video,audio,network,storage,input,lp -s /bin/bash bite
 fi
 echo 'bite:bite' | chpasswd
 echo 'root:bite' | chpasswd
 
-# 2. Belt-and-suspenders: the live `bite` home was seeded from /etc/skel (the
-#    full rice). The kiosk never reads it, but strip the self-repair service +
-#    caelestia autostart so nothing can possibly spawn caelestia in the live
-#    session. /etc/skel itself stays untouched, so installs are unaffected.
-rm -rf /home/bite/.config/systemd/user/graphical-session.target.wants/bite-os-healthcheck.service \
-       /home/bite/.config/systemd/user/*/bite-os-healthcheck.service \
-       /home/bite/.config/hypr \
-       /home/bite/.config/quickshell \
-       /home/bite/.config/caelestia 2>/dev/null || true
+# 2. The live session now RUNS the rice, so /home/bite keeps the complete skel
+#    payload (hypr + quickshell + caelestia + healthcheck self-repair intact).
+#    bite-os-live-setup re-copies skel over it on every live boot anyway, so a
+#    misbehaving overlay can never hand the session an empty home. Just make
+#    sure ownership is right.
 chown -R bite:bite /home/bite 2>/dev/null || true
 
 # 3. Passwordless sudo so the kiosk can launch Calamares as root. This file is
@@ -320,6 +318,21 @@ for C in /etc/calamares/modules/shellprocess.conf \
         sed -i 's#    - "-rm /etc/systemd/system/etc-pacman.d-gnupg.mount"#    - "-rm /etc/systemd/system/etc-pacman.d-gnupg.mount"\n    - "-/usr/local/bin/bite-os-verify-install"#' "$C"
         echo "[customize_airootfs] shellprocess(post): added bite-os-verify-install user/password sanity check ($C)"
     fi
+    # 3d-1c. Rice guarantee (THE "installed as user 'bite' → emergency Hyprland,
+    #        no dots" fix). unpackfs leaks the live /home/bite onto the target;
+    #        if the person names their account "bite", useradd sees the home
+    #        already exists and SKIPS the /etc/skel copy — so the account gets
+    #        whatever /home/bite was in the squashfs instead of the rice.
+    #        bite-os-apply-skel (in the squashfs, so present in the chroot)
+    #        removes the leaked /home/bite when no bite user exists, and
+    #        no-clobber-fills the rice into ANY human user's home missing it.
+    #        Runs AFTER `users` (this whole shellprocess step does). Inserted
+    #        BEFORE verify-install so it's the last state verify sees; '-' so
+    #        it can never abort the install.
+    if ! grep -q 'bite-os-apply-skel' "$C"; then
+        sed -i 's#    - "-/usr/local/bin/bite-os-verify-install"#    - "-/usr/local/bin/bite-os-apply-skel"\n    - "-/usr/local/bin/bite-os-verify-install"#' "$C"
+        echo "[customize_airootfs] shellprocess(post): added bite-os-apply-skel rice guarantee ($C)"
+    fi
 done
 
 # 3e. Bootloader hardening (THE boot-or-not fix). The Calamares `bootloader`
@@ -422,6 +435,24 @@ if [ -f "$GRUB_DEFAULT_FILE" ]; then
     fi
     echo "[customize_airootfs] GRUB_DISTRIBUTOR -> BITE-OS (boot menu entries will say BITE-OS)"
 fi
+
+# Wire the GENERIC [cachyos] repo into the live/installed /etc/pacman.conf.
+# The airootfs' stock pacman.conf only has Arch core/extra — but the system
+# runs linux-cachyos + cachyos-* packages, which would NEVER get updates
+# without the repo. GENERIC only (no -v3/-v4): the ISO must run on every
+# x86_64 CPU, and v3 packages need AVX2. cachyos-mirrorlist + cachyos-keyring
+# are in packages.x86_64, so the Include target and the signing keys exist.
+if ! grep -q '^\[cachyos\]' /etc/pacman.conf; then
+    cat >> /etc/pacman.conf <<'EOF'
+
+# CachyOS upstream (GENERIC x86_64 — no v3/v4 so it runs on every CPU).
+# Needed so linux-cachyos + cachyos-* packages keep updating after install.
+[cachyos]
+Include = /etc/pacman.d/cachyos-mirrorlist
+EOF
+fi
+pacman-key --populate cachyos 2>/dev/null || true
+echo "[customize_airootfs] generic [cachyos] repo wired into /etc/pacman.conf ($(grep -c '^\[cachyos\]' /etc/pacman.conf) entry)"
 
 # Wire the [bite-os] UPDATE repo — but ONLY if a signing key has been set up
 # (repo/setup-signing.sh ships bite-os-repo.pub here). This lets installed
@@ -567,7 +598,9 @@ done
 if [ -f /etc/calamares/modules/shellprocess.conf ]; then
     grep -q 'mkinitcpio.conf.d/archiso.conf' /etc/calamares/modules/shellprocess.conf || { echo "[customize_airootfs] FATAL: shellprocess.conf did not get the archiso-initramfs cleanup injected — installed system would boot to an emergency shell. cachyos-calamares layout changed; re-check section 3c." >&2; exit 1; }
     grep -q '"mkinitcpio -P"' /etc/calamares/modules/shellprocess.conf || { echo "[customize_airootfs] FATAL: shellprocess.conf is missing the post-install 'mkinitcpio -P' rebuild — re-check section 3c." >&2; exit 1; }
+    grep -q 'bite-os-apply-skel' /etc/calamares/modules/shellprocess.conf || { echo "[customize_airootfs] FATAL: shellprocess.conf is missing the bite-os-apply-skel rice guarantee — a user named 'bite' would get a home without the rice (emergency Hyprland, no dots). Re-check section 3d-1c." >&2; exit 1; }
 fi
+[ -x /usr/local/bin/bite-os-apply-skel ] || { echo "[customize_airootfs] FATAL: /usr/local/bin/bite-os-apply-skel missing/not executable — the post-install rice guarantee can't run" >&2; exit 1; }
 if [ ! -s /etc/skel/.config/hypr/hyprland.conf ]; then
     echo "[customize_airootfs] FATAL: /etc/skel rice missing — installed users won't get BITE-OS" >&2
     exit 1

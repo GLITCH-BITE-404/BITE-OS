@@ -19,11 +19,32 @@ DISTRO="$(cd "$HERE/.." && pwd)"
 CACHES=(/var/cache/pacman/pkg "$HOME/.cache/paru/clone")
 mkdir -p "$REPO"
 
-# newest .pkg.tar.* for a package name, searched across all caches
+# PORTABLE BUILDS (critical): every package here ships to OTHER machines. The
+# host /etc/makepkg.conf uses -march=native (+ rust target-cpu=native), which
+# bakes THIS CPU's instruction set into the binaries → illegal-instruction
+# crashes on any older CPU and in VMs that mask host features. That is what
+# made quickshell/caelestia "crash in the live VM". MAKEPKG_CONF is honoured
+# by makepkg AND by paru's makepkg calls.
+export MAKEPKG_CONF="$HERE/makepkg-portable.conf"
+[ -f "$MAKEPKG_CONF" ] || { echo "!! $MAKEPKG_CONF missing — refusing to build native-tainted packages" >&2; exit 1; }
+echo "==> using portable makepkg config: $MAKEPKG_CONF (-march=x86-64, no native)"
+
+# One-shot cache bypass: `bash build-repo.sh --rebuild-foreign` ignores every
+# cached foreign package and rebuilds them all with the portable flags. Needed
+# once after the 2026-07-14 native-taint fix (old cached pkgs are poisoned),
+# and any time you change makepkg-portable.conf.
+REBUILD_FOREIGN=0
+[ "${1:-}" = "--rebuild-foreign" ] && REBUILD_FOREIGN=1
+
+# newest .pkg.tar.* for a package name, searched across all caches.
+# HARD-EXCLUDES x86_64_v3/_v4 arch builds: those need AVX2(+) and would crash
+# the ISO on older CPUs and in VMs — the repo must only ever ship generic
+# x86_64 (or any-arch) packages.
 find_pkg() {
     local name="$1" hit=""
     for c in "${CACHES[@]}"; do
-        hit="$(find "$c" -maxdepth 2 -name "${name}-*.pkg.tar.*" ! -name '*.sig' 2>/dev/null \
+        hit="$(find "$c" -maxdepth 2 -name "${name}-*.pkg.tar.*" ! -name '*.sig' \
+               ! -name '*-x86_64_v3.pkg.tar.*' ! -name '*-x86_64_v4.pkg.tar.*' 2>/dev/null \
                | sort -V | tail -1)"
         [ -n "$hit" ] && { echo "$hit"; return 0; }
     done
@@ -51,7 +72,10 @@ echo "   -> repo gets $(basename "$BITE_PKG")"
 
 echo "==> 2/4  Building yaml-cpp-0.8 compat (calamares needs libyaml-cpp.so.0.8)"
 # Reuse existing build if PKGBUILD hasn't changed (saves ~30s per ISO rebuild).
+# --rebuild-foreign also forces this one (it's compiled C++, so a cached copy
+# may carry the old -march=native taint).
 EXISTING_YAML="$(find "$REPO" -maxdepth 1 -name 'yaml-cpp-0.8-*.pkg.tar.*' ! -name '*.sig' | head -1)"
+[ "$REBUILD_FOREIGN" -eq 1 ] && EXISTING_YAML=""
 if [ -n "$EXISTING_YAML" ] && [ "$EXISTING_YAML" -nt "$DISTRO/pkg/yaml-cpp-0.8/PKGBUILD" ]; then
     echo "   cached  yaml-cpp-0.8"
 else
@@ -64,11 +88,18 @@ echo "==> 3/4  Collecting foreign packages"
 missing=()
 while read -r p; do
     [ -z "$p" ] && continue
-    if f="$(find_pkg "$p")"; then
-        cp "$f" "$REPO/"; echo "   ok    $p"
-        continue
+    # -bin packages ship prebuilt upstream binaries (generic), so the cache is
+    # always safe for them; everything else is compiled here and must be
+    # rebuilt with the portable flags when --rebuild-foreign is given.
+    if [ "$REBUILD_FOREIGN" -eq 0 ] || [[ "$p" == *-bin ]]; then
+        if f="$(find_pkg "$p")"; then
+            cp "$f" "$REPO/"; echo "   ok    $p"
+            continue
+        fi
+        echo "   build $p  (not cached — building with paru)"
+    else
+        echo "   build $p  (--rebuild-foreign — rebuilding with portable flags)"
     fi
-    echo "   build $p  (not cached — building with paru)"
     paru -S --rebuild --noconfirm --skipreview "$p" >/dev/null 2>&1
     if f="$(find_pkg "$p")"; then
         cp "$f" "$REPO/"; echo "   ok    $p  (built)"

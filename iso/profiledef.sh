@@ -35,4 +35,5 @@ file_permissions=(
   ["/usr/local/bin/bite-os-kiosk"]="0:0:755"
   ["/usr/local/bin/bite-os-firstboot-cleanup"]="0:0:755"
   ["/usr/local/bin/bite-os-verify-install"]="0:0:755"
+  ["/usr/local/bin/bite-os-apply-skel"]="0:0:755"
 )

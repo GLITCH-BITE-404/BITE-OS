@@ -1,24 +1,38 @@
 #!/usr/bin/env bash
 # ━━━ BITE-OS — auto-launch the installer once the live desktop is ready ━━━
-# Called as `exec-once` from the live Hyprland config. Waits for the Wayland
-# compositor socket to actually exist before starting Calamares, so the
-# installer never races the desktop and fails to open a window.
+# Called as `exec-once` from the live Hyprland session (the rice config gets
+# this appended by bite-os-live-setup; the minimal fallback config carries it
+# too). Waits for the Wayland compositor socket to actually exist before
+# starting Calamares, so the installer never races the desktop and fails to
+# open a window. WAYLAND_DISPLAY is normally inherited from Hyprland; if it
+# isn't, we discover the socket by globbing the runtime dir.
 set -u
 LOG=/tmp/bite-os-launch-installer.log
 RUNTIME="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-WAYLAND="${WAYLAND_DISPLAY:-wayland-1}"
+WAYLAND="${WAYLAND_DISPLAY:-}"
 
 {
-    echo "── $(date '+%F %T') ── waiting for $RUNTIME/$WAYLAND"
+    echo "── $(date '+%F %T') ── waiting for a wayland socket in $RUNTIME (env WAYLAND_DISPLAY='${WAYLAND}')"
     for i in $(seq 1 30); do
-        [ -S "$RUNTIME/$WAYLAND" ] && break
+        if [ -n "$WAYLAND" ] && [ -S "$RUNTIME/$WAYLAND" ]; then
+            break
+        fi
+        for s in "$RUNTIME"/wayland-*; do
+            if [ -S "$s" ]; then
+                WAYLAND="${s##*/}"
+                break 2
+            fi
+        done
         sleep 0.5
     done
-    # A little extra settle time for the portal/services to come up.
+    [ -n "$WAYLAND" ] || WAYLAND=wayland-1   # last resort: install-bite-os's old default
+    export WAYLAND_DISPLAY="$WAYLAND"
+    # A little extra settle time for the shell/portal/services to come up.
     sleep 2
-    echo "launching installer"
+    echo "launching installer on $WAYLAND"
 } >> "$LOG" 2>&1
+export WAYLAND_DISPLAY="$WAYLAND"
 
-notify-send "BITE-OS Installer" "Starting the installer… (re-open it anytime with SUPER+I or 'Install BITE-OS')" 2>/dev/null || true
+notify-send "BITE-OS Installer" "Starting the installer… (re-open it anytime from the app launcher: 'Install BITE-OS')" 2>/dev/null || true
 
 exec /usr/local/bin/install-bite-os

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# ━━━ BITE-OS — guarantee every human user has the rice (runs in the target
+# chroot, post-install, via the Calamares shellprocess step) ━━━
+#
+# THE BUG THIS KILLS: unpackfs copies the whole live squashfs to disk,
+# including /home/bite (the live user's home). If the person then names their
+# account "bite", useradd sees /home/bite already exists and SKIPS the
+# /etc/skel copy — historically that home had the rice stripped out, so the
+# installed desktop booted emergency Hyprland with no dots. The strip is gone
+# now, but this makes the outcome deterministic for EVERY username:
+#
+#   1. If no 'bite' user survived into the target (normal case: the person
+#      picked another name and the removeuser module deleted the live user),
+#      drop the leaked stale /home/bite entirely.
+#   2. For every real user (uid >= 1000 with a /home/<name> home), if the rice
+#      entry config is missing, copy /etc/skel over WITHOUT clobbering any
+#      file that already exists, and fix ownership.
+#
+# Idempotent, never exits non-zero (called with the '-' prefix anyway).
+LOG=/var/log/bite-os-apply-skel.log
+exec >> "$LOG" 2>&1
+echo "════════ $(date -Is) bite-os-apply-skel ════════"
+
+# 1. Stale live-home cleanup — ONLY when the bite user does not exist. If the
+#    person actually named their account "bite", /home/bite IS their home.
+if ! id bite >/dev/null 2>&1 && [ -d /home/bite ]; then
+    echo "no 'bite' user in target → removing leaked live /home/bite"
+    rm -rf /home/bite
+fi
+
+# 2. Rice guarantee for every human user.
+[ -d /etc/skel ] || { echo "WARN: /etc/skel missing — nothing to apply"; exit 0; }
+while IFS=: read -r name _ uid gid _ home shell; do
+    [ "$uid" -ge 1000 ] 2>/dev/null || continue
+    [ "$name" = "nobody" ] && continue
+    case "$home" in /home/*) ;; *) continue ;; esac
+    [ -d "$home" ] || { echo "skip $name: $home does not exist"; continue; }
+    if [ -s "$home/.config/hypr/hyprland.conf" ]; then
+        echo "ok   $name: rice already present"
+        continue
+    fi
+    echo "FIX  $name: rice missing from $home → applying /etc/skel (no-clobber)"
+    # cp -a --no-clobber? tar with --skip-old-files keeps anything the user
+    # already has and fills in everything that's missing.
+    (cd /etc/skel && tar -cf - .) | (cd "$home" && tar -xf - --skip-old-files)
+    chown -R "$uid:$gid" "$home"
+    echo "done $name"
+done < /etc/passwd
+
+echo "════════ end ════════"
+exit 0

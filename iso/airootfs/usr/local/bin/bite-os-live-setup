@@ -48,6 +48,18 @@ fi
 
 chown -R bite:bite /home/bite
 
+# 3b. LIVE-ONLY: auto-open the Calamares installer ON TOP of the riced desktop.
+#     The rice hyprland.conf comes from /etc/skel (shared verbatim with installed
+#     systems), so the installer autostart is APPENDED here at boot instead of
+#     being shipped in the payload. As an exec-once child it inherits
+#     WAYLAND_DISPLAY, so the launcher always finds the right socket. Idempotent
+#     (guarded by grep); appending as root keeps bite's ownership.
+HYPRCONF=/home/bite/.config/hypr/hyprland.conf
+if [ -f "$HYPRCONF" ] && ! grep -q 'bite-os-launch-installer' "$HYPRCONF"; then
+    printf '\n# live-ISO only (appended by bite-os-live-setup): auto-open the installer\nexec-once = /usr/local/bin/bite-os-launch-installer\n' >> "$HYPRCONF"
+    echo "stage: appended installer exec-once to $HYPRCONF"
+fi
+
 # 4. Drop the installer autostart in the LIVE user's home only (not /etc/skel).
 if [ -f /usr/share/applications/install-bite-os.desktop ]; then
     install -d -o bite -g bite /home/bite/.config/autostart

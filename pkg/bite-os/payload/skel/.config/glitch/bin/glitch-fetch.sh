@@ -62,15 +62,22 @@ gpu_usage() {
         [[ -r $f ]] || continue
         local pct; read -r pct < "$f"
         printf '%d%%' "$pct"
-        return
+        return 0
     done
-    # NVIDIA check (for your RTX 4060)
+    # NVIDIA check (for your RTX 4060). nvidia-smi prints its "couldn't
+    # communicate with the NVIDIA driver" error to STDOUT (a VM has the tool
+    # but no driver), so only trust the output if it's actually a number —
+    # feeding the error text to printf %d errexits the whole fetch.
     if command -v nvidia-smi >/dev/null 2>&1; then
-        nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits \
-            2>/dev/null | { read -r pct; printf '%d%%' "${pct:-0}"; }
-        return
+        local pct
+        pct="$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -n1 | tr -cd '0-9')" || pct=""
+        if [[ -n $pct ]]; then
+            printf '%d%%' "$pct"
+            return 0
+        fi
     fi
     printf 'N/A'
+    return 0
 }
 
 # ---- Branding banner (printed BEFORE fastfetch, every launch) --------------
