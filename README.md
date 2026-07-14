@@ -161,11 +161,11 @@ The system maps directly to these custom core inputs for elite navigation:
 
 ## ◈ Download
 
-> The ISO (~5.5 GB) is hosted off-GitHub due to file-size limits.
+> The ISO (~5.4 GiB) is hosted off-GitHub due to file-size limits.
 
-**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_202607/bite-os-1.0-x86_64.iso)**
+**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_20260714/bite-os-1.0-x86_64.iso)**
 
-`SHA256`: `62ebe8854641e8b7c028558951ae2677a86a081a613ea3508ae568043177a6ac`
+`SHA256`: `88e4c387f856e2367aba7bb3b97050d561f9f85bfbfde5213a9420482c23949a`
 
 Verify the download before flashing — anything that doesn't match this hash is not the ISO I built:
 
@@ -176,9 +176,9 @@ sha256sum bite-os-1.0-x86_64.iso
 ## ◈ Install
 
 1. Flash the ISO to a USB (≥ 8 GB) with [Impression](https://apps.gnome.org/Impression/), [Ventoy](https://www.ventoy.net/), or `dd`.
-2. Boot it. The ISO comes up **straight into the BITE-OS installer** — a dedicated, bulletproof installer environment (no desktop to fight, nothing to crash).
-3. Click through it: language → keyboard → disk → *your* username + password → **Install**.
-4. Reboot into your own riced BITE-OS — the full pre-riced Hyprland desktop, exactly as shipped.
+2. Boot it. The live ISO comes up **straight into the full BITE-OS desktop** — the real rice, running live — with the installer opening on top of it. Try the dots before you commit.
+3. Click through the installer: language → keyboard → disk → *your* username + password → **Install** (re-open it anytime from the app launcher: *Install BITE-OS*).
+4. Reboot into your own riced BITE-OS — the same desktop you just test-drove, now yours.
 
 No terminal required, no desktop to pick — BITE-OS installs as **one opinionated, pre-riced Hyprland system**, offline (no internet needed during install).
 
