@@ -40,10 +40,12 @@ cp -f "$HERE/Dig.qml" "$RUNDIR/Dig.qml"
 # QML cannot read environment variables, so hand the settings over as a file.
 CINE="${TOY_CINEMATICS:-on}"
 SEARX="${TOY_WEB_INSTANCE:-}"
-printf '{"cinematics":%s,"searx":%s,"root":"%s"}\n' \
+PROMPT="${TOY_WEBENGINE_PROMPT:-on}"
+printf '{"cinematics":%s,"searx":%s,"root":"%s","webenginePrompt":%s}\n' \
     "$([ "$CINE" = on ] && echo true || echo false)" \
     "$([ -n "$SEARX" ] && echo true || echo false)" \
-    "${TOY_ROOT:-~}" > "$RUNDIR/opts.json"
+    "${TOY_ROOT:-~}" \
+    "$([ "$PROMPT" = on ] && echo true || echo false)" > "$RUNDIR/opts.json"
 
 python3 "$HERE/search.py" --serve "$RUNDIR" &
 ENGINE=$!

@@ -43,6 +43,8 @@ ApplicationWindow {
     property bool flying: false         // mid fold-in — drives the shockwave
     property bool scatter: false        // one frame at the drift lanes, un-eased
     property bool loading: false        // curtain up while the system assembles
+    property bool webengine: false      // is the embedded viewer available
+    property bool webenginePrompt: true // show the one-time note about it
     property int  focusIdx: 0        // keyboard-focused planet
     property int  resIdx: 0          // keyboard-focused result row
 
@@ -179,6 +181,8 @@ ApplicationWindow {
             try {
                 var j = JSON.parse(o.responseText)
                 if (j.cinematics !== undefined) win.cinematics = !!j.cinematics
+                if (j.webenginePrompt !== undefined)
+                    win.webenginePrompt = !!j.webenginePrompt
                 if (j.searx) win.searxConfigured = true
                 if (j.root) win.root = j.root
             } catch (e) {}
@@ -198,6 +202,14 @@ ApplicationWindow {
                 if (s.seq === undefined || s.seq === win.lastSeen) return
                 win.lastSeen = s.seq
                 if (s.engines) win.engines = s.engines
+                if (s.webengine !== undefined) {
+                    win.webengine = !!s.webengine
+                    if (!win.webengine && win.webenginePrompt && !viewerNote.seen) {
+                        viewerNote.seen = true
+                        viewerNote.open()
+                    }
+                }
+                if (s.saved) win.note = "saved " + s.saved
                 if (s.opened)    { win.note = "opened " + s.opened; return }
                 if (s.installed) { win.note = "installed " + s.installed.join(" "); return }
                 if (!s.ok) {
@@ -912,6 +924,100 @@ ApplicationWindow {
             NumberAnimation on x {
                 running: win.phase === "searching"; loops: Animation.Infinite
                 from: 0; to: space.width; duration: 1500
+            }
+        }
+    }
+
+    // ── the one-time note about the embedded viewer ─────────────────────────
+    // A note, not an obstacle: it says what you would gain, what it costs, and
+    // it takes no for an answer permanently.
+    Dialog {
+        id: viewerNote
+        property bool seen: false
+        anchors.centerIn: parent
+        width: 560
+        modal: true
+        closePolicy: Popup.CloseOnEscape
+        z: 200
+
+        background: Rectangle {
+            color: "#04080d"
+            border.color: win.accent
+            border.width: 1
+            radius: 8
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 14
+
+            Text {
+                text: "F O R   T H E   F U L L   E X P E R I E N C E"
+                color: win.accent
+                font.family: "monospace"; font.pixelSize: 13; font.letterSpacing: 4
+            }
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                color: win.ink
+                font.family: "monospace"; font.pixelSize: 11
+                text: "Right now, entering a planet hands the page to your normal " +
+                      "browser once the dark tears open.\n\n" +
+                      "With the embedded viewer, the tear reveals the page itself — " +
+                      "inside bitedig, no window switch."
+            }
+            Rectangle { Layout.fillWidth: true; height: 1; color: win.line }
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                color: "#c98a2e"
+                font.family: "monospace"; font.pixelSize: 10
+                text: "It is not small: 94 MiB to download, 282 MiB installed — more " +
+                      "than four times the rest of the toy set combined. Everything " +
+                      "works without it."
+            }
+            Text {
+                Layout.fillWidth: true
+                color: win.inkFar
+                font.family: "monospace"; font.pixelSize: 10
+                text: "sudo pacman -S qt6-webengine"
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
+                CheckBox {
+                    id: neverAgain
+                    text: "don't ask again"
+                    font.family: "monospace"; font.pixelSize: 10
+                    contentItem: Text {
+                        text: neverAgain.text
+                        color: win.inkDim
+                        font: neverAgain.font
+                        leftPadding: neverAgain.indicator.width + 6
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: "Not now"
+                    onClicked: {
+                        if (neverAgain.checked)
+                            win.send({ action: "setting",
+                                       key: "webengine_prompt", value: "off" })
+                        viewerNote.close()
+                    }
+                }
+                Button {
+                    text: "Install it"
+                    onClicked: {
+                        win.note = "installing qt6-webengine — this one is large"
+                        win.send({ action: "install", packages: ["qt6-webengine"] })
+                        if (neverAgain.checked)
+                            win.send({ action: "setting",
+                                       key: "webengine_prompt", value: "off" })
+                        viewerNote.close()
+                    }
+                }
             }
         }
     }

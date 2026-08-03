@@ -20,3 +20,22 @@ startdepths=names+contents
 # turn it off and Enter just opens the thing immediately. Any key skips a
 # running one either way.
 cinematics=on
+
+# Show the one-time note about the embedded viewer when the window opens.
+# Turning it off only hides that prompt — it changes nothing else.
+# @choices on,off
+webengine_prompt=on
+
+# ── the embedded viewer ──────────────────────────────────────────────────────
+# By default, entering a planet hands the page to your normal browser once the
+# dark tears open. With qt6-webengine installed it can instead open INSIDE
+# bitedig, so the tear reveals the page itself rather than your desktop.
+#
+# It is not installed by default and it is not small: 94 MiB to download,
+# 282 MiB on disk — more than four times everything else in the toy set put
+# together. That is why it is a choice rather than a dependency.
+#
+#     sudo pacman -S qt6-webengine
+#
+# This note is here so the trade-off is written down somewhere permanent,
+# rather than living only in a prompt you dismissed once and forgot.

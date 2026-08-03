@@ -64,6 +64,26 @@ def have(cmd):
     return shutil.which(cmd) is not None
 
 
+# The embedded viewer is a QML module, not a command, so `which` cannot see it.
+WEBENGINE_QML = "/usr/lib/qt6/qml/QtWebEngine"
+
+
+def have_webengine():
+    return os.path.isdir(WEBENGINE_QML)
+
+
+def set_setting(key, value):
+    """Persist a setting through the hub, so its validation still applies."""
+    if not shutil.which("bite-toys"):
+        return {"ok": False, "error": "bite-toys is not on PATH"}
+    r = subprocess.run(["bite-toys", "config", "bitedig", key, str(value)],
+                       capture_output=True, text=True, timeout=20)
+    if r.returncode != 0:
+        tail = (r.stderr or "").strip().splitlines()
+        return {"ok": False, "error": tail[-1] if tail else "could not save"}
+    return {"ok": True, "saved": key + "=" + str(value)}
+
+
 def engines_status():
     """What each depth needs, and whether this machine has it."""
     out = []
@@ -374,10 +394,14 @@ def serve(rundir):
                         return 0
 
                     if req.get("action") == "engines":
-                        res = {"ok": True, "engines": engines_status()}
+                        res = {"ok": True, "engines": engines_status(),
+                               "webengine": have_webengine()}
+                    elif req.get("action") == "setting":
+                        res = set_setting(req.get("key", ""), req.get("value", ""))
                     elif req.get("action") == "install":
                         res = install(req.get("packages") or [])
                         res["engines"] = engines_status()
+                        res["webengine"] = have_webengine()
                     elif req.get("action") == "open":
                         res = open_target(req.get("target", ""), req.get("tor", False))
                     else:
