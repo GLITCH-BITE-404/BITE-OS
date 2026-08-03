@@ -42,6 +42,7 @@ ApplicationWindow {
     property bool cinematics: true      // read from opts.json the launcher writes
     property bool flying: false         // mid fold-in — drives the shockwave
     property bool scatter: false        // one frame at the drift lanes, un-eased
+    property bool loading: false        // curtain up while the system assembles
     property int  focusIdx: 0        // keyboard-focused planet
     property int  resIdx: 0          // keyboard-focused result row
 
@@ -157,14 +158,16 @@ ApplicationWindow {
         }
         if (!ds.length) { note = "no engines yet — install one below"; return }
         results = ({}); selected = -1; phase = "searching"
-        scatter = true; unscatter.restart()
-        flying = true; flyTimer.restart()
+        loading = true
         note = "scanning " + ds.length + " systems"
         send({ q: query.text, depths: ds, root: root, limit: 40 })
     }
 
     Timer { id: flyTimer;  interval: 840; onTriggered: win.flying = false }
     Timer { id: unscatter; interval: 40;  onTriggered: win.scatter = false }
+    // The curtain stays up for a beat even if the search is instant, so it
+    // reads as deliberate rather than as a flicker.
+    Timer { id: loadHold; interval: 260; onTriggered: win.loading = false }
 
     Component.onCompleted: {
         // QML cannot read environment variables, so the launcher drops the
@@ -199,6 +202,7 @@ ApplicationWindow {
                 if (s.installed) { win.note = "installed " + s.installed.join(" "); return }
                 if (!s.ok) {
                     win.note = s.error || "that did not work"
+                    win.loading = false
                     if (win.phase === "searching") win.phase = "idle"
                     return
                 }
@@ -208,6 +212,7 @@ ApplicationWindow {
                     for (var k in s.depths) n += (s.depths[k].hits || []).length
                     win.note = n + (n === 1 ? " result" : " results") + "  ·  " + s.took + "s"
                     win.phase = "orbit"
+                    loadHold.restart()
                     // Focus has to leave the text field or Left/Right just move
                     // the text cursor and the planets never hear them.
                     query.focus = false
@@ -519,6 +524,34 @@ ApplicationWindow {
             }
         }
 
+        // ── small nameless worlds, purely for depth ──
+        Repeater {
+            model: 6
+            delegate: Item {
+                readonly property real rr: space.unit * (0.42 + index * 0.15)
+                readonly property real spd: 52000 + index * 21000
+                readonly property real ph: (index * 0.37) % 1
+                property real t: 0
+                NumberAnimation on t {
+                    running: !space.frozen && win.phase !== "idle"
+                    loops: Animation.Infinite
+                    from: 0; to: 1; duration: spd
+                }
+                property real a: (t + ph) * 2 * Math.PI
+                x: space.cx + Math.cos(a) * rr - width / 2
+                y: space.cy + Math.sin(a) * rr * space.flat - height / 2
+                width: 9 + (index % 3) * 5; height: width
+                z: 2
+                opacity: win.phase === "idle" ? 0 : 0.5
+                Behavior on opacity { NumberAnimation { duration: 700 } }
+                Rectangle {
+                    anchors.fill: parent; radius: width / 2
+                    color: "#16333f"
+                    border.color: "#2c5f6b"; border.width: 1
+                }
+            }
+        }
+
         // ── one orbit line per planet ──
         Repeater {
             model: win.planets
@@ -584,13 +617,16 @@ ApplicationWindow {
                 x: (win.phase === "idle" || win.scatter) ? driftX : orbX
                 y: (win.phase === "idle" || win.scatter) ? driftY : orbY
                 // Fast in, hard stop — they should look flung into formation.
+                // No transition while the loading curtain is up — the system is
+                // assembled behind it and revealed finished. Trying to animate
+                // the fold-in in full view is what kept looking half-built.
                 Behavior on x {
-                    enabled: win.phase !== "idle" && !win.scatter
-                    NumberAnimation { duration: 780; easing.type: Easing.InOutQuart }
+                    enabled: win.phase !== "idle" && !win.scatter && !win.loading
+                    NumberAnimation { duration: 640; easing.type: Easing.InOutQuart }
                 }
                 Behavior on y {
-                    enabled: win.phase !== "idle" && !win.scatter
-                    NumberAnimation { duration: 780; easing.type: Easing.InOutQuart }
+                    enabled: win.phase !== "idle" && !win.scatter && !win.loading
+                    NumberAnimation { duration: 640; easing.type: Easing.InOutQuart }
                 }
 
                 // the card needs to know where its planet actually is
@@ -880,6 +916,66 @@ ApplicationWindow {
         }
     }
 
+    // ── loading curtain ─────────────────────────────────────────────────────
+    Rectangle {
+        id: curtain
+        anchors.fill: parent
+        z: 80
+        color: "#03060c"
+        visible: opacity > 0.01
+        opacity: win.loading ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: 380 } }
+
+        Column {
+            anchors.centerIn: parent
+            spacing: 18
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: "A S S E M B L I N G   S Y S T E M"
+                color: win.accent
+                font.family: "monospace"; font.pixelSize: 15; font.letterSpacing: 6
+            }
+            Rectangle {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: 340; height: 2; color: "#0c2419"
+                Rectangle {
+                    height: parent.height; color: win.accent
+                    width: parent.width * 0.34
+                    SequentialAnimation on x {
+                        running: win.loading; loops: Animation.Infinite
+                        NumberAnimation { from: -110; to: 340; duration: 900
+                                          easing.type: Easing.InOutQuad }
+                    }
+                }
+            }
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: win.note
+                color: win.inkFar
+                font.family: "monospace"; font.pixelSize: 10
+            }
+        }
+
+        // a ring of dots settling, echoing the orbits behind
+        Repeater {
+            model: 7
+            delegate: Rectangle {
+                width: 4; height: 4; radius: 2
+                color: win.accent
+                property real a: (index / 7) * 2 * Math.PI
+                x: parent.width / 2 + Math.cos(a) * 120 - 2
+                y: parent.height / 2 + Math.sin(a) * 52 - 2
+                opacity: 0.2
+                SequentialAnimation on opacity {
+                    running: win.loading; loops: Animation.Infinite
+                    PauseAnimation { duration: index * 90 }
+                    NumberAnimation { to: 0.9; duration: 260 }
+                    NumberAnimation { to: 0.2; duration: 420 }
+                }
+            }
+        }
+    }
+
     // ── the card ─────────────────────────────────────────────────────────────
     // Fixed size, opaque, and it shows a HANDFUL of results — not all forty.
     // The old one sized itself from its content, so a long path wrapped, every
@@ -1141,23 +1237,47 @@ ApplicationWindow {
             }
         }
 
-        // ── the dissolve: black tiles disappearing to reveal what is behind ──
-        Grid {
+        // ── the tear: the black rips down the middle and pulls apart ──
+        // Torn, not dissolved: each slice keeps a ragged edge and the two halves
+        // slide away from a seam, so it reads as the dark being pulled open
+        // rather than pixels politely fading out.
+        Item {
             anchors.fill: parent
             visible: matrix.stage === 2
-            columns: Math.max(1, Math.floor(win.width / 22))
-            rows: Math.max(1, Math.floor(win.height / 22))
-            Repeater {
-                model: parent.columns * parent.rows
+
+            Repeater {                                  // left half, in slices
+                model: 26
                 delegate: Rectangle {
-                    width: win.width / Math.max(1, Math.floor(win.width / 22))
-                    height: win.height / Math.max(1, Math.floor(win.height / 22))
+                    readonly property real jag: (Math.random() - 0.5) * 46
+                    width: win.width / 2 + jag
+                    height: win.height / 26 + 2
+                    y: index * (win.height / 26)
+                    x: -matrix.dissolve * (win.width / 2 + 80)
                     color: "#000000"
-                    // each tile has its own threshold, so they wink out in a
-                    // scatter rather than a wipe
-                    readonly property real mine: Math.random()
-                    opacity: matrix.dissolve > mine ? 0 : 1
-                    Behavior on opacity { NumberAnimation { duration: 220 } }
+                    Rectangle {                          // hot edge along the tear
+                        anchors { right: parent.right; top: parent.top; bottom: parent.bottom }
+                        width: 2
+                        color: "#00e676"
+                        opacity: 0.7 * (1 - matrix.dissolve)
+                    }
+                }
+            }
+            Repeater {                                  // right half
+                model: 26
+                delegate: Rectangle {
+                    readonly property real jag: (Math.random() - 0.5) * 46
+                    width: win.width / 2 + jag
+                    height: win.height / 26 + 2
+                    y: index * (win.height / 26)
+                    x: win.width / 2 - jag / 2
+                       + matrix.dissolve * (win.width / 2 + 80)
+                    color: "#000000"
+                    Rectangle {
+                        anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
+                        width: 2
+                        color: "#00e676"
+                        opacity: 0.7 * (1 - matrix.dissolve)
+                    }
                 }
             }
         }
@@ -1190,7 +1310,8 @@ ApplicationWindow {
             PauseAnimation { duration: 900 }
             ScriptAction { script: matrix.stage = 2 }
             NumberAnimation { target: matrix; property: "dissolve"
-                              from: 0; to: 1.05; duration: 1100 }
+                              from: 0; to: 1.08; duration: 1250
+                              easing.type: Easing.InOutCubic }
             ScriptAction { script: win.send({ action: "open", target: matrix.target,
                                               tor: matrix.viaTor }) }
             PauseAnimation { duration: 260 }
