@@ -40,7 +40,8 @@ ApplicationWindow {
     property string root: "~"
     property bool searxConfigured: false
     property bool cinematics: true      // read from opts.json the launcher writes
-    property bool flying: false         // mid fold-in — draws the speed lines
+    property bool flying: false         // mid fold-in — drives the shockwave
+    property bool scatter: false        // one frame at the drift lanes, un-eased
     property int  focusIdx: 0        // keyboard-focused planet
     property int  resIdx: 0          // keyboard-focused result row
 
@@ -156,12 +157,14 @@ ApplicationWindow {
         }
         if (!ds.length) { note = "no engines yet — install one below"; return }
         results = ({}); selected = -1; phase = "searching"
+        scatter = true; unscatter.restart()
         flying = true; flyTimer.restart()
         note = "scanning " + ds.length + " systems"
         send({ q: query.text, depths: ds, root: root, limit: 40 })
     }
 
-    Timer { id: flyTimer; interval: 720; onTriggered: win.flying = false }
+    Timer { id: flyTimer;  interval: 900; onTriggered: win.flying = false }
+    Timer { id: unscatter; interval: 40;  onTriggered: win.scatter = false }
 
     Component.onCompleted: {
         // QML cannot read environment variables, so the launcher drops the
@@ -569,16 +572,20 @@ ApplicationWindow {
                                       * (space.width + d * 2.2) - d * 1.1
                 property real driftY: 16 + (space.height - d - 92) * laneMix[index % 7]
 
-                x: win.phase === "idle" ? driftX : orbX
-                y: win.phase === "idle" ? driftY : orbY
+                // `scatter` throws them back out to their drift lanes with the
+                // easing off, so the very next frame flies them in again. Without
+                // it a second search moved nothing: they were already in orbit,
+                // the position never changed, and no animation ever ran.
+                x: (win.phase === "idle" || win.scatter) ? driftX : orbX
+                y: (win.phase === "idle" || win.scatter) ? driftY : orbY
                 // Fast in, hard stop — they should look flung into formation.
                 Behavior on x {
-                    enabled: win.phase !== "idle"
-                    NumberAnimation { duration: 620; easing.type: Easing.OutExpo }
+                    enabled: win.phase !== "idle" && !win.scatter
+                    NumberAnimation { duration: 760; easing.type: Easing.OutExpo }
                 }
                 Behavior on y {
-                    enabled: win.phase !== "idle"
-                    NumberAnimation { duration: 620; easing.type: Easing.OutExpo }
+                    enabled: win.phase !== "idle" && !win.scatter
+                    NumberAnimation { duration: 760; easing.type: Easing.OutExpo }
                 }
 
                 // the card needs to know where its planet actually is
@@ -587,55 +594,51 @@ ApplicationWindow {
                 Binding { target: space; property: "selTop"
                           value: pl.y; when: pl.isSel }
 
-                // ── speed lines, only while being flung into formation ──
-                // They trail back along the direction of travel, so the eye
-                // reads a planet arriving rather than one that simply appeared.
-                Item {
-                    anchors.centerIn: globe
-                    width: pl.d; height: pl.d
-                    opacity: win.flying ? 1 : 0
-                    Behavior on opacity { NumberAnimation { duration: 260 } }
-                    rotation: Math.atan2(pl.orbY - pl.driftY,
-                                         pl.orbX - pl.driftX) * 180 / Math.PI
-                    Repeater {
-                        model: 7
-                        delegate: Rectangle {
-                            height: 2
-                            width: 60 + Math.random() * 190
-                            radius: 1
-                            y: pl.d / 2 + (index - 3) * 9
-                            x: -width - pl.d * 0.35
-                            gradient: Gradient {
-                                orientation: Gradient.Horizontal
-                                GradientStop { position: 0.0; color: "#ffffff00" }
-                                GradientStop { position: 0.7; color: "#ffffff" }
-                                GradientStop { position: 1.0; color: "#ffffff" }
-                            }
-                            opacity: 0.35 + Math.random() * 0.5
-                            transformOrigin: Item.Right
-                            SequentialAnimation on scale {
-                                running: win.flying; loops: Animation.Infinite
-                                NumberAnimation { to: 1.4; duration: 150 }
-                                NumberAnimation { to: 0.8; duration: 150 }
-                            }
-                        }
+                // ── speed lines ──
+                // Driven by MEASURED velocity, not by guessing the direction
+                // from stale drift coordinates. That guess is why they ended up
+                // floating in empty space at the wrong angle, detached from the
+                // planet they were supposed to belong to.
+                property real prevX: 0
+                property real prevY: 0
+                property real vx: 0
+                property real vy: 0
+                property real speed: Math.sqrt(vx * vx + vy * vy)
+                Timer {
+                    interval: 32; repeat: true; running: win.phase !== "entering"
+                    onTriggered: {
+                        pl.vx = pl.x - pl.prevX
+                        pl.vy = pl.y - pl.prevY
+                        pl.prevX = pl.x
+                        pl.prevY = pl.y
                     }
                 }
 
-                // motion streak, trailing the direction of travel
-                Rectangle {
-                    z: -1
-                    anchors.verticalCenter: parent.verticalCenter
-                    x: -pl.d * 0.55
-                    width: pl.d * 0.75; height: 1
-                    rotation: -Math.sin(pl.ang) * 22
-                    gradient: Gradient {
-                        orientation: Gradient.Horizontal
-                        GradientStop { position: 0.0; color: "#00000000" }
-                        GradientStop { position: 1.0; color: pl.ready ? pl.p.hue : "#46545c" }
+                Item {
+                    anchors.centerIn: globe
+                    width: 1; height: 1
+                    z: -2
+                    // point along travel; the streaks are drawn trailing behind
+                    rotation: Math.atan2(pl.vy, pl.vx) * 180 / Math.PI
+                    opacity: Math.min(1, Math.max(0, (pl.speed - 4) / 14))
+                    Behavior on opacity { NumberAnimation { duration: 90 } }
+                    Repeater {
+                        model: 6
+                        delegate: Rectangle {
+                            readonly property real off: (index - 2.5) * (pl.d * 0.16)
+                            height: 2
+                            width: pl.d * (0.7 + (index % 3) * 0.5)
+                            radius: 1
+                            x: -pl.d * 0.45 - width
+                            y: off
+                            gradient: Gradient {
+                                orientation: Gradient.Horizontal
+                                GradientStop { position: 0.0; color: "#ffffff00" }
+                                GradientStop { position: 1.0; color: "#ffffff" }
+                            }
+                            opacity: 0.5 + (index % 3) * 0.18
+                        }
                     }
-                    opacity: space.frozen ? 0 : 0.35
-                    Behavior on opacity { NumberAnimation { duration: 300 } }
                 }
 
                 Item {
