@@ -349,23 +349,66 @@ def dig(q, depths, root, limit, instance):
 
 # ── installing an engine ──────────────────────────────────────────────────────
 
+def _installed(pkg):
+    return subprocess.run(["pacman", "-Q", pkg],
+                          capture_output=True).returncode == 0
+
+
 def install(packages):
-    """Offer pacman for a missing engine. Never silent, never automatic."""
+    """Offer to install a missing engine. Never silent, never automatic.
+
+    The hard part is the password. Plain `sudo` with captured output prompts on
+    the terminal bitedig was launched from — invisible if you are looking at the
+    window, and it simply hangs there forever. pkexec asks through the desktop's
+    own polkit agent, which is the only place a GUI can honestly ask.
+    """
     packages = [p for p in packages if p]
     if not packages:
         return {"ok": True, "note": "nothing to install"}
     if not shutil.which("pacman"):
         return {"ok": False,
                 "error": "not an Arch system — install by hand: " + " ".join(packages)}
-    cmd = ["sudo", "pacman", "-S", "--needed", "--noconfirm"] + packages
+
+    already = [p for p in packages if _installed(p)]
+    want = [p for p in packages if p not in already]
+    if not want:
+        return {"ok": True, "installed": already, "note": "already present"}
+
+    graphical = bool(os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY"))
+    tried = []
+
+    if graphical and shutil.which("pkexec"):
+        tried.append("pkexec")
+        try:
+            r = subprocess.run(
+                ["pkexec", "pacman", "-S", "--needed", "--noconfirm"] + want,
+                capture_output=True, text=True, timeout=1800)
+        except Exception as e:
+            r = None
+            err = str(e)[:160]
+        if r is not None and r.returncode == 0:
+            return {"ok": True, "installed": want}
+
+    # passwordless sudo, if the machine happens to allow it
+    tried.append("sudo -n")
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
-    except Exception as e:
-        return {"ok": False, "error": str(e)[:200]}
-    if r.returncode != 0:
-        tail = (r.stderr or r.stdout or "").strip().splitlines()
-        return {"ok": False, "error": tail[-1] if tail else "pacman failed"}
-    return {"ok": True, "installed": packages}
+        r = subprocess.run(["sudo", "-n", "pacman", "-S", "--needed",
+                            "--noconfirm"] + want,
+                           capture_output=True, text=True, timeout=1800)
+    except Exception:
+        r = None
+
+    # Whatever route ran, believe pacman rather than a return code.
+    done = [p for p in want if _installed(p)]
+    if len(done) == len(want):
+        return {"ok": True, "installed": want}
+
+    missing = [p for p in want if p not in done]
+    return {"ok": False,
+            "error": "could not install " + " ".join(missing) +
+                     " — run:  sudo pacman -S " + " ".join(missing),
+            "installed": done,
+            "tried": tried}
 
 
 # ── serve mode (the QML front-end talks to this) ──────────────────────────────

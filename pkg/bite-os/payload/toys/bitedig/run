@@ -36,6 +36,8 @@ command -v qml6 >/dev/null 2>&1 || die "qml6 is missing — sudo pacman -S qt6-d
 mkdir -p "$RUNDIR"
 rm -f "$RUNDIR/request.json" "$RUNDIR/status.json"
 cp -f "$HERE/Dig.qml" "$RUNDIR/Dig.qml"
+# only used when qt6-webengine is present; harmless otherwise
+cp -f "$HERE/Viewer.qml" "$RUNDIR/Viewer.qml" 2>/dev/null || true
 
 # QML cannot read environment variables, so hand the settings over as a file.
 CINE="${TOY_CINEMATICS:-on}"

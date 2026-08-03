@@ -1254,7 +1254,7 @@ ApplicationWindow {
         anchors.fill: parent
         z: 100
         visible: win.phase === "entering"
-        focus: visible
+        focus: visible && !matrix.inViewer
 
         property string target: ""
         property bool viaTor: false
@@ -1274,7 +1274,31 @@ ApplicationWindow {
             reel.restart()
         }
         function abort() { reel.stop(); flood.stop(); win.phase = "detail" }
-        Keys.onPressed: function (e) { matrix.abort(); e.accepted = true }
+        Keys.onPressed: function (e) {
+            if (matrix.inViewer) {
+                if (e.key === Qt.Key_Escape) matrix.closeViewer()
+                e.accepted = true
+                return
+            }
+            matrix.abort(); e.accepted = true
+        }
+
+        // The page loads BEHIND the darkness, so by the time the shards let go
+        // it is already there — the black falls away onto the thing itself
+        // rather than onto a blank waiting to load.
+        Loader {
+            id: viewerLoader
+            anchors.fill: parent
+            z: -1
+            active: win.webengine && matrix.stage >= 1 && !!matrix.target
+            source: active ? "Viewer.qml" : ""
+            onLoaded: item.url = matrix.target
+            Connections {
+                target: viewerLoader.item
+                ignoreUnknownSignals: true
+                function onClosed() { matrix.closeViewer() }
+            }
+        }
 
         // Up to the fall, this is the darkness. From then on the shards are,
         // and behind them there must be nothing — otherwise the pieces drop
@@ -1450,10 +1474,34 @@ ApplicationWindow {
             // The page is asked for as the first pieces let go, so it is already
             // arriving by the time the last of the black is gone.
             PauseAnimation { duration: 500 }
-            ScriptAction { script: win.send({ action: "open", target: matrix.target,
-                                              tor: matrix.viaTor }) }
+            ScriptAction {
+                script: {
+                    // With the viewer present the page is already loading behind
+                    // the shards; handing it to the system browser as well would
+                    // open it twice.
+                    if (!win.webengine || matrix.viaTor)
+                        win.send({ action: "open", target: matrix.target,
+                                   tor: matrix.viaTor })
+                }
+            }
             PauseAnimation { duration: 1500 }
-            ScriptAction { script: { matrix.stage = 0; win.phase = "detail" } }
+            ScriptAction {
+                script: {
+                    if (win.webengine && !matrix.viaTor) {
+                        matrix.inViewer = true       // stay on the page
+                    } else {
+                        matrix.stage = 0
+                        win.phase = "detail"
+                    }
+                }
+            }
+        }
+
+        property bool inViewer: false
+        function closeViewer() {
+            inViewer = false
+            stage = 0
+            win.phase = "detail"
         }
     }
 
