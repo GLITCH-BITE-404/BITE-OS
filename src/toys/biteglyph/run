@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# biteglyph — turn a picture, gif or video into ASCII art.
+#
+# Two halves: convert.py is the engine (no Qt, works headless, does everything
+# the window can), Glyph.qml is the face. QML cannot start a process, so they
+# talk through a run directory — the window writes request.json, the engine
+# writes preview.png and status.json back.
+#
+# Everything is staged into that directory because QML loads by RELATIVE path:
+# command-line arguments do not reach a qml6 script reliably.
+
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/bite-os"
+RUNDIR="$CACHE/glyph-run"
+
+c_grn=$'\e[32m'; c_dim=$'\e[2m'; c_red=$'\e[31m'; c_rst=$'\e[0m'
+die() { printf '%s✗%s %s\n' "$c_red" "$c_rst" "$*" >&2; exit 1; }
+
+command -v qml6 >/dev/null 2>&1 || die "qml6 is missing — sudo pacman -S qt6-declarative"
+command -v ffmpeg >/dev/null 2>&1 || die "ffmpeg is missing — sudo pacman -S ffmpeg"
+[[ -f "$HERE/Glyph.qml" ]]   || die "Glyph.qml is missing from $HERE"
+[[ -f "$HERE/convert.py" ]]  || die "convert.py is missing from $HERE"
+
+# Straight to the engine when given arguments — the GUI is the default, not the
+# only way in.
+if [[ $# -gt 0 && "${1:-}" != "--gui" ]]; then
+    exec python3 "$HERE/convert.py" "$@"
+fi
+
+if [[ "${1:-}" == "--preview" ]]; then
+    printf '  biteglyph — picture / gif / video  →  ASCII\n'
+    printf '  %sopens a window; there is nothing to sample into a text pane%s\n' "$c_dim" "$c_rst"
+    exit 0
+fi
+
+mkdir -p "$RUNDIR"
+rm -f "$RUNDIR/request.json" "$RUNDIR/status.json" "$RUNDIR/preview.png"
+cp -f "$HERE/Glyph.qml" "$RUNDIR/Glyph.qml"
+
+python3 "$HERE/convert.py" --serve "$RUNDIR" &
+ENGINE=$!
+cleanup() { kill "$ENGINE" 2>/dev/null; wait "$ENGINE" 2>/dev/null; }
+trap cleanup EXIT INT TERM
+
+# Qt blocks local-file XHR unless these are set — the whole IPC rides on them.
+export QML_XHR_ALLOW_FILE_READ=1 QML_XHR_ALLOW_FILE_WRITE=1
+cd "$RUNDIR" || die "cannot enter $RUNDIR"
+qml6 Glyph.qml

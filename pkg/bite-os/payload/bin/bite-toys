@@ -71,6 +71,14 @@ meta() {
     sed -n "s/^${key}=//p" "$dir/toy.meta" | head -1
 }
 
+# A toy is for fun; a tool does a job. Same contract, same hub — the label just
+# stops `biteglyph` looking like it belongs next to a face-scrambler.
+kind_tag() {
+    local dir="$1" k
+    k="$(meta "$dir" kind)"
+    [[ "$k" == "tool" ]] && printf '%s·tool%s' "$c_cyn" "$c_rst"
+}
+
 all_toys() {
     { [[ -d "$SYS_TOYS" ]] && find "$SYS_TOYS" -maxdepth 1 -mindepth 1 -type d -printf '%f\n'
       find "$USR_TOYS" -maxdepth 1 -mindepth 1 -type d -printf '%f\n'
@@ -259,8 +267,8 @@ cmd_list() {
         ver="$(meta "$dir" version)"
         if is_installed "$name"; then mark="●"; colour="$c_grn"
         else                          mark="○"; colour="$c_dim"; fi
-        printf '  %s%s%s %s%-14s%s %s%-9s%s %s\n' \
-            "$colour" "$mark" "$c_rst" "$c_bld" "$name" "$c_rst" \
+        printf '  %s%s%s %s%-14s%s%s %s%-9s%s %s\n' \
+            "$colour" "$mark" "$c_rst" "$c_bld" "$name" "$c_rst" "$(kind_tag "$dir")" \
             "$c_mag" "$cat" "$c_rst" "$desc"
         [[ -n "$ver" ]] && printf '    %sv%s · %s%s\n' "$c_dim" "$ver" "$(toy_origin "$name")" "$c_rst"
     done < <(all_toys)
@@ -291,6 +299,7 @@ cmd_info() {
         printf '\n'
     fi
 
+    printf '  %-10s %s\n' "kind"      "$(meta "$dir" kind || true)$( [[ -z "$(meta "$dir" kind)" ]] && echo toy )"
     printf '  %-10s %s\n' "category"  "$(meta "$dir" category)"
     printf '  %-10s %s\n' "author"    "$(meta "$dir" author)"
     printf '  %-10s %s\n' "origin"    "$(toy_origin "$name")"
@@ -1118,7 +1127,8 @@ ui_tab_installed() {
         dir="$(toy_dir "$name" 2>/dev/null)"
         G_NAMES+=("$name")
         G_DESCS+=("$( [[ -n "$dir" ]] && meta "$dir" desc )")
-        G_TAGS+=("$( [[ -n "${UPG[$name]:-}" ]] && printf '%s·update%s' "$c_ylw" "$c_rst" )")
+        G_TAGS+=("$( [[ -n "${UPG[$name]:-}" ]] && printf '%s·update%s' "$c_ylw" "$c_rst" \
+                     || { [[ -n "$dir" ]] && kind_tag "$dir"; } )")
     done
     ui_grid
 

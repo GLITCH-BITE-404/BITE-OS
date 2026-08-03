@@ -1,0 +1,12 @@
+name=biteglyph
+version=1.1
+desc=Turn any picture, gif or video into ASCII art
+category=tool
+kind=tool
+author=GLITCH-BITE-404
+exec=run
+deps=ffmpeg qml6:qt6-declarative py:numpy:python-numpy py:PIL:python-pillow
+usage=biteglyph   ·   opens a window · or biteglyph IN --out OUT.png from the shell
+nopreview=biteglyph opens a window — there is nothing to sample into a text pane. Press Enter on it in INSTALLED to open the real thing.
+keys=drag:drop a file straight onto the window|width:how many characters across|charset:which glyphs to draw with|background:keep it, or cut it out|png/mp4/gif/txt/cast:pick what you save
+about=Feeds a picture, gif or video through the same ASCII engine bitecam uses on your webcam, and lets you actually tune it — width, character ramp, contrast, colour, invert — with a live preview that updates as you drag. Save it as a png still, an mp4 or gif of the animation, raw ANSI text, or an asciinema replay. Background removal has three tiers: it uses the file's own transparency when there is one, flood-fills a flat backdrop from the corners for logos and icons, or falls back to OpenCV's foreground extraction for photos. "Use as fetch logo" drops a cut-out png into ~/.config/glitch/icons, which is the pool glitch-fetch rolls from — so your terminal starts greeting you with it. Every control is also a command-line flag, so it scripts.

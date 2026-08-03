@@ -1,0 +1,32 @@
+# How many characters across the art is, by default
+# @range 20-300
+width=120
+
+# Which glyphs to draw with, darkest to brightest
+# @choices ascii,blocks,dense,minimal,solid,bite
+charset=ascii
+
+# Truecolour, or classic mono
+color=on
+
+# Swap light and dark
+invert=off
+
+# Push the tones apart before mapping them to glyphs. 1.0 leaves them alone.
+# @range 0.4-2.5
+contrast=1.0
+
+# What to do with the background. keep leaves it; alpha trusts the file's own
+# transparency; flood fills inward from the corners and suits logos on a flat
+# colour; grabcut is OpenCV's foreground guess for photos — good, not perfect.
+# auto tries alpha, then flood, then gives up.
+# @choices off,auto,alpha,flood,grabcut
+cut=off
+
+# Pixels per character when rendering to png/mp4/gif. Bigger is sharper and heavier.
+# @range 4-24
+cell=10
+
+# Where "save as" starts. auto follows the file you opened.
+# @choices auto,desktop,downloads,pictures,documents,home
+savedir=auto
