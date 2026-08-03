@@ -154,25 +154,28 @@ None of this is borrowed — it was written *for* BITE-OS. *(Full writeup: [`BUI
 - **`bite-toys`** — a little **package manager for the fun stuff**. Browse, install,
   configure and remove toys from a five-tab TUI. A toy is just a directory, settings
   reach it as `TOY_*` env vars, and every downloaded tarball is checked against a
-  published sha256 before it's unpacked. Ships with four; more from the
-  [toys repo](https://github.com/GLITCH-BITE-404/BITE-OS-toys).
+  published sha256 before it's unpacked. Ships with six — the full catalog,
+  screenshots and docs live in
+  **[BITE-OS-toys](https://github.com/GLITCH-BITE-404/BITE-OS-toys)**.
 
 ---
 
 ## ◈ Toys
 
-`bite-toys` — run it with no arguments for the hub, or use any toy as a plain command.
-They come pre-installed and any of them can be removed with two keypresses.
+BITE-OS ships **`bite-toys`** — a little package manager for the fun half of the
+system. Run it with no arguments for the hub, or use any toy as a plain command.
+Six come preinstalled, and any of them is two keypresses from gone.
 
-| toy | what it does |
-|---|---|
-| **`bitecam`** | your webcam, live, as ASCII. Records to mp4/gif, and `v` publishes it as a **real webcam** — Zoom, Discord and Meet can select it |
-| **`bitemask`** | finds your face and refuses to show it. Bar, visor, mosaic, glitch, static — or **`vanish`**, which learns the room behind you and paints it back over your head. Real video, not ASCII, so it works as a webcam and records 1080×1920 ready to post |
-| **`bitebeat`** | whatever you're playing, with its lyrics sweeping in time, karaoke style. Renders Hebrew and any other script |
-| **`bitemuseum`** | your own disk as a fullscreen exhibition — install day, oldest files, earliest photos, what you've forgotten |
+> ### ▶ **[BITE-OS-toys →](https://github.com/GLITCH-BITE-404/BITE-OS-toys)**
+> Every toy, what it does, screenshots of each one, and how to write your own.
+> That repo is also the live catalog — `bite-toys update` pulls from it, so new
+> toys and fixes arrive without reinstalling anything.
 
-Heavy dependencies are **on demand** — the hub offers the `pacman` install the first
-time a toy needs one, so nothing bloats the ISO. Full writeup in [`BUILT.md`](BUILT.md).
+`bitecam` · `bitemask` · `bitebeat` · `bitemuseum` · `biteglyph ⚙` · `bitedig ⚙`
+
+Heavy dependencies are **on demand** — the hub offers the `pacman` install the
+first time a toy needs one, so nothing bloats the ISO. Architecture writeup in
+[`BUILT.md`](BUILT.md).
 
 ---
 

@@ -180,9 +180,13 @@ screen never tears. Same work, ~60 ms.
 | `bitemask` | finds your face and refuses to show it — bar, visor, mosaic, glitch, static, or **vanish**, which learns the room behind you and paints it back over your head. Real pixels, not ASCII, so it works as a webcam and records 1080×1920 for posting |
 | `bitebeat` | whatever's playing over MPRIS, with its lyrics sweeping in time, karaoke style. Big text is rasterised at runtime, so Hebrew renders as happily as English |
 | `bitemuseum` | your own disk as a fullscreen exhibition — install day, oldest files, earliest photos, what you've forgotten |
+| `biteglyph` ⚙ | any picture, gif or video turned into ASCII art, tunable live, exported as png/mp4/gif/text — or dropped straight into the glitch-fetch icon pool |
+| `bitedig` ⚙ | search as a solar system: files, file contents, media tags, the open web and Tor-reachable services, each engine its own planet, each installable on demand |
 
-Downloadable toys live in their own repo:
-**[BITE-OS-toys](https://github.com/GLITCH-BITE-404/BITE-OS-toys)**
+Anything tagged ⚙ is a tool rather than a gimmick — same contract, same hub.
+
+The catalog, every screenshot and the guide to writing your own live in
+**[BITE-OS-toys](https://github.com/GLITCH-BITE-404/BITE-OS-toys)**.
 
 ---
 
