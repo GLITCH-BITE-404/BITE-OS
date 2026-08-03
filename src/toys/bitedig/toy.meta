@@ -1,5 +1,5 @@
 name=bitedig
-version=1.9
+version=2.0
 desc=Search that goes deeper the further out you go
 category=tool
 kind=tool
@@ -8,5 +8,5 @@ exec=run
 preview=--preview
 deps=qml6:qt6-declarative python3:python
 usage=bitedig   ·   opens a window · or bitedig "query" --depth all from the shell
-keys=←→ or Tab:pick a planet|1-7:jump straight to one|Enter:open it|↑↓:move through results|i:install a missing engine|Esc:back|Ctrl+Q:quit
+keys=←→ or Tab:pick a planet — works while typing too|1-7:jump straight to one|Enter:open it|↑↓:move through results|i:install a missing engine|/:back to the search box|Esc:back|Ctrl+Q:quit
 about=Five depths, five different engines. NAMES searches file and folder names with fd. CONTENTS looks inside text files with ripgrep. MEDIA matches pictures, audio and video and reads their tags with ffprobe. WEB uses your own SearxNG instance if you run one, and falls back to DuckDuckGo's and Wikipedia's open APIs otherwise — public Searx instances block API access, so this is honest about what it can reach. ONION is a short curated list of legitimate Tor-reachable services — SecureDrop, Ahmia, archives — not a crawler, because a general onion index mostly surfaces markets and stolen data. Nothing goes over Tor without asking first, and Tor has to be installed before it will. A depth whose engine is missing shows a red planet and a 'get' button; nothing is ever installed behind your back.

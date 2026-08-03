@@ -163,7 +163,7 @@ ApplicationWindow {
         send({ q: query.text, depths: ds, root: root, limit: 40 })
     }
 
-    Timer { id: flyTimer;  interval: 900; onTriggered: win.flying = false }
+    Timer { id: flyTimer;  interval: 840; onTriggered: win.flying = false }
     Timer { id: unscatter; interval: 40;  onTriggered: win.scatter = false }
 
     Component.onCompleted: {
@@ -208,6 +208,10 @@ ApplicationWindow {
                     for (var k in s.depths) n += (s.depths[k].hits || []).length
                     win.note = n + (n === 1 ? " result" : " results") + "  ·  " + s.took + "s"
                     win.phase = "orbit"
+                    // Focus has to leave the text field or Left/Right just move
+                    // the text cursor and the planets never hear them.
+                    query.focus = false
+                    keys.forceActiveFocus()
                 }
             }
             x.send()
@@ -581,11 +585,11 @@ ApplicationWindow {
                 // Fast in, hard stop — they should look flung into formation.
                 Behavior on x {
                     enabled: win.phase !== "idle" && !win.scatter
-                    NumberAnimation { duration: 760; easing.type: Easing.OutExpo }
+                    NumberAnimation { duration: 780; easing.type: Easing.InOutQuart }
                 }
                 Behavior on y {
                     enabled: win.phase !== "idle" && !win.scatter
-                    NumberAnimation { duration: 760; easing.type: Easing.OutExpo }
+                    NumberAnimation { duration: 780; easing.type: Easing.InOutQuart }
                 }
 
                 // the card needs to know where its planet actually is
@@ -620,7 +624,10 @@ ApplicationWindow {
                     z: -2
                     // point along travel; the streaks are drawn trailing behind
                     rotation: Math.atan2(pl.vy, pl.vx) * 180 / Math.PI
-                    opacity: Math.min(1, Math.max(0, (pl.speed - 4) / 14))
+                    // Visible for the whole flight. Gating purely on measured
+                    // speed hid them after ~150ms, because the old easing spent
+                    // the rest of its time crawling.
+                    opacity: win.flying ? Math.min(1, 0.3 + pl.speed / 12) : 0
                     Behavior on opacity { NumberAnimation { duration: 90 } }
                     Repeater {
                         model: 6
@@ -1255,12 +1262,24 @@ ApplicationWindow {
     // touchpad dies, and a search tool is exactly what you reach for when
     // something is broken.
     Item {
+        id: keys
         anchors.fill: parent
         focus: true
         Keys.onPressed: function (e) {
-            // typing in the box: let it through, except for the keys that steer
-            if (query.activeFocus && e.key !== Qt.Key_Escape
-                && e.key !== Qt.Key_Down && e.key !== Qt.Key_Tab) return
+            // While you are typing, the box keeps ordinary text keys. But once a
+            // system exists, Left/Right belong to the planets — otherwise they
+            // silently move the text cursor and nothing appears to respond.
+            if (query.activeFocus) {
+                var steers = (e.key === Qt.Key_Escape || e.key === Qt.Key_Tab
+                              || e.key === Qt.Key_Down || e.key === Qt.Key_Up)
+                var arrows = (e.key === Qt.Key_Left || e.key === Qt.Key_Right)
+                if (arrows && win.phase !== "idle") {
+                    query.focus = false
+                    keys.forceActiveFocus()
+                } else if (!steers) {
+                    return
+                }
+            }
 
             if (win.phase === "detail") {
                 var hs = win.selected >= 0 ? win.hitsFor(win.planets[win.selected]) : []
@@ -1314,6 +1333,7 @@ ApplicationWindow {
     } }
     Shortcut { sequence: "Ctrl+Q"; onActivated: Qt.quit() }
     Shortcut { sequence: "/"; onActivated: query.forceActiveFocus() }
+    Shortcut { sequence: "Ctrl+L"; onActivated: query.forceActiveFocus() }
 
     onClosing: {
         var x = new XMLHttpRequest()
