@@ -185,15 +185,19 @@ The system maps directly to these custom core inputs for elite navigation:
 
 > The ISO (~5.4 GiB) is hosted off-GitHub due to file-size limits.
 
-**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_20260714/bite-os-1.0-x86_64.iso)**
+**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_202608/bite-os-1.0-x86_64.iso)**
 
-`SHA256`: `88e4c387f856e2367aba7bb3b97050d561f9f85bfbfde5213a9420482c23949a`
+*(mirror / details page: [archive.org item](https://archive.org/details/bite-os-1.0-x86_64_202608))*
+
+`SHA256`: `5d0de0a78aebc393de5ac62a4ca0a132faf04657a6a3574add1e2c6be5e7e517`
 
 Verify the download before flashing — anything that doesn't match this hash is not the ISO I built:
 
 ```bash
 sha256sum bite-os-1.0-x86_64.iso
 ```
+
+This build ships **`bite-toys`** and its four toys preinstalled — see [Toys](#-toys).
 
 ## ◈ Install
 
