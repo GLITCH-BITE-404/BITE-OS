@@ -17,7 +17,12 @@ Item {
     property real progress: web.loadProgress / 100.0
     signal closed()
 
-    onUrlChanged: if (url) web.url = url
+    onUrlChanged: {
+        if (!url) return
+        // Defensive: a bare path would silently become about:blank.
+        web.url = /^[a-z]+:\/\//.test(url) ? url
+                : (url.charAt(0) === "/" ? "file://" + url : "https://" + url)
+    }
 
     WebEngineView {
         id: web

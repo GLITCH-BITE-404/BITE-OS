@@ -124,6 +124,13 @@ ApplicationWindow {
         if (phase === "idle") return
         selected = focusIdx; resIdx = 0; phase = "detail"
     }
+    // Only http(s) belongs in the embedded viewer. A FILES or INSIDE result is
+    // a path on your disk; handing that to a web engine gets you about:blank,
+    // which is exactly what it did. Those go to the app that owns the file.
+    function isWebTarget(t) {
+        return /^https?:\/\//.test(t || "")
+    }
+
     function enterResult() {
         var p = selected >= 0 ? planets[selected] : null
         if (!p) return
@@ -565,22 +572,44 @@ ApplicationWindow {
         }
 
         // ── one orbit line per planet ──
-        Repeater {
-            model: win.planets
-            delegate: Rectangle {
-                property real rr: space.unit * win.orbitR[index]
-                x: space.cx - rr; y: space.cy - rr * space.flat
-                width: rr * 2; height: rr * space.flat * 2
-                radius: width / 2
-                color: "transparent"
-                border.width: 1
-                border.color: win.planetReady(modelData) ? modelData.hue : "#46545c"
-                opacity: win.phase === "idle" ? 0
-                       : (win.selected === index ? 0.30
-                       : (win.planetReady(modelData) ? 0.13 : 0.06))
-                Behavior on opacity { NumberAnimation { duration: 400 } }
-                z: 1
+        // Drawn on a canvas, because a Rectangle with radius: width/2 is a
+        // STADIUM once it is wider than it is tall — Qt clamps the radius to
+        // half the shorter side. The rings had flat tops and the planets, which
+        // really were on their ellipses, looked like they had come loose.
+        Canvas {
+            id: orbitCanvas
+            anchors.fill: parent
+            opacity: win.phase === "idle" ? 0 : 1
+            Behavior on opacity { NumberAnimation { duration: 700 } }
+            onPaint: {
+                var c = getContext("2d")
+                c.reset()
+                c.clearRect(0, 0, width, height)
+                for (var i = 0; i < win.planets.length; i++) {
+                    var rr = space.unit * win.orbitR[i]
+                    var ready = win.planetReady(win.planets[i])
+                    c.beginPath()
+                    c.ellipse(space.cx - rr, space.cy - rr * space.flat,
+                              rr * 2, rr * space.flat * 2)
+                    c.lineWidth = (win.selected === i) ? 1.6 : 1
+                    c.strokeStyle = ready ? win.planets[i].hue : "#46545c"
+                    c.globalAlpha = (win.selected === i) ? 0.34
+                                  : (ready ? 0.15 : 0.07)
+                    c.stroke()
+                }
             }
+            Connections {
+                target: space
+                function onUnitChanged() { orbitCanvas.requestPaint() }
+                function onFlatChanged() { orbitCanvas.requestPaint() }
+            }
+            Connections {
+                target: win
+                function onSelectedChanged() { orbitCanvas.requestPaint() }
+                function onEnginesChanged()  { orbitCanvas.requestPaint() }
+            }
+            onWidthChanged: requestPaint()
+            onHeightChanged: requestPaint()
         }
 
         Repeater {
@@ -1290,9 +1319,10 @@ ApplicationWindow {
             id: viewerLoader
             anchors.fill: parent
             z: -1
-            active: win.webengine && matrix.stage >= 1 && !!matrix.target
-            source: active ? "Viewer.qml" : ""
-            onLoaded: item.url = matrix.target
+            active: win.webengine && matrix.stage >= 1
+                    && win.isWebTarget(matrix.target)
+            source: "Viewer.qml"
+            onLoaded: if (item) item.url = matrix.target
             Connections {
                 target: viewerLoader.item
                 ignoreUnknownSignals: true
@@ -1479,7 +1509,11 @@ ApplicationWindow {
                     // With the viewer present the page is already loading behind
                     // the shards; handing it to the system browser as well would
                     // open it twice.
-                    if (!win.webengine || matrix.viaTor)
+                    // The viewer only claims real web pages. Everything else —
+                    // files, folders, anything over Tor — goes to the system.
+                    var embedded = win.webengine && !matrix.viaTor
+                                   && win.isWebTarget(matrix.target)
+                    if (!embedded)
                         win.send({ action: "open", target: matrix.target,
                                    tor: matrix.viaTor })
                 }
@@ -1487,7 +1521,8 @@ ApplicationWindow {
             PauseAnimation { duration: 1500 }
             ScriptAction {
                 script: {
-                    if (win.webengine && !matrix.viaTor) {
+                    if (win.webengine && !matrix.viaTor
+                        && win.isWebTarget(matrix.target)) {
                         matrix.inViewer = true       // stay on the page
                     } else {
                         matrix.stage = 0

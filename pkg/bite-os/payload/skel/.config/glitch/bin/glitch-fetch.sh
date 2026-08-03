@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  ◈ BITE-OS  ·  © 2026 GLITCH-BITE-404  ·  // THE SYSTEM BIT YOU
-#  https://github.com/GLITCH-BITE-404/BITE-OS  ·  GPLv3 — keep this notice
+#  ◈ BITE-OS  ·  © 2026 GLITCH-BITE404  ·  // THE SYSTEM BIT YOU
+#  https://github.com/GLITCH-BITE404/BITE-OS  ·  GPLv3 — keep this notice
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # ─────────────────────────────────────────────────────────────────────────────
-#  GLITCH-FETCH  ::  Pure-Bash Gacha Engine for GLITCH-BITE-404
+#  GLITCH-FETCH  ::  Pure-Bash Gacha Engine for GLITCH-BITE404
 #  Target : BITE-OS / Arch  ::  Fastfetch >= 2.10
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -18,6 +18,35 @@ readonly STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 # other's pick. PPID is the shell that invoked us (fish), so every redraw
 # inside the same session reads back the same file.
 readonly STATE_FILE="$STATE_DIR/glitch-fetch-${PPID}.icon"
+# The BITE-OS ASCII logo. Used as the ONLY fallback whenever the sixel/kitty
+# image path is unavailable — we never want to leak the upstream distro art.
+readonly ASCII_LOGO="${XDG_CONFIG_HOME:-$HOME/.config}/fastfetch/bite-os.txt"
+
+# ---- Does this terminal actually render images? ----------------------------
+# Returns 0 if kitty-graphics or sixel is available. The Linux VT, dumb
+# terminals, and piped output never qualify, so they get the ASCII logo.
+images_supported() {
+    [[ -t 1 ]] || return 1
+    case "${TERM:-}" in
+        linux|dumb|'') return 1 ;;
+    esac
+    # Terminals known to speak kitty-graphics or sixel (foot is the default).
+    [[ -n ${KITTY_WINDOW_ID:-} || -n ${GHOSTTY_BIN_DIR:-} ]] && return 0
+    case "${TERM:-}|${TERM_PROGRAM:-}" in
+        *kitty*|*ghostty*|*wezterm*|*WezTerm*|*foot*|*konsole*|*iTerm*|*mlterm*)
+            return 0 ;;
+    esac
+    # Unknown terminal: ask it via Primary Device Attributes and look for
+    # sixel support (attribute "4"). Bails out fast if there's no reply.
+    [[ -t 0 ]] || return 1
+    local old resp=''
+    old=$(stty -g 2>/dev/null) || return 1
+    stty raw -echo min 0 time 3 2>/dev/null
+    printf '\033[c' > /dev/tty 2>/dev/null
+    IFS= read -r -t 1 -d c resp < /dev/tty 2>/dev/null || true
+    stty "$old" 2>/dev/null
+    [[ $resp =~ (^|[?\;])4([\;]|$) ]]
+}
 
 # ---- Aspect classification (by filename prefix) -----------------------------
 classify_icon() {
@@ -62,22 +91,15 @@ gpu_usage() {
         [[ -r $f ]] || continue
         local pct; read -r pct < "$f"
         printf '%d%%' "$pct"
-        return 0
+        return
     done
-    # NVIDIA check (for your RTX 4060). nvidia-smi prints its "couldn't
-    # communicate with the NVIDIA driver" error to STDOUT (a VM has the tool
-    # but no driver), so only trust the output if it's actually a number —
-    # feeding the error text to printf %d errexits the whole fetch.
+    # NVIDIA check (for your RTX 4060)
     if command -v nvidia-smi >/dev/null 2>&1; then
-        local pct
-        pct="$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -n1 | tr -cd '0-9')" || pct=""
-        if [[ -n $pct ]]; then
-            printf '%d%%' "$pct"
-            return 0
-        fi
+        nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits \
+            2>/dev/null | { read -r pct; printf '%d%%' "${pct:-0}"; }
+        return
     fi
     printf 'N/A'
-    return 0
 }
 
 # ---- Branding banner (printed BEFORE fastfetch, every launch) --------------
@@ -145,7 +167,20 @@ compute_sizes() {
     local pad=5 box=58
     local avail_w=$(( cols - pad - box ))
     local avail_h=$(( lines - 14 ))
-    (( avail_w < 8 )) && avail_w=8
+
+    # The info box is a fixed 58 columns and cannot shrink — its widest value is
+    # the literal icons path. Below roughly 71 columns there is no room for a
+    # logo BESIDE it, and the old code clamped the logo to 8 anyway: the box
+    # then ran past the terminal, wrapped, and the right border ended up on the
+    # following line. A missing logo looks deliberate; a shredded box does not.
+    if (( avail_w < 8 )); then
+        local c=$(( cols - 1 ))
+        (( c > box + 1 )) && c=$(( box + 1 ))
+        (( c < 20 )) && c=20
+        printf '0 0 %d %d' "$c" "$(( c - 2 ))"
+        return
+    fi
+
     (( avail_h < 4 )) && avail_h=4
 
     # Pick the tighter constraint and scale the *other* axis to match,
@@ -218,14 +253,13 @@ main() {
     local icon template cfg
     print_banner
 
-    # TTY (Linux console) can't render sixel/kitty images — fall back to the
-    # custom BITE-OS ASCII logo with the default fastfetch config.
-    if [[ ${TERM:-} == linux ]]; then
-        local ascii="$HOME/.config/fastfetch/bite-os.txt"
-        if [[ -r $ascii ]]; then
-            exec fastfetch --logo-type file --logo "$ascii"
+    # Anywhere images can't render (Linux VT, non-sixel terminals, piped
+    # output) show the BITE-OS ASCII logo — never the upstream distro art.
+    if ! images_supported; then
+        if [[ -r $ASCII_LOGO ]]; then
+            exec fastfetch --logo-type file --logo "$ASCII_LOGO"
         fi
-        exec fastfetch --logo-type builtin --logo arch
+        exec fastfetch --logo none
     fi
 
     # Default: reuse the cached icon so terminal resizes don't reroll the gacha.
@@ -242,7 +276,10 @@ main() {
         [[ -n $icon ]] && printf '%s' "$icon" > "$STATE_FILE" 2>/dev/null || true
     fi
     if [[ -z $icon ]]; then
-        exec fastfetch --logo-type builtin --logo arch
+        if [[ -r $ASCII_LOGO ]]; then
+            exec fastfetch --logo-type file --logo "$ASCII_LOGO"
+        fi
+        exec fastfetch --logo none
     fi
 
     template="$(classify_icon "$icon")"
@@ -250,6 +287,14 @@ main() {
     trap 'rm -f "$cfg"' EXIT
 
     build_config "$icon" "$template" > "$cfg"
+
+    # compute_sizes reports a zero-width logo when the terminal is too narrow to
+    # carry one next to the box. Keep the styling, drop the image.
+    local lw_check
+    lw_check="$(compute_sizes $(layout_dims "$template") | cut -d" " -f1)"
+    if [[ $lw_check == 0 ]]; then
+        exec fastfetch --config "$cfg" --logo none
+    fi
     exec fastfetch --config "$cfg"
 }
 
