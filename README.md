@@ -9,8 +9,9 @@
 **A glitch-themed, performance-obsessed Linux distribution.**
 Built on the CachyOS base — riced to the teeth, engineered to never get in your way.
 
-`v1.0` · codename **dedsec** · by **GLITCH-BITE-404**
+`v1.0` · codename **dedsec** · build `202608` · by **GLITCH-BITE-404**
 
+[![Latest build](https://img.shields.io/badge/latest%20build-202608-00ff78?style=for-the-badge)](#-download)
 [![TikTok](https://img.shields.io/badge/TikTok-@glitch__bite404-ff0050?style=for-the-badge&logo=tiktok)](https://www.tiktok.com/@glitch_bite404)
 ![Base](https://img.shields.io/badge/base-CachyOS%20%2F%20Arch-1793d1?style=for-the-badge&logo=archlinux)
 ![Shell](https://img.shields.io/badge/desktop-Hyprland%20%2B%20Quickshell-00ff78?style=for-the-badge)
@@ -19,6 +20,20 @@ Built on the CachyOS base — riced to the teeth, engineered to never get in you
 **[⤓ Download](#-download)** · **[🛠 Built by hand](BUILT.md)** · **[🐕 Meet Laffy](LAFFY.md)**
 
 </div>
+
+---
+
+> ## ⬛ Latest version — build `202608`
+>
+> **This is the newest ISO and replaces every earlier upload.** Same BITE-OS,
+> now with **[`bite-toys`](#-toys)** — a hub for the fun half of the system,
+> shipping `bitecam`, `bitemask`, `bitebeat` and `bitemuseum` preinstalled.
+>
+> **[⤓ Download it here](#-download)** · already on an older build? Just press
+> `SUPER+U`, no reinstall needed.
+>
+> After installing, `bite-toys update && bite-toys upgrade` pulls the newest
+> toys — they update independently of the ISO.
 
 ---
 
@@ -212,6 +227,8 @@ This build ships **`bite-toys`** and its four toys preinstalled — see [Toys](#
 2. Boot it. The live ISO comes up **straight into the full BITE-OS desktop** — the real rice, running live — with the installer opening on top of it. Try the dots before you commit.
 3. Click through the installer: language → keyboard → disk → *your* username + password → **Install** (re-open it anytime from the app launcher: *Install BITE-OS*).
 4. Reboot into your own riced BITE-OS — the same desktop you just test-drove, now yours.
+5. *(optional)* `bite-toys update && bite-toys upgrade` — the toys ship on the ISO but
+   update independently of it, so this pulls anything newer than the image you flashed.
 
 No terminal required, no desktop to pick — BITE-OS installs as **one opinionated, pre-riced Hyprland system**, offline (no internet needed during install).
 
