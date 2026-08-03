@@ -543,6 +543,7 @@ ApplicationWindow {
             delegate: Item {
                 id: pl
                 property var p: modelData
+                readonly property int myIndex: index
                 property bool ready: win.planetReady(p)
                 property var hits: win.hitsFor(p)
                 property bool isSel: win.selected === index
@@ -654,6 +655,35 @@ ApplicationWindow {
                     width: pl.d; height: pl.d
                     opacity: pl.ready ? 1 : 0.42
                     Behavior on opacity { NumberAnimation { duration: 300 } }
+
+                    // radar: rings pushing outward off the planet you are on
+                    Repeater {
+                        model: 3
+                        delegate: Rectangle {
+                            visible: (win.focusIdx === index2 || hov.containsMouse)
+                                     && pl.ready && win.phase !== "idle"
+                                     && win.phase !== "entering"
+                            readonly property int index2: pl.myIndex
+                            anchors.centerIn: parent
+                            width: parent.width; height: parent.width
+                            radius: width / 2
+                            color: "transparent"
+                            border.color: pl.p.hue; border.width: 1
+                            SequentialAnimation on scale {
+                                running: parent.visible
+                                loops: Animation.Infinite
+                                PauseAnimation { duration: index * 620 }
+                                NumberAnimation { from: 0.9; to: 2.1; duration: 1860
+                                                  easing.type: Easing.OutQuad }
+                            }
+                            SequentialAnimation on opacity {
+                                running: parent.visible
+                                loops: Animation.Infinite
+                                PauseAnimation { duration: index * 620 }
+                                NumberAnimation { from: 0.55; to: 0.0; duration: 1860 }
+                            }
+                        }
+                    }
 
                     Rectangle {                          // keyboard focus ring
                         visible: win.focusIdx === index && win.phase !== "idle"
@@ -850,192 +880,156 @@ ApplicationWindow {
         }
     }
 
-    // ── the card, floating above whichever planet you picked ─────────────────
+    // ── the card ─────────────────────────────────────────────────────────────
+    // Fixed size, opaque, and it shows a HANDFUL of results — not all forty.
+    // The old one sized itself from its content, so a long path wrapped, every
+    // row grew, and the list spilled out of the box on top of itself.
     Item {
         id: detail
         z: 60
         visible: opacity > 0.01
         opacity: (win.phase === "detail" || win.phase === "entering") ? 1 : 0
-        Behavior on opacity { NumberAnimation { duration: 220 } }
+        Behavior on opacity { NumberAnimation { duration: 200 } }
 
         property var p: win.selected >= 0 ? win.planets[win.selected] : null
-        property var hits: p ? win.hitsFor(p) : []
-        readonly property int cw: 460
-        readonly property int ch: Math.min(430, 176 + Math.max(1, hits.length) * 46)
+        property var allHits: p ? win.hitsFor(p) : []
+        readonly property int shown: 5
+        readonly property int cw: 430
+        readonly property int ch: 250
 
         width: cw; height: ch
-        // sit above the planet, but never off the edge of the screen
-        x: Math.max(16, Math.min(win.width - cw - 16,
-                    space.x + space.selCX - cw / 2))
-        y: Math.max(header.height + 8,
-                    space.y + space.selTop - ch - 18)
-        Behavior on x { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
-        Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
+        x: Math.max(16, Math.min(win.width - cw - 16, space.x + space.selCX - cw / 2))
+        y: Math.max(header.height + 6, space.y + space.selTop - ch - 16)
+        Behavior on x { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
+        Behavior on y { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
 
         Rectangle {
             anchors.fill: parent
-            radius: 10
-            color: "#050b11f5"
+            radius: 8
+            color: "#04080d"                     // opaque: planets must not bleed through
             border.color: detail.p ? detail.p.hue : win.accent
             border.width: 1
         }
-        Rectangle {                                   // glow
-            anchors.fill: parent; anchors.margins: -3
-            radius: 13; color: "transparent"
-            border.color: detail.p ? detail.p.hue : win.accent
-            border.width: 1; opacity: 0.18
-        }
-        // little stem pointing down at the planet
         Rectangle {
             width: 10; height: 10; rotation: 45
-            color: "#050b11"
+            color: "#04080d"
             border.color: detail.p ? detail.p.hue : win.accent
             border.width: 1
-            x: Math.max(14, Math.min(detail.cw - 24,
-                        space.x + space.selCX - detail.x - 5))
+            x: Math.max(14, Math.min(detail.cw - 24, space.x + space.selCX - detail.x - 5))
             y: detail.ch - 5
         }
 
-        ColumnLayout {
+        Item {
             anchors.fill: parent
-            anchors.margins: 16
-            spacing: 10
+            anchors.margins: 14
 
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 12
-                Rectangle {                            // the engine's mark
-                    width: 42; height: 42; radius: 8
-                    color: "transparent"
-                    border.color: detail.p ? detail.p.hue : win.accent
-                    border.width: 1
-                    Text {
-                        anchors.centerIn: parent
-                        text: detail.p ? detail.p.glyph : "?"
-                        color: detail.p ? detail.p.hue : win.accent
-                        font.pixelSize: 20
-                    }
-                }
-                ColumnLayout {
-                    spacing: 1
-                    Text {
-                        text: detail.p ? detail.p.label : ""
-                        color: win.ink
-                        font.family: "monospace"; font.pixelSize: 16
-                        font.letterSpacing: 2; font.bold: true
-                    }
-                    Text {
-                        text: detail.p ? (detail.p.engine + "  ·  " + detail.hits.length +
-                              (detail.hits.length === 1 ? " result" : " results")) : ""
-                        color: detail.p ? detail.p.hue : win.inkDim
-                        font.family: "monospace"; font.pixelSize: 10
-                    }
-                }
-                Item { Layout.fillWidth: true }
+            // ── header: mark, name beside it, what it is for underneath ──
+            Rectangle {
+                id: mark
+                width: 40; height: 40; radius: 6
+                color: "transparent"
+                border.color: detail.p ? detail.p.hue : win.accent
                 Text {
-                    text: "esc"
-                    color: win.inkFar
-                    font.family: "monospace"; font.pixelSize: 10
+                    anchors.centerIn: parent
+                    text: detail.p ? detail.p.glyph : "?"
+                    color: detail.p ? detail.p.hue : win.accent
+                    font.pixelSize: 19
                 }
             }
-
-            Text {                                     // what it is good for
-                Layout.fillWidth: true
+            Text {
+                id: nameTxt
+                anchors { left: mark.right; leftMargin: 11; top: mark.top }
+                text: detail.p ? detail.p.label : ""
+                color: win.ink
+                font.family: "monospace"; font.pixelSize: 15
+                font.bold: true; font.letterSpacing: 2
+            }
+            Text {
+                anchors { left: mark.right; leftMargin: 11; top: nameTxt.bottom; topMargin: 2 }
+                text: detail.p ? (detail.p.engine + "  ·  " + detail.allHits.length +
+                      (detail.allHits.length === 1 ? " result" : " results")) : ""
+                color: detail.p ? detail.p.hue : win.inkDim
+                font.family: "monospace"; font.pixelSize: 10
+            }
+            Text {
+                anchors { right: parent.right; top: parent.top }
+                text: "esc"; color: win.inkFar
+                font.family: "monospace"; font.pixelSize: 9
+            }
+            Text {
+                id: goodTxt
+                anchors { left: parent.left; right: parent.right; top: mark.bottom; topMargin: 9 }
                 text: detail.p ? detail.p.good : ""
                 color: win.inkFar
-                font.family: "monospace"; font.pixelSize: 10
-                wrapMode: Text.Wrap
+                font.family: "monospace"; font.pixelSize: 9
+                wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight
+            }
+            Rectangle {
+                id: rule
+                anchors { left: parent.left; right: parent.right; top: goodTxt.bottom; topMargin: 8 }
+                height: 1; color: win.line
             }
 
-            Rectangle { Layout.fillWidth: true; height: 1; color: win.line }
-
-            ScrollView {
-                Layout.fillWidth: true; Layout.fillHeight: true
-                clip: true
-                ColumnLayout {
-                    width: detail.cw - 32
-                    spacing: 2
-                    Repeater {
-                        model: detail.hits
-                        delegate: Rectangle {
-                            Layout.fillWidth: true
-                            height: rb.implicitHeight + 12
-                            radius: 4
-                            color: (rh.containsMouse || win.resIdx === index)
-                                   ? "#0b1a22" : "transparent"
-                            Rectangle {
-                                width: 2; height: parent.height - 8; x: 0; radius: 1
-                                anchors.verticalCenter: parent.verticalCenter
-                                color: detail.p ? detail.p.hue : win.accent
-                                opacity: (rh.containsMouse || win.resIdx === index) ? 1 : 0.2
+            // ── a few results, fixed-height rows so nothing can overlap ──
+            Column {
+                id: rows
+                anchors { left: parent.left; right: parent.right; top: rule.bottom; topMargin: 7 }
+                spacing: 2
+                Repeater {
+                    model: Math.min(detail.shown, detail.allHits.length)
+                    delegate: Rectangle {
+                        width: rows.width
+                        height: 24                       // fixed — never grows
+                        radius: 3
+                        color: win.resIdx === index ? "#0d1c24" : "transparent"
+                        Rectangle {
+                            width: 2; height: 16; x: 0; radius: 1
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: detail.p ? detail.p.hue : win.accent
+                            opacity: win.resIdx === index ? 1 : 0.25
+                        }
+                        Text {
+                            anchors { left: parent.left; leftMargin: 10
+                                      right: parent.right; rightMargin: 6
+                                      verticalCenter: parent.verticalCenter }
+                            text: {
+                                var h = detail.allHits[index]
+                                if (!h) return ""
+                                return h.title ? h.title : (h.name || h.path || "")
                             }
-                            Column {
-                                id: rb
-                                x: 10; y: 6; width: parent.width - 20; spacing: 2
-                                Text {
-                                    width: parent.width
-                                    text: modelData.title ? modelData.title
-                                          : (modelData.name || modelData.path || "")
-                                    color: win.ink
-                                    font.family: "monospace"; font.pixelSize: 11
-                                    elide: Text.ElideRight
-                                }
-                                Text {
-                                    width: parent.width
-                                    visible: text !== ""
-                                    text: modelData.excerpt ? modelData.excerpt
-                                          : (modelData.url || modelData.path || "")
-                                    color: win.inkDim
-                                    font.family: "monospace"; font.pixelSize: 9
-                                    elide: Text.ElideMiddle
-                                    maximumLineCount: 1
-                                }
-                            }
-                            MouseArea {
-                                id: rh
-                                anchors.fill: parent; hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    win.resIdx = index
-                                    matrix.target = modelData.url || modelData.path || ""
-                                    matrix.viaTor = !!modelData.needs_tor
-                                    matrix.start()
-                                }
-                            }
+                            color: win.resIdx === index ? win.ink : win.inkDim
+                            font.family: "monospace"; font.pixelSize: 11
+                            elide: Text.ElideMiddle
+                            maximumLineCount: 1
                         }
                     }
                 }
             }
+            Text {
+                anchors { left: parent.left; top: rows.bottom; topMargin: 4 }
+                visible: detail.allHits.length > detail.shown
+                text: "+ " + (detail.allHits.length - detail.shown) + " more"
+                color: win.inkFar
+                font.family: "monospace"; font.pixelSize: 9
+            }
 
             Rectangle {
-                Layout.fillWidth: true
-                height: 34; radius: 17
-                color: ent.containsMouse ? (detail.p ? detail.p.hue : win.accent) : "transparent"
+                anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
+                height: 30; radius: 15
+                color: "transparent"
                 border.color: detail.p ? detail.p.hue : win.accent
-                opacity: detail.hits.length ? 1 : 0.3
+                opacity: detail.allHits.length ? 1 : 0.3
                 Text {
                     anchors.centerIn: parent
                     text: "◈  E N T E R  ◈"
-                    color: ent.containsMouse ? "#03060c" : (detail.p ? detail.p.hue : win.accent)
+                    color: detail.p ? detail.p.hue : win.accent
                     font.family: "monospace"; font.pixelSize: 10; font.bold: true
-                }
-                MouseArea {
-                    id: ent
-                    anchors.fill: parent; hoverEnabled: true
-                    enabled: detail.hits.length > 0
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: win.enterResult()
                 }
             }
         }
     }
 
-    // ── entering: crash → break in → SUCCESS → the lights come up ───────────
-    //
-    // Four stages. It is deliberately theatrical, and deliberately skippable —
-    // `cinematics=off` in the config drops straight to opening the thing, and
-    // any key aborts mid-way. A five-second animation you cannot escape stops
-    // being cool the third time you see it.
+    // ── entering: a real terminal, then the pixels dissolve away ────────────
     Item {
         id: matrix
         anchors.fill: parent
@@ -1045,201 +1039,146 @@ ApplicationWindow {
 
         property string target: ""
         property bool viaTor: false
-        property int  stage: 0          // 0 crash · 1 break-in · 2 success · 3 lights
-        property real bloom: 0
-        property real glare: 1
+        property int  stage: 0          // 0 crash · 1 terminal · 2 dissolve
+        property real dissolve: 0
 
         function start() {
             if (!target) return
-            if (!win.cinematics) {           // straight to business
+            if (!win.cinematics) {
                 win.send({ action: "open", target: target, tor: viaTor })
                 win.note = "opening " + target
                 return
             }
-            stage = 0; bloom = 0; glare = 1
+            stage = 0; dissolve = 0
             feed.clear()
             win.phase = "entering"
             reel.restart()
         }
-        function abort() {
-            reel.stop(); flood.stop()
-            win.phase = "detail"
-        }
+        function abort() { reel.stop(); flood.stop(); win.phase = "detail" }
         Keys.onPressed: function (e) { matrix.abort(); e.accepted = true }
 
         Rectangle { anchors.fill: parent; color: "#000000" }
 
-        // ── stage 1: the break-in, printed like a terminal ──
+        // ── the terminal ──
         ListModel { id: feed }
         Timer {
             id: flood
-            interval: 55; repeat: true; running: matrix.stage === 1
+            interval: 42; repeat: true; running: matrix.stage === 1
             property int n: 0
             onTriggered: {
                 var host = matrix.target.replace(/^https?:\/\//, "").split("/")[0]
                 var hex = "0123456789abcdef"
                 function h(k) { var o=""; for (var i=0;i<k;i++)
                     o += hex.charAt(Math.floor(Math.random()*16)); return o }
-                var lines = [
-                    "resolving " + host,
-                    "route " + h(2) + "." + h(2) + "." + h(2) + "." + h(2) + " -> gw",
-                    "handshake syn/ack  seq=0x" + h(8),
-                    "negotiating cipher suite " + h(4),
-                    "key exchange " + h(16),
-                    matrix.viaTor ? "circuit hop " + (1 + matrix.stage) + "/3  relay=" + h(6)
-                                  : "tls1.3  alpn=h2  sni=" + host,
-                    "payload " + h(24),
-                    "bypass " + h(4) + " :: " + h(4) + " :: " + h(4),
-                    "injecting " + h(12),
-                    "0x" + h(8) + "  " + h(8) + "  " + h(8) + "  " + h(8)
+                var script = [
+                    ["$ ", "bitedig --connect " + host],
+                    ["", "resolving " + host + " ..."],
+                    ["", "route 10." + (n%250) + "." + (n%99) + ".1 -> gw0"],
+                    ["", "syn -> ack   seq=0x" + h(8)],
+                    ["", matrix.viaTor ? "circuit  guard -> middle -> exit"
+                                       : "tls1.3   alpn=h2   sni=" + host],
+                    ["", "key exchange " + h(32)],
+                    ["", "frame " + h(4) + " " + h(4) + " " + h(4) + " " + h(4)],
+                    ["", "payload " + h(48)],
+                    ["", "bypass " + h(6) + " :: " + h(6)],
+                    ["", "0x" + h(8) + "   " + h(8) + "   " + h(8)]
                 ]
-                feed.append({ line: lines[n % lines.length] })
-                if (feed.count > 26) feed.remove(0)
+                var pick = script[n % script.length]
+                feed.append({ pre: pick[0], line: pick[1], ok: false })
+                if (feed.count > 30) feed.remove(0)
                 n += 1
             }
         }
-        ListView {
-            anchors.fill: parent
-            anchors.margins: 44
-            model: feed
-            visible: matrix.stage === 1
-            interactive: false
-            delegate: Text {
-                text: "> " + line
-                color: index > feed.count - 4 ? "#c8ffe4" : "#00b85e"
-                opacity: 0.35 + 0.65 * (index / Math.max(1, feed.count))
-                font.family: "monospace"; font.pixelSize: 13
-            }
-        }
-        // a dead machine flickers before it comes back
-        Rectangle {
-            anchors.fill: parent; color: "#000000"
-            opacity: matrix.stage === 0 ? 1 : 0
-            SequentialAnimation on opacity {
-                running: matrix.stage === 0
-                loops: 2
-                NumberAnimation { to: 0.86; duration: 60 }
-                NumberAnimation { to: 1.00; duration: 90 }
-            }
-        }
 
-        // ── stage 2: SUCCESS ──
-        Item {
-            anchors.centerIn: parent
-            visible: matrix.stage === 2
-            Text {
-                id: successTxt
-                anchors.centerIn: parent
-                text: "SUCCESS"
-                color: "#00ff88"
-                font.family: "monospace"; font.pixelSize: 84
-                font.bold: true; font.letterSpacing: 16
-                // brightness breathing, plus a slow float
-                opacity: matrix.glare
-                SequentialAnimation on scale {
-                    running: matrix.stage === 2; loops: Animation.Infinite
-                    NumberAnimation { to: 1.04; duration: 620; easing.type: Easing.InOutSine }
-                    NumberAnimation { to: 1.00; duration: 620; easing.type: Easing.InOutSine }
-                }
-                SequentialAnimation on y {
-                    running: matrix.stage === 2; loops: Animation.Infinite
-                    NumberAnimation { to: -10; duration: 1500; easing.type: Easing.InOutSine }
-                    NumberAnimation { to:  10; duration: 1500; easing.type: Easing.InOutSine }
-                }
-            }
-            Text {                                   // ghost behind it = glow
-                anchors.centerIn: successTxt
-                text: successTxt.text
-                color: "#00ff88"
-                font: successTxt.font
-                opacity: matrix.glare * 0.30
-                scale: successTxt.scale * 1.06
-            }
-            Text {
-                anchors { top: successTxt.bottom; topMargin: 26
-                          horizontalCenter: successTxt.horizontalCenter }
-                text: matrix.viaTor ? "circuit established" : "link established"
-                color: "#5f8f77"
-                font.family: "monospace"; font.pixelSize: 13; font.letterSpacing: 4
-            }
-        }
-
-        // ── stage 3: the LEDs come up, one by one, until the screen is the planet
-        Grid {
-            id: leds
-            anchors.fill: parent
-            visible: matrix.stage === 3
-            columns: Math.max(1, Math.floor(win.width / 26))
-            rows: Math.max(1, Math.floor(win.height / 26))
-            property color lit: detail.p ? detail.p.hue : win.accent
+        Column {
+            id: term
+            anchors { left: parent.left; right: parent.right; top: parent.top
+                      margins: 40 }
+            spacing: 1
+            visible: matrix.stage >= 1
             Repeater {
-                model: leds.columns * leds.rows
-                delegate: Rectangle {
-                    width: win.width / leds.columns
-                    height: win.height / leds.rows
-                    color: leds.lit
-                    // ripple outward from the middle, with a little scatter so it
-                    // reads as lamps warming up rather than a wipe
-                    property real cxi: (index % leds.columns) - leds.columns / 2
-                    property real cyi: Math.floor(index / leds.columns) - leds.rows / 2
-                    property real dist: Math.sqrt(cxi * cxi + cyi * cyi)
-                    opacity: 0
-                    NumberAnimation on opacity {
-                        running: matrix.stage === 3
-                        to: 1; duration: 420
-                        easing.type: Easing.OutQuad
+                model: feed
+                delegate: Row {
+                    spacing: 0
+                    Text {
+                        text: pre
+                        color: "#00e676"
+                        font.family: "monospace"; font.pixelSize: 13
                     }
-                    Behavior on opacity { NumberAnimation { duration: 300 } }
-                    Timer {
-                        running: matrix.stage === 3
-                        interval: dist * 34 + Math.random() * 260
-                        repeat: false
-                        onTriggered: parent.opacity = 1
+                    Text {
+                        text: line
+                        color: ok ? "#00ff88"
+                                  : (index > feed.count - 5 ? "#a8f0cc" : "#1f7a4d")
+                        font.family: "monospace"; font.pixelSize: 13
+                        font.bold: ok
                     }
-                    Component.onCompleted: opacity = 0
+                }
+            }
+            // the live cursor
+            Rectangle {
+                width: 9; height: 15; color: "#00e676"
+                visible: matrix.stage === 1
+                SequentialAnimation on opacity {
+                    running: matrix.stage === 1; loops: Animation.Infinite
+                    NumberAnimation { to: 0; duration: 480 }
+                    NumberAnimation { to: 1; duration: 480 }
                 }
             }
         }
-        Rectangle {                                   // final wash to white
+
+        // ── the dissolve: black tiles disappearing to reveal what is behind ──
+        Grid {
             anchors.fill: parent
-            color: "#ffffff"
-            opacity: matrix.bloom
+            visible: matrix.stage === 2
+            columns: Math.max(1, Math.floor(win.width / 22))
+            rows: Math.max(1, Math.floor(win.height / 22))
+            Repeater {
+                model: parent.columns * parent.rows
+                delegate: Rectangle {
+                    width: win.width / Math.max(1, Math.floor(win.width / 22))
+                    height: win.height / Math.max(1, Math.floor(win.height / 22))
+                    color: "#000000"
+                    // each tile has its own threshold, so they wink out in a
+                    // scatter rather than a wipe
+                    readonly property real mine: Math.random()
+                    opacity: matrix.dissolve > mine ? 0 : 1
+                    Behavior on opacity { NumberAnimation { duration: 220 } }
+                }
+            }
         }
 
         Text {
-            anchors { bottom: parent.bottom; horizontalCenter: parent.horizontalCenter
-                      bottomMargin: 26 }
+            anchors { bottom: parent.bottom; left: parent.left; margins: 40 }
             text: "any key to skip"
-            color: "#33564a"
+            color: "#1f7a4d"
             font.family: "monospace"; font.pixelSize: 10
-            visible: matrix.stage < 3
+            visible: matrix.stage < 2
         }
 
         SequentialAnimation {
             id: reel
-            // 1. the machine dies
-            PauseAnimation { duration: 520 }
-            ScriptAction { script: matrix.stage = 1 }
-            // 2. breaking in
-            PauseAnimation { duration: 2300 }
-            ScriptAction { script: { matrix.stage = 2; matrix.glare = 1 } }
-            // 3. SUCCESS, brightness swelling
-            SequentialAnimation {
-                loops: 3
-                NumberAnimation { target: matrix; property: "glare"
-                                  to: 0.45; duration: 260 }
-                NumberAnimation { target: matrix; property: "glare"
-                                  to: 1.00; duration: 260 }
-            }
             PauseAnimation { duration: 420 }
-            // 4. the lights come up
-            ScriptAction { script: matrix.stage = 3 }
-            PauseAnimation { duration: 1500 }
-            NumberAnimation { target: matrix; property: "bloom"; to: 1; duration: 480 }
+            ScriptAction { script: matrix.stage = 1 }
+            PauseAnimation { duration: 2400 }
+            // SUCCESS is terminal OUTPUT, not a banner floating in the middle
+            ScriptAction {
+                script: {
+                    flood.stop()
+                    feed.append({ pre: "", line: "", ok: false })
+                    feed.append({ pre: "", line: "SUCCESS", ok: true })
+                    feed.append({ pre: "", line: matrix.viaTor
+                                 ? "circuit established -> " + matrix.target
+                                 : "link established -> " + matrix.target, ok: false })
+                    feed.append({ pre: "$ ", line: "open", ok: false })
+                }
+            }
+            PauseAnimation { duration: 900 }
+            ScriptAction { script: matrix.stage = 2 }
+            NumberAnimation { target: matrix; property: "dissolve"
+                              from: 0; to: 1.05; duration: 1100 }
             ScriptAction { script: win.send({ action: "open", target: matrix.target,
                                               tor: matrix.viaTor }) }
-            PauseAnimation { duration: 400 }
-            NumberAnimation { target: matrix; property: "bloom"; to: 0; duration: 420 }
+            PauseAnimation { duration: 260 }
             ScriptAction { script: { matrix.stage = 0; win.phase = "detail" } }
         }
     }
