@@ -44,20 +44,39 @@ ApplicationWindow {
 
     readonly property var planets: [
         { id:"names",      label:"FILES",      engine:"fd",         depth:"names",
-          hue:"#00e676", size:1.00, ring:false, tilt:  8, blurb:"names on your disk" },
+          hue:"#00e676", size:1.00, ring:false, tilt:  8, glyph:"◆",
+          blurb:"names on your disk",
+          good:"fastest way to find a file when you half-remember the name" },
         { id:"contents",   label:"INSIDE",     engine:"ripgrep",    depth:"contents",
-          hue:"#2dd4bf", size:0.84, ring:true,  tilt:-14, blurb:"text within files" },
+          hue:"#2dd4bf", size:0.84, ring:true,  tilt:-14, glyph:"◈",
+          blurb:"text within files",
+          good:"when you remember a line but not which file it lives in" },
         { id:"media",      label:"MEDIA",      engine:"ffprobe",    depth:"media",
-          hue:"#a78bfa", size:0.76, ring:false, tilt: 20, blurb:"pictures, audio, video" },
+          hue:"#a78bfa", size:0.76, ring:false, tilt: 20, glyph:"▶",
+          blurb:"pictures, audio, video",
+          good:"finds media by name and reads the tags buried inside it" },
         { id:"duckduckgo", label:"DUCKDUCKGO", engine:"duckduckgo", depth:"web",
-          hue:"#fb923c", size:0.94, ring:true,  tilt:-22, blurb:"the open web" },
+          hue:"#fb923c", size:0.94, ring:true,  tilt:-22, glyph:"◍",
+          blurb:"the open web",
+          good:"summaries and related topics, no tracking, no key needed" },
         { id:"wikipedia",  label:"WIKIPEDIA",  engine:"wikipedia",  depth:"web",
-          hue:"#e2e8f0", size:0.70, ring:false, tilt: 12, blurb:"encyclopaedia" },
+          hue:"#e2e8f0", size:0.70, ring:false, tilt: 12, glyph:"❋",
+          blurb:"encyclopaedia",
+          good:"straight to the article when you want the facts, not opinions" },
         { id:"searx",      label:"SEARX",      engine:"searx",      depth:"web",
-          hue:"#38bdf8", size:0.66, ring:false, tilt:-6,  blurb:"your own instance" },
+          hue:"#38bdf8", size:0.66, ring:false, tilt:-6,  glyph:"⬡",
+          blurb:"your own instance",
+          good:"real aggregated results — point web_instance at your own Searx" },
         { id:"onion",      label:"ONION",      engine:"tor",        depth:"onion",
-          hue:"#ff6b6b", size:0.88, ring:true,  tilt: 26, blurb:"reachable over Tor" }
+          hue:"#ff6b6b", size:0.88, ring:true,  tilt: 26, glyph:"☍",
+          blurb:"reachable over Tor",
+          good:"SecureDrop, Ahmia and archives — asks before anything leaves" }
     ]
+
+    // Each planet keeps its own track and its own year, so nothing ever lines up.
+    readonly property var orbitR:   [0.30, 0.46, 0.62, 0.78, 0.92, 1.06, 1.20]
+    readonly property var orbitDur: [38000, 52000, 67000, 84000, 99000, 118000, 136000]
+    readonly property var orbitPh:  [0.00, 0.37, 0.62, 0.15, 0.83, 0.48, 0.71]
 
     function here(n) { return Qt.resolvedUrl(n).toString().replace("file://", "") }
     function send(b) {
@@ -176,7 +195,7 @@ ApplicationWindow {
     Item {
         anchors.fill: parent
         Repeater {
-            model: 170
+            model: 320
             delegate: Rectangle {
                 readonly property real dep: 0.2 + Math.random() * 0.8
                 width: dep < 0.55 ? 1 : 2; height: width; radius: width
@@ -192,6 +211,32 @@ ApplicationWindow {
                     running: dep > 0.85; loops: Animation.Infinite
                     NumberAnimation { to: 0.15; duration: 1400 + Math.random() * 2200 }
                     NumberAnimation { to: 0.55; duration: 1400 + Math.random() * 2200 }
+                }
+            }
+        }
+    }
+
+    // drifting movement lines — parallax streaks that sell the depth
+    Item {
+        anchors.fill: parent
+        Repeater {
+            model: 14
+            delegate: Rectangle {
+                readonly property real dep: 0.3 + Math.random() * 0.7
+                width: 40 + Math.random() * 150
+                height: 1
+                y: Math.random() * win.height
+                opacity: 0.05 + dep * 0.10
+                gradient: Gradient {
+                    orientation: Gradient.Horizontal
+                    GradientStop { position: 0.0; color: "#00000000" }
+                    GradientStop { position: 0.5; color: "#9fe8c4" }
+                    GradientStop { position: 1.0; color: "#00000000" }
+                }
+                NumberAnimation on x {
+                    loops: Animation.Infinite
+                    from: -220; to: win.width + 220
+                    duration: 9000 + Math.random() * 17000
                 }
             }
         }
@@ -309,29 +354,109 @@ ApplicationWindow {
         id: space
         anchors { top: header.bottom; left: parent.left
                   right: parent.right; bottom: parent.bottom
-                  bottomMargin: 34 }        // keep labels off the hint line
+                  bottomMargin: 34 }
         clip: true
-        property real cx: width / 2
-        property real cy: height / 2 - 44
-        property real rx: Math.min(width * 0.36, 470)
-        // Clamped so the bottom planet's label still fits above the edge.
-        property real ry: Math.min(rx * 0.44, (height / 2) - 150)
 
-        // orbit path, drawn once the planets take their places
-        Repeater {
-            model: 3
-            delegate: Rectangle {
+        property real cx: width / 2
+        property real cy: height / 2 - 10
+        property real unit: Math.min(width * 0.30, height * 0.40)
+
+        // orbits freeze while you are reading a card, so the popup does not
+        // wander off the planet it belongs to
+        property bool frozen: win.phase === "detail" || win.phase === "entering"
+        property real selCX: width / 2
+        property real selTop: height / 2
+
+        // ── the sun ──
+        Item {
+            id: sun
+            x: space.cx - width / 2
+            y: space.cy - height / 2
+            width: 92; height: 92
+            z: 5
+
+            Repeater {                                   // corona
+                model: 3
+                delegate: Rectangle {
+                    anchors.centerIn: parent
+                    width: sun.width * (1.5 + index * 0.75)
+                    height: width; radius: width / 2
+                    color: "#ffcf5c"
+                    opacity: 0.10 - index * 0.028
+                    SequentialAnimation on scale {
+                        loops: Animation.Infinite
+                        NumberAnimation { to: 1.07; duration: 2400 + index * 700
+                                          easing.type: Easing.InOutSine }
+                        NumberAnimation { to: 1.00; duration: 2400 + index * 700
+                                          easing.type: Easing.InOutSine }
+                    }
+                }
+            }
+            Rectangle {
+                anchors.fill: parent; radius: width / 2
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: "#fff3b0" }
+                    GradientStop { position: 0.55; color: "#ffb020" }
+                    GradientStop { position: 1.0; color: "#c05a00" }
+                }
+            }
+            Item {                                       // surface churn
+                anchors.fill: parent
+                NumberAnimation on rotation {
+                    loops: Animation.Infinite; from: 0; to: 360; duration: 46000
+                }
+                Repeater {
+                    model: 3
+                    delegate: Rectangle {
+                        width: sun.width * 1.4; height: sun.height * 0.07
+                        x: -sun.width * 0.2
+                        y: sun.height * (0.26 + index * 0.24)
+                        color: "#7a3b00"; opacity: 0.22; radius: 4
+                    }
+                }
+            }
+            Text {
                 anchors.centerIn: parent
-                width:  space.rx * 2 * (0.72 + index * 0.16)
-                height: space.ry * 2 * (0.72 + index * 0.16)
-                y: space.cy - space.cy
+                text: "◉"; color: "#3a1c00"; font.pixelSize: 26; opacity: 0.35
+            }
+        }
+
+        // ── decorative moons, close in and quick ──
+        Repeater {
+            model: 5
+            delegate: Item {
+                property real r: 78 + index * 17
+                property real t: 0
+                NumberAnimation on t {
+                    running: !space.frozen; loops: Animation.Infinite
+                    from: 0; to: 1; duration: 7000 + index * 2600
+                }
+                property real a: (t + index * 0.2) * 2 * Math.PI
+                x: space.cx + Math.cos(a) * r - 3
+                y: space.cy + Math.sin(a) * r * 0.42 - 3
+                z: 4
+                Rectangle {
+                    width: 5; height: 5; radius: 3
+                    color: "#ffd479"; opacity: 0.55
+                }
+            }
+        }
+
+        // ── one orbit line per planet ──
+        Repeater {
+            model: win.planets
+            delegate: Rectangle {
+                property real rr: space.unit * win.orbitR[index]
+                x: space.cx - rr; y: space.cy - rr * 0.42
+                width: rr * 2; height: rr * 0.84
                 radius: width / 2
                 color: "transparent"
-                border.color: win.accent
                 border.width: 1
-                opacity: (win.phase === "orbit" || win.phase === "detail") ? 0.05 : 0
-                Behavior on opacity { NumberAnimation { duration: 900 } }
-                transform: Translate { y: space.cy - space.height / 2 }
+                border.color: win.planetReady(modelData) ? modelData.hue : "#46545c"
+                opacity: win.selected === index ? 0.30
+                       : (win.planetReady(modelData) ? 0.11 : 0.05)
+                Behavior on opacity { NumberAnimation { duration: 400 } }
+                z: 1
             }
         }
 
@@ -343,71 +468,42 @@ ApplicationWindow {
                 property bool ready: win.planetReady(p)
                 property var hits: win.hitsFor(p)
                 property bool isSel: win.selected === index
-                property real d: 104 * p.size
-
-                width: d; height: d
+                property real d: 96 * p.size
                 z: isSel ? 20 : 10
 
-                property real ang: (index / win.planets.length) * 2 * Math.PI - Math.PI / 2
-                property real orbX: space.cx + Math.cos(ang) * space.rx - d / 2
-                property real orbY: space.cy + Math.sin(ang) * space.ry - d / 2
-                // A planet is not just the globe: the label block under it runs
-                // another ~72px. Spreading lanes to 84% of the height put that
-                // text past the clip edge, so the bottom ones looked chopped.
-                readonly property real labelRoom: 78
-                readonly property real laneTop: 12
-                readonly property real laneBot: Math.max(laneTop,
-                                                space.height - d - labelRoom)
-                // Evenly-spaced lanes read as a list, not a sky. A fixed jitter
-                // per planet breaks the ruling without making it jump about.
-                readonly property var laneMix: [0.06, 0.42, 0.20, 0.72, 0.33, 0.88, 0.56]
-                property real lane: laneTop + (laneBot - laneTop) * laneMix[index % 7]
-
-                states: [
-                    State {
-                        name: "orbit"
-                        when: win.phase === "orbit" || win.phase === "searching"
-                        PropertyChanges { target: pl; x: orbX; y: orbY; scale: 1; opacity: 1 }
-                    },
-                    State {
-                        name: "detail"
-                        when: win.phase === "detail" || win.phase === "entering"
-                        PropertyChanges {
-                            target: pl
-                            x: isSel ? space.width * 0.24 - d : orbX
-                            y: isSel ? space.cy - d : orbY
-                            scale: isSel ? 2.0 : 0.34
-                            opacity: isSel ? 1 : 0.14
-                        }
-                    }
-                ]
-                transitions: Transition {
-                    NumberAnimation {
-                        properties: "x,y,scale,opacity"
-                        duration: 1000
-                        easing.type: Easing.OutBack; easing.overshoot: 0.55
-                    }
-                }
-
-                // Drift is driven off a 0..1 clock with a RANDOM per-planet offset.
-                // Animating x directly meant every planet started at the same
-                // edge at the same moment, so they queued up in one column down
-                // the left and their labels landed on each other.
-                property real driftT: 0
-                readonly property real phaseOff: Math.random()
-                readonly property real driftDur: 26000 + Math.random() * 34000
-                NumberAnimation on driftT {
-                    running: win.phase === "idle"
+                // ── orbital position ──
+                property real rr: space.unit * win.orbitR[index]
+                property real t: 0
+                NumberAnimation on t {
+                    running: !space.frozen
                     loops: Animation.Infinite
-                    from: 0; to: 1; duration: pl.driftDur
+                    from: 0; to: 1; duration: win.orbitDur[index]
                 }
-                Binding {
-                    target: pl; property: "x"
-                    when: win.phase === "idle"
-                    value: ((pl.driftT + pl.phaseOff) % 1.0)
-                           * (space.width + pl.d * 2.2) - pl.d * 1.1
+                property real ang: (t + win.orbitPh[index]) * 2 * Math.PI
+                x: space.cx + Math.cos(ang) * rr - d / 2
+                y: space.cy + Math.sin(ang) * rr * 0.42 - d / 2
+
+                // the card needs to know where its planet actually is
+                Binding { target: space; property: "selCX"
+                          value: pl.x + pl.d / 2; when: pl.isSel }
+                Binding { target: space; property: "selTop"
+                          value: pl.y; when: pl.isSel }
+
+                // motion streak, trailing the direction of travel
+                Rectangle {
+                    z: -1
+                    anchors.verticalCenter: parent.verticalCenter
+                    x: -pl.d * 0.55
+                    width: pl.d * 0.75; height: 1
+                    rotation: -Math.sin(pl.ang) * 22
+                    gradient: Gradient {
+                        orientation: Gradient.Horizontal
+                        GradientStop { position: 0.0; color: "#00000000" }
+                        GradientStop { position: 1.0; color: pl.ready ? pl.p.hue : "#46545c" }
+                    }
+                    opacity: space.frozen ? 0 : 0.35
+                    Behavior on opacity { NumberAnimation { duration: 300 } }
                 }
-                Binding { target: pl; property: "y"; value: pl.lane; when: win.phase === "idle" }
 
                 Item {
                     id: globe
@@ -601,133 +697,134 @@ ApplicationWindow {
         }
     }
 
-    // ── result panel ─────────────────────────────────────────────────────────
-    Rectangle {
+    // ── the card, floating above whichever planet you picked ─────────────────
+    Item {
         id: detail
-        z: 30
-        anchors { right: parent.right; top: header.bottom; bottom: parent.bottom }
-        width: Math.min(win.width * 0.40, 640)
-        color: "#040910"
+        z: 60
         visible: opacity > 0.01
         opacity: (win.phase === "detail" || win.phase === "entering") ? 1 : 0
-        x: (win.phase === "detail" || win.phase === "entering") ? win.width - width : win.width
-        Behavior on x { NumberAnimation { duration: 520; easing.type: Easing.OutCubic } }
-        Behavior on opacity { NumberAnimation { duration: 320 } }
+        Behavior on opacity { NumberAnimation { duration: 220 } }
 
         property var p: win.selected >= 0 ? win.planets[win.selected] : null
         property var hits: p ? win.hitsFor(p) : []
+        readonly property int cw: 460
+        readonly property int ch: Math.min(430, 176 + Math.max(1, hits.length) * 46)
 
-        Rectangle { width: 1; height: parent.height; color: win.line }
+        width: cw; height: ch
+        // sit above the planet, but never off the edge of the screen
+        x: Math.max(16, Math.min(win.width - cw - 16,
+                    space.x + space.selCX - cw / 2))
+        y: Math.max(header.height + 8,
+                    space.y + space.selTop - ch - 18)
+        Behavior on x { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
+        Behavior on y { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
+
+        Rectangle {
+            anchors.fill: parent
+            radius: 10
+            color: "#050b11f5"
+            border.color: detail.p ? detail.p.hue : win.accent
+            border.width: 1
+        }
+        Rectangle {                                   // glow
+            anchors.fill: parent; anchors.margins: -3
+            radius: 13; color: "transparent"
+            border.color: detail.p ? detail.p.hue : win.accent
+            border.width: 1; opacity: 0.18
+        }
+        // little stem pointing down at the planet
+        Rectangle {
+            width: 10; height: 10; rotation: 45
+            color: "#050b11"
+            border.color: detail.p ? detail.p.hue : win.accent
+            border.width: 1
+            x: Math.max(14, Math.min(detail.cw - 24,
+                        space.x + space.selCX - detail.x - 5))
+            y: detail.ch - 5
+        }
 
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: win.s4
-            spacing: win.s3
+            anchors.margins: 16
+            spacing: 10
 
             RowLayout {
                 Layout.fillWidth: true
-                spacing: win.s2
-                Rectangle {
-                    width: 10; height: 10; radius: 5
-                    color: detail.p ? detail.p.hue : "#fff"
+                spacing: 12
+                Rectangle {                            // the engine's mark
+                    width: 42; height: 42; radius: 8
+                    color: "transparent"
+                    border.color: detail.p ? detail.p.hue : win.accent
+                    border.width: 1
+                    Text {
+                        anchors.centerIn: parent
+                        text: detail.p ? detail.p.glyph : "?"
+                        color: detail.p ? detail.p.hue : win.accent
+                        font.pixelSize: 20
+                    }
                 }
                 ColumnLayout {
-                    spacing: 2
+                    spacing: 1
                     Text {
                         text: detail.p ? detail.p.label : ""
                         color: win.ink
-                        font.family: "monospace"; font.pixelSize: 19
-                        font.letterSpacing: 3; font.bold: true
+                        font.family: "monospace"; font.pixelSize: 16
+                        font.letterSpacing: 2; font.bold: true
                     }
                     Text {
-                        text: detail.p ? detail.p.engine + " · " + detail.hits.length +
-                              (detail.hits.length === 1 ? " result" : " results") : ""
-                        color: win.inkFar
+                        text: detail.p ? (detail.p.engine + "  ·  " + detail.hits.length +
+                              (detail.hits.length === 1 ? " result" : " results")) : ""
+                        color: detail.p ? detail.p.hue : win.inkDim
                         font.family: "monospace"; font.pixelSize: 10
                     }
                 }
                 Item { Layout.fillWidth: true }
-                Rectangle {
-                    width: 30; height: 30; radius: 15
-                    color: cl.containsMouse ? win.line : "transparent"
-                    border.color: win.line
-                    Text { anchors.centerIn: parent; text: "✕"; color: win.inkDim
-                           font.pixelSize: 12 }
-                    MouseArea {
-                        id: cl; anchors.fill: parent; hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: { win.phase = "orbit"; win.selected = -1 }
-                    }
+                Text {
+                    text: "esc"
+                    color: win.inkFar
+                    font.family: "monospace"; font.pixelSize: 10
                 }
             }
 
-            Rectangle {
+            Text {                                     // what it is good for
                 Layout.fillWidth: true
-                height: 46
-                radius: 23
-                color: ent.containsMouse ? (detail.p ? detail.p.hue : win.accent) : "transparent"
-                border.color: detail.p ? detail.p.hue : win.accent
-                border.width: 1
-                opacity: detail.hits.length ? 1 : 0.3
-                Behavior on color { ColorAnimation { duration: 180 } }
-                Text {
-                    anchors.centerIn: parent
-                    text: "◈   E N T E R   T H I S   P L A N E T   ◈"
-                    color: ent.containsMouse ? "#03060c" : (detail.p ? detail.p.hue : win.accent)
-                    font.family: "monospace"; font.pixelSize: 11; font.bold: true
-                }
-                MouseArea {
-                    id: ent
-                    anchors.fill: parent; hoverEnabled: true
-                    enabled: detail.hits.length > 0
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        var h = detail.hits[0]
-                        matrix.target = h.url || h.path || ""
-                        matrix.viaTor = !!h.needs_tor
-                        matrix.start()
-                    }
-                }
+                text: detail.p ? detail.p.good : ""
+                color: win.inkFar
+                font.family: "monospace"; font.pixelSize: 10
+                wrapMode: Text.Wrap
             }
+
+            Rectangle { Layout.fillWidth: true; height: 1; color: win.line }
 
             ScrollView {
                 Layout.fillWidth: true; Layout.fillHeight: true
                 clip: true
                 ColumnLayout {
-                    width: detail.width - win.s4 * 2
-                    spacing: win.s1
+                    width: detail.cw - 32
+                    spacing: 2
                     Repeater {
                         model: detail.hits
                         delegate: Rectangle {
                             Layout.fillWidth: true
-                            height: body.implicitHeight + win.s2 * 2
-                            color: (rh.containsMouse || win.resIdx === index)
-                                   ? "#07131a" : "transparent"
+                            height: rb.implicitHeight + 12
                             radius: 4
-                            Behavior on color { ColorAnimation { duration: 140 } }
-
-                            Rectangle {                     // accent spine
-                                width: 2; height: parent.height - 10
+                            color: (rh.containsMouse || win.resIdx === index)
+                                   ? "#0b1a22" : "transparent"
+                            Rectangle {
+                                width: 2; height: parent.height - 8; x: 0; radius: 1
                                 anchors.verticalCenter: parent.verticalCenter
-                                x: 0
-                                radius: 1
                                 color: detail.p ? detail.p.hue : win.accent
-                                opacity: (rh.containsMouse || win.resIdx === index)
-                                         ? 0.95 : 0.25
-                                Behavior on opacity { NumberAnimation { duration: 140 } }
+                                opacity: (rh.containsMouse || win.resIdx === index) ? 1 : 0.2
                             }
-
                             Column {
-                                id: body
-                                x: win.s2; y: win.s2
-                                width: parent.width - win.s2 * 2
-                                spacing: 3
+                                id: rb
+                                x: 10; y: 6; width: parent.width - 20; spacing: 2
                                 Text {
                                     width: parent.width
                                     text: modelData.title ? modelData.title
                                           : (modelData.name || modelData.path || "")
                                     color: win.ink
-                                    font.family: "monospace"; font.pixelSize: 12
+                                    font.family: "monospace"; font.pixelSize: 11
                                     elide: Text.ElideRight
                                 }
                                 Text {
@@ -736,18 +833,9 @@ ApplicationWindow {
                                     text: modelData.excerpt ? modelData.excerpt
                                           : (modelData.url || modelData.path || "")
                                     color: win.inkDim
-                                    font.family: "monospace"; font.pixelSize: 10
-                                    wrapMode: Text.Wrap
-                                    maximumLineCount: 2
-                                    elide: Text.ElideRight
-                                }
-                                Text {
-                                    width: parent.width
-                                    visible: !!modelData.url
-                                    text: modelData.url || ""
-                                    color: win.inkFar
                                     font.family: "monospace"; font.pixelSize: 9
                                     elide: Text.ElideMiddle
+                                    maximumLineCount: 1
                                 }
                             }
                             MouseArea {
@@ -755,6 +843,7 @@ ApplicationWindow {
                                 anchors.fill: parent; hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: {
+                                    win.resIdx = index
                                     matrix.target = modelData.url || modelData.path || ""
                                     matrix.viaTor = !!modelData.needs_tor
                                     matrix.start()
@@ -762,6 +851,27 @@ ApplicationWindow {
                             }
                         }
                     }
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                height: 34; radius: 17
+                color: ent.containsMouse ? (detail.p ? detail.p.hue : win.accent) : "transparent"
+                border.color: detail.p ? detail.p.hue : win.accent
+                opacity: detail.hits.length ? 1 : 0.3
+                Text {
+                    anchors.centerIn: parent
+                    text: "◈  E N T E R  ◈"
+                    color: ent.containsMouse ? "#03060c" : (detail.p ? detail.p.hue : win.accent)
+                    font.family: "monospace"; font.pixelSize: 10; font.bold: true
+                }
+                MouseArea {
+                    id: ent
+                    anchors.fill: parent; hoverEnabled: true
+                    enabled: detail.hits.length > 0
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: win.enterResult()
                 }
             }
         }

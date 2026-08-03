@@ -3,7 +3,7 @@ root=~
 
 # How many results per depth
 # @range 5-200
-limit=40
+limit=60
 
 # Your own SearxNG instance, if you run one — it gives far better web results
 # than the fallback. Leave it blank to use DuckDuckGo's and Wikipedia's open
