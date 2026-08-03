@@ -41,7 +41,7 @@ reproduces the system. Base = CachyOS.
 
 ## 4. Identity
 - `os-release`: NAME/PRETTY_NAME=BITE-OS, ID=bite-os, codename `dedsec`,
-  HOME_URL tiktok.com/@glitchbite404, ANSI green.
+  HOME_URL tiktok.com/@glitch_bite404, ANSI green.
 - **`BUILD_ID=rolling` → change to a real version `1.0` for the ISO.**
 
 ## 5. Bugs/leaks to fix before ISO

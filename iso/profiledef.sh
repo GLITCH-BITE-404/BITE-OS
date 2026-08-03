@@ -6,7 +6,7 @@
 
 iso_name="bite-os"
 iso_label="BITE_OS_$(date --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y%m)"
-iso_publisher="BITE-OS <https://tiktok.com/@glitchbite404>"
+iso_publisher="BITE-OS <https://tiktok.com/@glitch_bite404>"
 iso_application="BITE-OS Live / Install Medium"
 iso_version="1.0"
 install_dir="arch"

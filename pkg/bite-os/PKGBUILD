@@ -13,7 +13,7 @@ pkgver=1.1
 pkgrel=17
 pkgdesc="BITE-OS — identity, branding, rice system and tooling (CachyOS-based)"
 arch=('any')
-url="https://tiktok.com/@glitchbite404"
+url="https://tiktok.com/@glitch_bite404"
 license=('GPL3')
 
 # Installing bite-os pulls the entire desktop:

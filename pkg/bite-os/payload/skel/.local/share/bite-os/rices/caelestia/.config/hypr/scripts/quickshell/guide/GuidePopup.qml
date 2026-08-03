@@ -1043,7 +1043,7 @@ Item {
                             anchors.fill: parent
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: Quickshell.execDetached(["xdg-open", "https://tiktok.com/@glitchbite404"])
+                            onClicked: Quickshell.execDetached(["xdg-open", "https://tiktok.com/@glitch_bite404"])
                         }
                     }
 
