@@ -1,12 +1,11 @@
 // bitedig — search as a solar system.
 //
-// Fullscreen. Query goes in at the top; space is underneath. Each planet is a
-// search engine. Idle, they drift past. Search, and they swirl into orbit with
-// their result counts. Click one to see what it found; ENTER THIS PLANET runs
-// the matrix sequence and opens it for real.
+// Fullscreen. Query on top, space beneath. Every engine is a planet: they drift
+// while idle, swirl into orbit on a search, and turn the whole time. Click one
+// to read what it found. ENTER runs the sequence and opens it for real.
 //
-// search.py does the digging — QML cannot start a process, so the two talk
-// through this directory. The launcher cd's here, hence the relative paths.
+// search.py does the digging. QML cannot start a process, so the two talk
+// through this directory — the launcher cd's here, hence relative paths.
 
 import QtQuick
 import QtQuick.Window
@@ -18,15 +17,20 @@ ApplicationWindow {
     visible: true
     visibility: Window.FullScreen
     title: "bitedig"
-    color: "#02040a"
+    color: "#03060c"
 
+    // one type scale and one spacing scale, used everywhere
+    readonly property int  s1: 6
+    readonly property int  s2: 12
+    readonly property int  s3: 20
+    readonly property int  s4: 34
+    readonly property color ink:    "#dceee4"
+    readonly property color inkDim: "#7e948a"
+    readonly property color inkFar: "#41544c"
+    readonly property color line:   "#132720"
     readonly property color accent: "#00e676"
-    readonly property color cyan:   "#22d3ee"
-    readonly property color warn:   "#ffb300"
-    readonly property color dim:    "#3d4d46"
 
-    // idle · searching · orbit · detail · entering
-    property string phase: "idle"
+    property string phase: "idle"          // idle · searching · orbit · detail · entering
     property int  seq: 0
     property int  lastSeen: -1
     property var  engines: []
@@ -34,72 +38,65 @@ ApplicationWindow {
     property int  selected: -1
     property string note: ""
     property string root: "~"
+    property bool searxConfigured: false
 
-    // Each planet is one engine. The web depth comes back tagged per engine, so
-    // duckduckgo and wikipedia get their own worlds rather than sharing one.
     readonly property var planets: [
-        { id:"names",      label:"FILES",      engine:"fd",         depth:"names",    hue:"#00e676", size:1.00, ring:false },
-        { id:"contents",   label:"INSIDE",     engine:"ripgrep",    depth:"contents", hue:"#22d3ee", size:0.86, ring:true  },
-        { id:"media",      label:"MEDIA",      engine:"ffprobe",    depth:"media",    hue:"#a78bfa", size:0.78, ring:false },
-        { id:"duckduckgo", label:"DUCKDUCKGO", engine:"duckduckgo", depth:"web",      hue:"#f97316", size:0.92, ring:true  },
-        { id:"wikipedia",  label:"WIKIPEDIA",  engine:"wikipedia",  depth:"web",      hue:"#e2e8f0", size:0.72, ring:false },
-        { id:"searx",      label:"SEARX",      engine:"searx",      depth:"web",      hue:"#38bdf8", size:0.68, ring:false },
-        { id:"onion",      label:"ONION",      engine:"tor",        depth:"onion",    hue:"#ff5252", size:0.88, ring:true  }
+        { id:"names",      label:"FILES",      engine:"fd",         depth:"names",
+          hue:"#00e676", size:1.00, ring:false, tilt:  8, blurb:"names on your disk" },
+        { id:"contents",   label:"INSIDE",     engine:"ripgrep",    depth:"contents",
+          hue:"#2dd4bf", size:0.84, ring:true,  tilt:-14, blurb:"text within files" },
+        { id:"media",      label:"MEDIA",      engine:"ffprobe",    depth:"media",
+          hue:"#a78bfa", size:0.76, ring:false, tilt: 20, blurb:"pictures, audio, video" },
+        { id:"duckduckgo", label:"DUCKDUCKGO", engine:"duckduckgo", depth:"web",
+          hue:"#fb923c", size:0.94, ring:true,  tilt:-22, blurb:"the open web" },
+        { id:"wikipedia",  label:"WIKIPEDIA",  engine:"wikipedia",  depth:"web",
+          hue:"#e2e8f0", size:0.70, ring:false, tilt: 12, blurb:"encyclopaedia" },
+        { id:"searx",      label:"SEARX",      engine:"searx",      depth:"web",
+          hue:"#38bdf8", size:0.66, ring:false, tilt:-6,  blurb:"your own instance" },
+        { id:"onion",      label:"ONION",      engine:"tor",        depth:"onion",
+          hue:"#ff6b6b", size:0.88, ring:true,  tilt: 26, blurb:"reachable over Tor" }
     ]
 
     function here(n) { return Qt.resolvedUrl(n).toString().replace("file://", "") }
-
-    function send(body) {
-        seq += 1
-        body.seq = seq
+    function send(b) {
+        seq += 1; b.seq = seq
         var x = new XMLHttpRequest()
         x.open("PUT", "file://" + here("request.json"))
-        x.send(JSON.stringify(body))
+        x.send(JSON.stringify(b))
     }
-
-    function depthReady(depth) {
+    function depthReady(d) {
         for (var i = 0; i < engines.length; i++)
-            if (engines[i].depth === depth) return engines[i].ready
+            if (engines[i].depth === d) return engines[i].ready
         return false
     }
-    function depthPackages(depth) {
+    function depthPackages(d) {
         for (var i = 0; i < engines.length; i++)
-            if (engines[i].depth === depth) return engines[i].packages || []
+            if (engines[i].depth === d) return engines[i].packages || []
         return []
     }
-
-    // A planet is alive if its depth's engine exists. searx only counts when
-    // you have actually pointed it at an instance.
     function planetReady(p) {
         if (p.id === "searx") return searxConfigured && depthReady("web")
         return depthReady(p.depth)
     }
-    property bool searxConfigured: false
-
     function hitsFor(p) {
-        var block = results[p.depth]
-        if (!block) return []
-        var all = block.hits || []
+        var b = results[p.depth]; if (!b) return []
+        var all = b.hits || []
         if (p.depth !== "web") return all
         var out = []
         for (var i = 0; i < all.length; i++)
             if ((all[i].engine || "") === p.engine) out.push(all[i])
         return out
     }
-
     function dig() {
-        if (!query.text) { note = "type something first"; return }
-        var ds = []
-        var seen = {}
+        if (!query.text) { note = "type something first"; shake.restart(); return }
+        var ds = [], seen = {}
         for (var i = 0; i < planets.length; i++) {
             var p = planets[i]
             if (planetReady(p) && !seen[p.depth]) { ds.push(p.depth); seen[p.depth] = true }
         }
-        if (ds.length === 0) { note = "no engines available — install one below"; return }
-        results = ({})
-        selected = -1
-        phase = "searching"
-        note = "scanning " + ds.length + " systems…"
+        if (!ds.length) { note = "no engines yet — install one below"; return }
+        results = ({}); selected = -1; phase = "searching"
+        note = "scanning " + ds.length + " systems"
         send({ q: query.text, depths: ds, root: root, limit: 40 })
     }
 
@@ -112,12 +109,11 @@ ApplicationWindow {
             x.open("GET", "file://" + here("status.json"))
             x.onreadystatechange = function () {
                 if (x.readyState !== XMLHttpRequest.DONE || !x.responseText) return
-                var s
-                try { s = JSON.parse(x.responseText) } catch (e) { return }
+                var s; try { s = JSON.parse(x.responseText) } catch (e) { return }
                 if (s.seq === undefined || s.seq === win.lastSeen) return
                 win.lastSeen = s.seq
                 if (s.engines) win.engines = s.engines
-                if (s.opened) { win.note = "opened " + s.opened; return }
+                if (s.opened)    { win.note = "opened " + s.opened; return }
                 if (s.installed) { win.note = "installed " + s.installed.join(" "); return }
                 if (!s.ok) {
                     win.note = s.error || "that did not work"
@@ -128,7 +124,7 @@ ApplicationWindow {
                     win.results = s.depths
                     var n = 0
                     for (var k in s.depths) n += (s.depths[k].hits || []).length
-                    win.note = n + " result" + (n === 1 ? "" : "s") + " · " + s.took + "s"
+                    win.note = n + (n === 1 ? " result" : " results") + "  ·  " + s.took + "s"
                     win.phase = "orbit"
                 }
             }
@@ -136,335 +132,382 @@ ApplicationWindow {
         }
     }
 
-    // ── starfield ────────────────────────────────────────────────────────────
+    // ── deep space ───────────────────────────────────────────────────────────
+    Rectangle {
+        anchors.fill: parent
+        gradient: Gradient {
+            GradientStop { position: 0.00; color: "#03060c" }
+            GradientStop { position: 0.45; color: "#061019" }
+            GradientStop { position: 1.00; color: "#02040a" }
+        }
+    }
     Item {
         anchors.fill: parent
         Repeater {
-            model: 140
+            model: 170
             delegate: Rectangle {
-                property real depthF: 0.25 + Math.random() * 0.75
-                width: depthF < 0.5 ? 1 : 2
-                height: width
-                radius: width
-                color: "#ffffff"
-                opacity: 0.10 + depthF * 0.35
+                readonly property real dep: 0.2 + Math.random() * 0.8
+                width: dep < 0.55 ? 1 : 2; height: width; radius: width
+                color: dep > 0.9 ? "#bff5dc" : "#ffffff"
+                opacity: 0.06 + dep * 0.4
                 y: Math.random() * win.height
-                x: Math.random() * win.width
                 NumberAnimation on x {
                     loops: Animation.Infinite
-                    from: parent ? -10 : 0
-                    to: win.width + 10
-                    duration: 26000 + Math.random() * 40000
+                    from: -6; to: win.width + 6
+                    duration: 30000 + Math.random() * 55000
+                }
+                SequentialAnimation on opacity {
+                    running: dep > 0.85; loops: Animation.Infinite
+                    NumberAnimation { to: 0.15; duration: 1400 + Math.random() * 2200 }
+                    NumberAnimation { to: 0.55; duration: 1400 + Math.random() * 2200 }
                 }
             }
         }
-        // a slow nebula wash so space is not flat black
-        Rectangle {
-            anchors.fill: parent
-            gradient: Gradient {
-                GradientStop { position: 0.0; color: "#02040a" }
-                GradientStop { position: 0.55; color: "#050d14" }
-                GradientStop { position: 1.0; color: "#02040a" }
-            }
-            opacity: 0.7
-        }
     }
 
-    // ── the search bar, always on top ────────────────────────────────────────
+    // ── header ───────────────────────────────────────────────────────────────
     Item {
         id: header
         anchors { top: parent.top; left: parent.left; right: parent.right }
-        height: 150
+        height: 172
         z: 40
 
         ColumnLayout {
             anchors.centerIn: parent
-            width: Math.min(win.width * 0.62, 900)
-            spacing: 10
+            width: Math.min(win.width * 0.58, 860)
+            spacing: win.s2
 
             Text {
                 Layout.alignment: Qt.AlignHCenter
-                text: "b i t e d i g"
+                text: "B I T E D I G"
                 color: win.accent
-                font.family: "monospace"; font.pixelSize: 15; font.letterSpacing: 6
-                opacity: 0.85
+                font.family: "monospace"; font.pixelSize: 13
+                font.letterSpacing: 9; font.bold: true
+                opacity: 0.9
             }
 
             Rectangle {
+                id: bar
                 Layout.fillWidth: true
-                height: 54
-                radius: 27
-                color: "#070d12"
-                border.color: query.activeFocus ? win.accent : "#16241d"
-                border.width: query.activeFocus ? 2 : 1
+                height: 58
+                radius: height / 2
+                color: "#060d13"
+                border.width: 1
+                border.color: query.activeFocus ? win.accent : win.line
 
-                Rectangle {                       // focus glow
-                    anchors.fill: parent; radius: parent.radius
+                Rectangle {                              // focus halo
+                    anchors.centerIn: parent
+                    width: parent.width + 14; height: parent.height + 14
+                    radius: height / 2
                     color: "transparent"
                     border.color: win.accent; border.width: 1
-                    opacity: query.activeFocus ? 0.25 : 0
-                    scale: query.activeFocus ? 1.03 : 1
-                    Behavior on scale { NumberAnimation { duration: 220 } }
-                    Behavior on opacity { NumberAnimation { duration: 220 } }
+                    opacity: query.activeFocus ? 0.18 : 0
+                    Behavior on opacity { NumberAnimation { duration: 260 } }
                 }
 
                 RowLayout {
                     anchors.fill: parent
-                    anchors.leftMargin: 22; anchors.rightMargin: 8
-                    spacing: 10
+                    anchors.leftMargin: win.s3; anchors.rightMargin: win.s1
+                    spacing: win.s2
+
                     Text {
-                        text: "⌕"
-                        color: win.accent; font.pixelSize: 22
+                        text: "⌕"; color: win.accent; font.pixelSize: 24
+                        opacity: query.activeFocus ? 1 : 0.55
+                        Behavior on opacity { NumberAnimation { duration: 200 } }
                     }
                     TextField {
                         id: query
                         Layout.fillWidth: true
                         background: null
-                        color: "#dff3e8"
-                        placeholderText: "what are you looking for"
-                        placeholderTextColor: win.dim
-                        font.family: "monospace"; font.pixelSize: 17
+                        color: win.ink
+                        selectionColor: win.accent
+                        selectedTextColor: "#03060c"
+                        placeholderText: "search everything"
+                        placeholderTextColor: win.inkFar
+                        font.family: "monospace"; font.pixelSize: 18
                         onAccepted: win.dig()
+                        focus: true
                     }
-                    Button {
-                        text: win.phase === "searching" ? "…" : "DIG"
-                        enabled: win.phase !== "searching"
-                        onClicked: win.dig()
+                    Rectangle {
+                        Layout.preferredWidth: 92; Layout.preferredHeight: 42
+                        radius: 21
+                        color: digMouse.containsMouse ? win.accent : "transparent"
+                        border.color: win.accent; border.width: 1
+                        opacity: win.phase === "searching" ? 0.4 : 1
+                        Behavior on color { ColorAnimation { duration: 160 } }
+                        Text {
+                            anchors.centerIn: parent
+                            text: win.phase === "searching" ? "···" : "DIG"
+                            color: digMouse.containsMouse ? "#03060c" : win.accent
+                            font.family: "monospace"; font.pixelSize: 13
+                            font.bold: true; font.letterSpacing: 2
+                        }
+                        MouseArea {
+                            id: digMouse
+                            anchors.fill: parent; hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            enabled: win.phase !== "searching"
+                            onClicked: win.dig()
+                        }
                     }
+                }
+
+                SequentialAnimation on x {
+                    id: shake; running: false
+                    NumberAnimation { to: bar.x - 7; duration: 55 }
+                    NumberAnimation { to: bar.x + 7; duration: 55 }
+                    NumberAnimation { to: bar.x;     duration: 55 }
                 }
             }
 
             Text {
                 Layout.alignment: Qt.AlignHCenter
-                text: win.note
-                color: win.phase === "searching" ? win.accent : win.dim
-                font.family: "monospace"; font.pixelSize: 11
+                text: win.note || (win.phase === "idle"
+                      ? "each planet is a different engine"
+                      : "")
+                color: win.phase === "searching" ? win.accent : win.inkFar
+                font.family: "monospace"; font.pixelSize: 11; font.letterSpacing: 0.6
+                Behavior on color { ColorAnimation { duration: 250 } }
             }
         }
     }
 
-    // ── space: the planets ───────────────────────────────────────────────────
+    // ── space ────────────────────────────────────────────────────────────────
     Item {
         id: space
         anchors { top: header.bottom; left: parent.left
                   right: parent.right; bottom: parent.bottom }
         clip: true
-
         property real cx: width / 2
-        property real cy: height / 2 - 20
-        property real orbitR: Math.min(width, height) * 0.33
+        property real cy: height / 2 - 26
+        property real rx: Math.min(width * 0.36, 470)
+        property real ry: rx * 0.44
+
+        // orbit path, drawn once the planets take their places
+        Repeater {
+            model: 3
+            delegate: Rectangle {
+                anchors.centerIn: parent
+                width:  space.rx * 2 * (0.72 + index * 0.16)
+                height: space.ry * 2 * (0.72 + index * 0.16)
+                y: space.cy - space.cy
+                radius: width / 2
+                color: "transparent"
+                border.color: win.accent
+                border.width: 1
+                opacity: (win.phase === "orbit" || win.phase === "detail") ? 0.05 : 0
+                Behavior on opacity { NumberAnimation { duration: 900 } }
+                transform: Translate { y: space.cy - space.height / 2 }
+            }
+        }
 
         Repeater {
-            id: planetRep
             model: win.planets
-
             delegate: Item {
-                id: planetItem
+                id: pl
                 property var p: modelData
                 property bool ready: win.planetReady(p)
                 property var hits: win.hitsFor(p)
                 property bool isSel: win.selected === index
-                property real baseSize: 92 * p.size
+                property real d: 104 * p.size
 
-                width: baseSize; height: baseSize
+                width: d; height: d
+                z: isSel ? 20 : 10
 
-                // Idle: drift across space on your own lane.
-                // Orbit: swirl into a ring around the centre.
-                // Detail: the chosen one slides left, the rest shrink away.
-                property real idleY: space.height * (0.18 + 0.64 * (index / (win.planets.length - 1)))
                 property real ang: (index / win.planets.length) * 2 * Math.PI - Math.PI / 2
-                property real orbX: space.cx + Math.cos(ang) * space.orbitR - baseSize / 2
-                property real orbY: space.cy + Math.sin(ang) * space.orbitR * 0.62 - baseSize / 2
+                property real orbX: space.cx + Math.cos(ang) * space.rx - d / 2
+                property real orbY: space.cy + Math.sin(ang) * space.ry - d / 2
+                property real lane: space.height * (0.16 + 0.68 * (index / (win.planets.length - 1)))
 
                 states: [
                     State {
-                        name: "orbit"; when: win.phase === "orbit" || win.phase === "searching"
-                        PropertyChanges { target: planetItem; x: orbX; y: orbY; scale: 1; opacity: 1 }
+                        name: "orbit"
+                        when: win.phase === "orbit" || win.phase === "searching"
+                        PropertyChanges { target: pl; x: orbX; y: orbY; scale: 1; opacity: 1 }
                     },
                     State {
-                        name: "detail"; when: win.phase === "detail" || win.phase === "entering"
+                        name: "detail"
+                        when: win.phase === "detail" || win.phase === "entering"
                         PropertyChanges {
-                            target: planetItem
-                            x: isSel ? space.width * 0.22 - baseSize * 0.9 : orbX
-                            y: isSel ? space.cy - baseSize * 0.9 : orbY
-                            scale: isSel ? 1.8 : 0.42
-                            opacity: isSel ? 1 : 0.20
+                            target: pl
+                            x: isSel ? space.width * 0.24 - d : orbX
+                            y: isSel ? space.cy - d : orbY
+                            scale: isSel ? 2.0 : 0.34
+                            opacity: isSel ? 1 : 0.14
                         }
                     }
                 ]
                 transitions: Transition {
                     NumberAnimation {
                         properties: "x,y,scale,opacity"
-                        duration: 900; easing.type: Easing.OutBack; easing.overshoot: 0.7
+                        duration: 1000
+                        easing.type: Easing.OutBack; easing.overshoot: 0.55
                     }
                 }
 
-                // drifting, only while idle
                 SequentialAnimation on x {
-                    running: win.phase === "idle"
-                    loops: Animation.Infinite
+                    running: win.phase === "idle"; loops: Animation.Infinite
                     NumberAnimation {
-                        from: -planetItem.baseSize
-                        to: space.width + planetItem.baseSize
-                        duration: 30000 + index * 5200
+                        from: -pl.d * 1.4; to: space.width + pl.d * 1.4
+                        duration: 34000 + index * 6000
                     }
                 }
-                Binding {
-                    target: planetItem; property: "y"
-                    value: planetItem.idleY
-                    when: win.phase === "idle"
-                }
+                Binding { target: pl; property: "y"; value: pl.lane; when: win.phase === "idle" }
 
-                // ── the planet itself ──
                 Item {
-                    id: body
+                    id: globe
                     anchors.centerIn: parent
-                    width: planetItem.baseSize; height: planetItem.baseSize
-                    opacity: planetItem.ready ? 1 : 0.30
+                    width: pl.d; height: pl.d
+                    opacity: pl.ready ? 1 : 0.26
+                    Behavior on opacity { NumberAnimation { duration: 300 } }
 
-                    Rectangle {                       // glow
+                    Rectangle {                          // atmosphere
                         anchors.centerIn: parent
-                        width: parent.width * 1.5; height: parent.height * 1.5
-                        radius: width / 2
-                        color: planetItem.ready ? planetItem.p.hue : "#7a8a82"
-                        opacity: planetItem.isSel ? 0.20 : 0.09
-                        Behavior on opacity { NumberAnimation { duration: 300 } }
+                        width: parent.width * 1.42; height: width; radius: width / 2
+                        color: pl.p.hue
+                        opacity: pl.isSel ? 0.16 : (hov.containsMouse ? 0.12 : 0.06)
+                        Behavior on opacity { NumberAnimation { duration: 260 } }
                     }
 
-                    Rectangle {                       // the sphere
+                    Rectangle {                          // body
                         id: sphere
                         anchors.fill: parent
                         radius: width / 2
                         clip: true
-                        color: "#05080b"
-                        border.color: planetItem.ready ? planetItem.p.hue : "#5c6b64"
-                        border.width: planetItem.isSel ? 2 : 1
+                        color: "#04070b"
+                        border.color: pl.p.hue
+                        border.width: pl.isSel ? 2 : 1
 
-                        // banded surface, rotating — this is the spin
-                        Item {
-                            id: surface
+                        Item {                           // rotating bands = spin
                             anchors.fill: parent
                             NumberAnimation on rotation {
                                 running: true; loops: Animation.Infinite
                                 from: 0; to: 360
-                                duration: 9000 + index * 2400
+                                duration: 14000 + index * 3600
                             }
                             Repeater {
-                                model: 7
+                                model: 9
                                 delegate: Rectangle {
-                                    width: sphere.width * 1.6
-                                    height: sphere.height / 9
-                                    x: -sphere.width * 0.3
-                                    y: index * (sphere.height / 7)
-                                    color: planetItem.ready ? planetItem.p.hue : "#6b7a73"
-                                    opacity: (index % 2 === 0) ? 0.20 : 0.09
+                                    width: sphere.width * 1.7
+                                    height: sphere.height / 11
+                                    x: -sphere.width * 0.35
+                                    y: index * (sphere.height / 9)
+                                    color: pl.p.hue
+                                    opacity: index % 3 === 0 ? 0.26
+                                           : (index % 2 === 0 ? 0.14 : 0.07)
                                 }
                             }
                         }
 
-                        // terminator, so it reads as a sphere and not a disc
-                        Rectangle {
-                            anchors.fill: parent
-                            radius: width / 2
+                        Rectangle {                      // terminator
+                            anchors.fill: parent; radius: width / 2
                             gradient: Gradient {
                                 orientation: Gradient.Horizontal
-                                GradientStop { position: 0.0; color: "#00000000" }
-                                GradientStop { position: 0.55; color: "#00000055" }
-                                GradientStop { position: 1.0; color: "#000000cc" }
+                                GradientStop { position: 0.00; color: "#ffffff14" }
+                                GradientStop { position: 0.38; color: "#00000000" }
+                                GradientStop { position: 0.72; color: "#00000066" }
+                                GradientStop { position: 1.00; color: "#000000d8" }
                             }
                         }
                     }
 
-                    Rectangle {                       // ring
-                        visible: planetItem.p.ring
+                    Rectangle {                          // ring
+                        visible: pl.p.ring
                         anchors.centerIn: parent
-                        width: parent.width * 1.75
-                        height: parent.height * 0.34
+                        width: parent.width * 1.9; height: parent.height * 0.30
                         radius: height / 2
                         color: "transparent"
-                        border.color: planetItem.ready ? planetItem.p.hue : "#5c6b64"
-                        border.width: 1
-                        opacity: 0.55
-                        rotation: -18
+                        border.color: pl.p.hue; border.width: 1
+                        opacity: 0.45
+                        rotation: pl.p.tilt
                     }
 
-                    // result count badge
-                    Rectangle {
-                        visible: win.phase !== "idle" && planetItem.hits.length > 0
-                        anchors { top: parent.top; right: parent.right }
-                        width: Math.max(22, countTxt.width + 12); height: 22
-                        radius: 11
-                        color: "#05080b"
-                        border.color: planetItem.p.hue
+                    Rectangle {                          // count
+                        visible: win.phase !== "idle" && pl.hits.length > 0
+                        anchors { top: parent.top; right: parent.right; margins: -2 }
+                        width: Math.max(24, cnt.width + 14); height: 24; radius: 12
+                        color: "#04070b"
+                        border.color: pl.p.hue; border.width: 1
                         Text {
-                            id: countTxt
-                            anchors.centerIn: parent
-                            text: planetItem.hits.length
-                            color: planetItem.p.hue
+                            id: cnt; anchors.centerIn: parent
+                            text: pl.hits.length
+                            color: pl.p.hue
                             font.family: "monospace"; font.pixelSize: 11; font.bold: true
                         }
                     }
                 }
 
-                // label under it
                 Column {
-                    anchors { top: body.bottom; topMargin: 8
+                    anchors { top: globe.bottom; topMargin: win.s2
                               horizontalCenter: parent.horizontalCenter }
-                    spacing: 1
-                    visible: win.phase !== "entering" || planetItem.isSel
+                    spacing: 3
+                    opacity: win.phase === "entering" && !pl.isSel ? 0 : 1
+                    Behavior on opacity { NumberAnimation { duration: 300 } }
+
                     Text {
                         anchors.horizontalCenter: parent.horizontalCenter
-                        text: planetItem.p.label
-                        color: planetItem.ready ? "#cfe6d9" : "#5c6b64"
-                        font.family: "monospace"; font.pixelSize: 10; font.letterSpacing: 1.5
+                        text: pl.p.label
+                        color: pl.ready ? win.ink : win.inkFar
+                        font.family: "monospace"; font.pixelSize: 11
+                        font.letterSpacing: 2; font.bold: true
                     }
                     Text {
                         anchors.horizontalCenter: parent.horizontalCenter
-                        text: planetItem.ready ? planetItem.p.engine
-                                               : "needs " + win.depthPackages(planetItem.p.depth).join(" ")
-                        color: planetItem.ready ? win.dim : win.warn
+                        text: pl.ready ? pl.p.blurb : "needs " + win.depthPackages(pl.p.depth).join(" ")
+                        color: pl.ready ? win.inkFar : "#c98a2e"
                         font.family: "monospace"; font.pixelSize: 9
                     }
-                    Button {
+                    Rectangle {
+                        visible: !pl.ready && pl.p.id !== "searx"
                         anchors.horizontalCenter: parent.horizontalCenter
-                        visible: !planetItem.ready && planetItem.p.id !== "searx"
-                        text: "install"
-                        onClicked: {
-                            win.note = "installing…"
-                            win.send({ action: "install",
-                                       packages: win.depthPackages(planetItem.p.depth) })
+                        width: 66; height: 22; radius: 11
+                        color: ins.containsMouse ? "#c98a2e" : "transparent"
+                        border.color: "#c98a2e"; border.width: 1
+                        Text {
+                            anchors.centerIn: parent; text: "install"
+                            color: ins.containsMouse ? "#03060c" : "#c98a2e"
+                            font.family: "monospace"; font.pixelSize: 9
+                        }
+                        MouseArea {
+                            id: ins; anchors.fill: parent; hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                win.note = "installing " + win.depthPackages(pl.p.depth).join(" ")
+                                win.send({ action:"install", packages: win.depthPackages(pl.p.depth) })
+                            }
                         }
                     }
                 }
 
                 MouseArea {
-                    anchors.fill: body
+                    id: hov
+                    anchors.fill: globe
                     hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onEntered: body.scale = 1.12
-                    onExited: body.scale = 1.0
+                    cursorShape: pl.ready ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onEntered: globe.scale = 1.10
+                    onExited:  globe.scale = 1.00
                     onClicked: {
-                        if (!planetItem.ready) return
+                        if (!pl.ready) return
                         if (win.phase === "idle") { query.forceActiveFocus(); return }
-                        win.selected = index
-                        win.phase = "detail"
+                        win.selected = index; win.phase = "detail"
                     }
-                    Behavior on scale { NumberAnimation { duration: 150 } }
                 }
-                Behavior on scale { NumberAnimation { duration: 150 } }
+                Behavior on scale { NumberAnimation { duration: 180 } }
             }
         }
 
-        // scanning sweep
-        Rectangle {
+        Rectangle {                                       // scan sweep
             visible: win.phase === "searching"
-            width: 2; height: space.height
-            color: win.accent
-            opacity: 0.5
+            width: 1; height: space.height
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: "#00e67600" }
+                GradientStop { position: 0.5; color: "#00e676" }
+                GradientStop { position: 1.0; color: "#00e67600" }
+            }
+            opacity: 0.6
             NumberAnimation on x {
-                running: win.phase === "searching"
-                loops: Animation.Infinite
-                from: 0; to: space.width; duration: 1400
+                running: win.phase === "searching"; loops: Animation.Infinite
+                from: 0; to: space.width; duration: 1500
             }
         }
     }
@@ -474,95 +517,151 @@ ApplicationWindow {
         id: detail
         z: 30
         anchors { right: parent.right; top: header.bottom; bottom: parent.bottom }
-        width: Math.min(win.width * 0.42, 620)
-        color: "#060a0ef2"
-        border.color: "#16241d"
-        visible: win.phase === "detail" || win.phase === "entering"
-        opacity: visible ? 1 : 0
-        x: visible ? win.width - width : win.width
-        Behavior on x { NumberAnimation { duration: 480; easing.type: Easing.OutCubic } }
-        Behavior on opacity { NumberAnimation { duration: 300 } }
+        width: Math.min(win.width * 0.40, 640)
+        color: "#040910"
+        visible: opacity > 0.01
+        opacity: (win.phase === "detail" || win.phase === "entering") ? 1 : 0
+        x: (win.phase === "detail" || win.phase === "entering") ? win.width - width : win.width
+        Behavior on x { NumberAnimation { duration: 520; easing.type: Easing.OutCubic } }
+        Behavior on opacity { NumberAnimation { duration: 320 } }
 
         property var p: win.selected >= 0 ? win.planets[win.selected] : null
         property var hits: p ? win.hitsFor(p) : []
 
+        Rectangle { width: 1; height: parent.height; color: win.line }
+
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: 22
-            spacing: 12
+            anchors.margins: win.s4
+            spacing: win.s3
 
             RowLayout {
                 Layout.fillWidth: true
-                Text {
-                    text: detail.p ? detail.p.label : ""
+                spacing: win.s2
+                Rectangle {
+                    width: 10; height: 10; radius: 5
                     color: detail.p ? detail.p.hue : "#fff"
-                    font.family: "monospace"; font.pixelSize: 20; font.letterSpacing: 2
+                }
+                ColumnLayout {
+                    spacing: 2
+                    Text {
+                        text: detail.p ? detail.p.label : ""
+                        color: win.ink
+                        font.family: "monospace"; font.pixelSize: 19
+                        font.letterSpacing: 3; font.bold: true
+                    }
+                    Text {
+                        text: detail.p ? detail.p.engine + " · " + detail.hits.length +
+                              (detail.hits.length === 1 ? " result" : " results") : ""
+                        color: win.inkFar
+                        font.family: "monospace"; font.pixelSize: 10
+                    }
                 }
                 Item { Layout.fillWidth: true }
-                Button { text: "✕"; onClicked: { win.phase = "orbit"; win.selected = -1 } }
-            }
-            Text {
-                text: detail.p ? ("engine: " + detail.p.engine + "  ·  " +
-                                  detail.hits.length + " result" +
-                                  (detail.hits.length === 1 ? "" : "s")) : ""
-                color: win.dim
-                font.family: "monospace"; font.pixelSize: 11
-            }
-
-            Button {
-                Layout.fillWidth: true
-                enabled: detail.hits.length > 0
-                text: "◈  ENTER THIS PLANET  ◈"
-                onClicked: {
-                    var h = detail.hits[0]
-                    matrix.target = h.url || h.path || ""
-                    matrix.viaTor = !!h.needs_tor
-                    matrix.start()
+                Rectangle {
+                    width: 30; height: 30; radius: 15
+                    color: cl.containsMouse ? win.line : "transparent"
+                    border.color: win.line
+                    Text { anchors.centerIn: parent; text: "✕"; color: win.inkDim
+                           font.pixelSize: 12 }
+                    MouseArea {
+                        id: cl; anchors.fill: parent; hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: { win.phase = "orbit"; win.selected = -1 }
+                    }
                 }
             }
 
-            Rectangle { Layout.fillWidth: true; height: 1; color: "#16241d" }
+            Rectangle {
+                Layout.fillWidth: true
+                height: 46
+                radius: 23
+                color: ent.containsMouse ? (detail.p ? detail.p.hue : win.accent) : "transparent"
+                border.color: detail.p ? detail.p.hue : win.accent
+                border.width: 1
+                opacity: detail.hits.length ? 1 : 0.3
+                Behavior on color { ColorAnimation { duration: 180 } }
+                Text {
+                    anchors.centerIn: parent
+                    text: "◈   E N T E R   T H I S   P L A N E T   ◈"
+                    color: ent.containsMouse ? "#03060c" : (detail.p ? detail.p.hue : win.accent)
+                    font.family: "monospace"; font.pixelSize: 11; font.bold: true
+                }
+                MouseArea {
+                    id: ent
+                    anchors.fill: parent; hoverEnabled: true
+                    enabled: detail.hits.length > 0
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        var h = detail.hits[0]
+                        matrix.target = h.url || h.path || ""
+                        matrix.viaTor = !!h.needs_tor
+                        matrix.start()
+                    }
+                }
+            }
 
             ScrollView {
                 Layout.fillWidth: true; Layout.fillHeight: true
                 clip: true
                 ColumnLayout {
-                    width: detail.width - 44
-                    spacing: 2
+                    width: detail.width - win.s4 * 2
+                    spacing: win.s1
                     Repeater {
                         model: detail.hits
                         delegate: Rectangle {
                             Layout.fillWidth: true
-                            height: col.implicitHeight + 12
-                            color: hov.containsMouse ? "#0e1a15" : "transparent"
-                            radius: 2
+                            height: body.implicitHeight + win.s2 * 2
+                            color: rh.containsMouse ? "#07131a" : "transparent"
+                            radius: 4
+                            Behavior on color { ColorAnimation { duration: 140 } }
+
+                            Rectangle {                     // accent spine
+                                width: 2; height: parent.height - 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                x: 0
+                                radius: 1
+                                color: detail.p ? detail.p.hue : win.accent
+                                opacity: rh.containsMouse ? 0.9 : 0.25
+                                Behavior on opacity { NumberAnimation { duration: 140 } }
+                            }
+
                             Column {
-                                id: col
-                                x: 8; y: 6; width: parent.width - 16
-                                spacing: 2
+                                id: body
+                                x: win.s2; y: win.s2
+                                width: parent.width - win.s2 * 2
+                                spacing: 3
                                 Text {
                                     width: parent.width
                                     text: modelData.title ? modelData.title
                                           : (modelData.name || modelData.path || "")
-                                    color: "#cfe6d9"
+                                    color: win.ink
                                     font.family: "monospace"; font.pixelSize: 12
                                     elide: Text.ElideRight
                                 }
                                 Text {
                                     width: parent.width
                                     visible: text !== ""
-                                    text: modelData.url ? modelData.url
-                                          : (modelData.excerpt ? modelData.excerpt
-                                          : (modelData.path || ""))
-                                    color: win.dim
+                                    text: modelData.excerpt ? modelData.excerpt
+                                          : (modelData.url || modelData.path || "")
+                                    color: win.inkDim
                                     font.family: "monospace"; font.pixelSize: 10
+                                    wrapMode: Text.Wrap
+                                    maximumLineCount: 2
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    width: parent.width
+                                    visible: !!modelData.url
+                                    text: modelData.url || ""
+                                    color: win.inkFar
+                                    font.family: "monospace"; font.pixelSize: 9
                                     elide: Text.ElideMiddle
                                 }
                             }
                             MouseArea {
-                                id: hov
-                                anchors.fill: parent
-                                hoverEnabled: true
+                                id: rh
+                                anchors.fill: parent; hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: {
                                     matrix.target = modelData.url || modelData.path || ""
@@ -577,7 +676,7 @@ ApplicationWindow {
         }
     }
 
-    // ── entering: the matrix sequence ────────────────────────────────────────
+    // ── entering ─────────────────────────────────────────────────────────────
     Item {
         id: matrix
         anchors.fill: parent
@@ -586,138 +685,118 @@ ApplicationWindow {
         property string target: ""
         property bool viaTor: false
         property real bloom: 0
+        property real prog: 0
 
         function start() {
             if (!target) return
-            bloom = 0
+            bloom = 0; prog = 0
             win.phase = "entering"
-            rain.reset()
-            seqAnim.restart()
+            rain.reset(); seqAnim.restart()
         }
 
-        Rectangle { anchors.fill: parent; color: "#000000"; opacity: 0.94 }
+        Rectangle { anchors.fill: parent; color: "#000000"; opacity: 0.95 }
 
         Canvas {
             id: rain
             anchors.fill: parent
             property var cols: []
-            property int cell: 16
+            property int cell: 15
             function reset() {
                 cols = []
-                var n = Math.ceil(width / cell)
-                for (var i = 0; i < n; i++)
+                for (var i = 0; i < Math.ceil(width / cell); i++)
                     cols.push(-Math.random() * height)
             }
-            Timer {
-                running: matrix.visible; interval: 45; repeat: true
-                onTriggered: rain.requestPaint()
-            }
+            Timer { running: matrix.visible; interval: 40; repeat: true
+                    onTriggered: rain.requestPaint() }
             onPaint: {
-                var ctx = getContext("2d")
-                ctx.fillStyle = "rgba(0,0,0,0.10)"
-                ctx.fillRect(0, 0, width, height)
-                ctx.font = cell + "px monospace"
-                var glyphs = "01ABCDEF#*+=<>/\\|{}[]$%&@BITEOS"
+                var c = getContext("2d")
+                c.fillStyle = "rgba(0,0,0,0.09)"
+                c.fillRect(0, 0, width, height)
+                c.font = cell + "px monospace"
+                var g = "01ABCDEF#*+=<>/\\|{}[]$%&@BITEOS"
                 for (var i = 0; i < cols.length; i++) {
-                    var ch = glyphs.charAt(Math.floor(Math.random() * glyphs.length))
                     var x = i * cell, y = cols[i]
-                    ctx.fillStyle = "rgba(180,255,214,0.95)"
-                    ctx.fillText(ch, x, y)
-                    ctx.fillStyle = "rgba(0,230,118,0.55)"
-                    ctx.fillText(glyphs.charAt(Math.floor(Math.random() * glyphs.length)),
-                                 x, y - cell)
-                    cols[i] = (y > height + Math.random() * 400) ? 0 : y + cell
+                    c.fillStyle = "rgba(200,255,225,0.95)"
+                    c.fillText(g.charAt(Math.floor(Math.random() * g.length)), x, y)
+                    c.fillStyle = "rgba(0,230,118,0.5)"
+                    c.fillText(g.charAt(Math.floor(Math.random() * g.length)), x, y - cell)
+                    c.fillStyle = "rgba(0,230,118,0.22)"
+                    c.fillText(g.charAt(Math.floor(Math.random() * g.length)), x, y - cell * 2)
+                    cols[i] = (y > height + Math.random() * 420) ? 0 : y + cell
                 }
             }
         }
 
-        // the LEDs coming on, then the web opening
-        Rectangle {
-            anchors.fill: parent
-            color: win.accent
-            opacity: matrix.bloom * 0.9
-        }
+        Rectangle { anchors.fill: parent; color: win.accent; opacity: matrix.bloom * 0.92 }
 
         ColumnLayout {
             anchors.centerIn: parent
-            spacing: 14
+            spacing: win.s3
             opacity: 1 - matrix.bloom
             Text {
                 Layout.alignment: Qt.AlignHCenter
-                text: matrix.viaTor ? "ROUTING THROUGH TOR" : "ESTABLISHING LINK"
-                color: "#bdfad9"
-                font.family: "monospace"; font.pixelSize: 22; font.letterSpacing: 5
+                text: matrix.viaTor ? "R O U T I N G   T H R O U G H   T O R"
+                                    : "E S T A B L I S H I N G   L I N K"
+                color: "#c8ffe4"
+                font.family: "monospace"; font.pixelSize: 20; font.letterSpacing: 3
             }
             Text {
                 Layout.alignment: Qt.AlignHCenter
+                Layout.maximumWidth: win.width * 0.66
                 text: matrix.target
                 color: win.accent
                 font.family: "monospace"; font.pixelSize: 12
                 elide: Text.ElideMiddle
-                Layout.maximumWidth: win.width * 0.7
             }
             Rectangle {
                 Layout.alignment: Qt.AlignHCenter
-                width: 420; height: 3; color: "#0b1f16"; radius: 2
-                Rectangle {
-                    height: parent.height; radius: 2; color: win.accent
-                    width: parent.width * progress.value
-                }
+                width: 460; height: 2; color: "#0a1f16"
+                Rectangle { height: parent.height; color: win.accent
+                            width: parent.width * matrix.prog }
             }
             Text {
                 id: phaseTxt
                 Layout.alignment: Qt.AlignHCenter
                 text: "handshake"
-                color: win.dim
-                font.family: "monospace"; font.pixelSize: 11
+                color: win.inkFar
+                font.family: "monospace"; font.pixelSize: 10; font.letterSpacing: 2
             }
         }
-
-        QtObject { id: progress; property real value: 0 }
 
         SequentialAnimation {
             id: seqAnim
-            NumberAnimation { target: progress; property: "value"
-                              from: 0; to: 0.35; duration: 700 }
+            NumberAnimation { target: matrix; property: "prog"; to: 0.34; duration: 720 }
             ScriptAction { script: phaseTxt.text = matrix.viaTor ? "building circuit"
                                                                  : "resolving host" }
-            NumberAnimation { target: progress; property: "value"
-                              to: 0.72; duration: 800 }
+            NumberAnimation { target: matrix; property: "prog"; to: 0.71; duration: 820 }
             ScriptAction { script: phaseTxt.text = "decrypting" }
-            NumberAnimation { target: progress; property: "value"
-                              to: 1.0; duration: 700 }
+            NumberAnimation { target: matrix; property: "prog"; to: 1.0; duration: 700 }
             ScriptAction { script: phaseTxt.text = "opening" }
-            NumberAnimation { target: matrix; property: "bloom"
-                              from: 0; to: 1; duration: 620 }
-            ScriptAction {
-                script: {
-                    win.send({ action: "open", target: matrix.target, tor: matrix.viaTor })
-                }
-            }
+            NumberAnimation { target: matrix; property: "bloom"; to: 1; duration: 620 }
+            ScriptAction { script: win.send({ action:"open", target: matrix.target,
+                                              tor: matrix.viaTor }) }
             PauseAnimation { duration: 420 }
-            NumberAnimation { target: matrix; property: "bloom"
-                              to: 0; duration: 500 }
-            ScriptAction { script: { win.phase = "detail"; progress.value = 0 } }
+            NumberAnimation { target: matrix; property: "bloom"; to: 0; duration: 520 }
+            ScriptAction { script: win.phase = "detail" }
         }
     }
 
-    // ── keys ─────────────────────────────────────────────────────────────────
+    Text {
+        anchors { bottom: parent.bottom; left: parent.left; margins: win.s3 }
+        z: 50
+        text: "esc back   ·   /  search   ·   ctrl+q  quit"
+        color: win.inkFar
+        font.family: "monospace"; font.pixelSize: 10; font.letterSpacing: 1
+        opacity: 0.65
+    }
+
     Shortcut { sequence: "Escape"; onActivated: {
         if (win.phase === "detail") { win.phase = "orbit"; win.selected = -1 }
-        else if (win.phase === "orbit") { win.phase = "idle"; win.results = ({}) }
+        else if (win.phase === "orbit") { win.phase = "idle"; win.results = ({}); win.note = "" }
         else Qt.quit()
     } }
     Shortcut { sequence: "Ctrl+Q"; onActivated: Qt.quit() }
     Shortcut { sequence: "/"; onActivated: query.forceActiveFocus() }
-
-    Text {
-        anchors { bottom: parent.bottom; left: parent.left; margins: 14 }
-        z: 50
-        text: "Esc back · / search · Ctrl+Q quit"
-        color: win.dim
-        font.family: "monospace"; font.pixelSize: 10
-        opacity: 0.7
-    }
 
     onClosing: {
         var x = new XMLHttpRequest()
