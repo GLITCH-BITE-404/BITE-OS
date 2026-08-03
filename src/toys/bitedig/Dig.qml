@@ -40,6 +40,7 @@ ApplicationWindow {
     property string root: "~"
     property bool searxConfigured: false
     property bool cinematics: true      // read from opts.json the launcher writes
+    property bool flying: false         // mid fold-in — draws the speed lines
     property int  focusIdx: 0        // keyboard-focused planet
     property int  resIdx: 0          // keyboard-focused result row
 
@@ -139,7 +140,14 @@ ApplicationWindow {
             if ((all[i].engine || "") === p.engine) out.push(all[i])
         return out
     }
+    // Holding Enter fires onAccepted on key repeat, dozens of times a second.
+    // One guard here is cheaper than making every downstream animation
+    // re-entrant, which is what the runaway search bar actually was.
+    property double lastDig: 0
     function dig() {
+        var now = Date.now()
+        if (now - lastDig < 700) return
+        lastDig = now
         if (!query.text) { note = "type something first"; shake.restart(); return }
         var ds = [], seen = {}
         for (var i = 0; i < planets.length; i++) {
@@ -148,9 +156,12 @@ ApplicationWindow {
         }
         if (!ds.length) { note = "no engines yet — install one below"; return }
         results = ({}); selected = -1; phase = "searching"
+        flying = true; flyTimer.restart()
         note = "scanning " + ds.length + " systems"
         send({ q: query.text, depths: ds, root: root, limit: 40 })
     }
+
+    Timer { id: flyTimer; interval: 720; onTriggered: win.flying = false }
 
     Component.onCompleted: {
         // QML cannot read environment variables, so the launcher drops the
@@ -346,11 +357,16 @@ ApplicationWindow {
                     }
                 }
 
-                SequentialAnimation on x {
-                    id: shake; running: false
-                    NumberAnimation { to: bar.x - 7; duration: 55 }
-                    NumberAnimation { to: bar.x + 7; duration: 55 }
-                    NumberAnimation { to: bar.x;     duration: 55 }
+                // Shake a transform, never x itself. Animating x to "bar.x ± 7"
+                // reads bar.x while it is ALREADY mid-animation, so holding
+                // Enter compounded the offset and walked the bar off screen.
+                transform: Translate { id: shakeT }
+                SequentialAnimation {
+                    id: shake
+                    NumberAnimation { target: shakeT; property: "x"; to: -8; duration: 50 }
+                    NumberAnimation { target: shakeT; property: "x"; to:  8; duration: 50 }
+                    NumberAnimation { target: shakeT; property: "x"; to: -4; duration: 45 }
+                    NumberAnimation { target: shakeT; property: "x"; to:  0; duration: 45 }
                 }
             }
 
@@ -447,6 +463,31 @@ ApplicationWindow {
             }
         }
 
+        // shockwave when the system forms
+        Rectangle {
+            id: shockwave
+            x: space.cx - width / 2
+            y: space.cy - height / 2
+            width: 40; height: 40; radius: width / 2
+            color: "transparent"
+            border.color: "#ffffff"; border.width: 2
+            opacity: 0
+            z: 3
+            ParallelAnimation {
+                running: win.flying
+                NumberAnimation { target: shockwave; property: "width"
+                                  from: 40; to: space.unit * 2.6; duration: 700 }
+                NumberAnimation { target: shockwave; property: "height"
+                                  from: 40; to: space.unit * 2.6 * space.flat; duration: 700 }
+                SequentialAnimation {
+                    NumberAnimation { target: shockwave; property: "opacity"
+                                      from: 0; to: 0.45; duration: 120 }
+                    NumberAnimation { target: shockwave; property: "opacity"
+                                      to: 0; duration: 560 }
+                }
+            }
+        }
+
         // ── decorative moons, close in and quick ──
         Repeater {
             model: 5
@@ -530,15 +571,14 @@ ApplicationWindow {
 
                 x: win.phase === "idle" ? driftX : orbX
                 y: win.phase === "idle" ? driftY : orbY
+                // Fast in, hard stop — they should look flung into formation.
                 Behavior on x {
                     enabled: win.phase !== "idle"
-                    NumberAnimation { duration: 1150; easing.type: Easing.OutBack
-                                      easing.overshoot: 0.5 }
+                    NumberAnimation { duration: 620; easing.type: Easing.OutExpo }
                 }
                 Behavior on y {
                     enabled: win.phase !== "idle"
-                    NumberAnimation { duration: 1150; easing.type: Easing.OutBack
-                                      easing.overshoot: 0.5 }
+                    NumberAnimation { duration: 620; easing.type: Easing.OutExpo }
                 }
 
                 // the card needs to know where its planet actually is
@@ -546,6 +586,41 @@ ApplicationWindow {
                           value: pl.x + pl.d / 2; when: pl.isSel }
                 Binding { target: space; property: "selTop"
                           value: pl.y; when: pl.isSel }
+
+                // ── speed lines, only while being flung into formation ──
+                // They trail back along the direction of travel, so the eye
+                // reads a planet arriving rather than one that simply appeared.
+                Item {
+                    anchors.centerIn: globe
+                    width: pl.d; height: pl.d
+                    opacity: win.flying ? 1 : 0
+                    Behavior on opacity { NumberAnimation { duration: 260 } }
+                    rotation: Math.atan2(pl.orbY - pl.driftY,
+                                         pl.orbX - pl.driftX) * 180 / Math.PI
+                    Repeater {
+                        model: 7
+                        delegate: Rectangle {
+                            height: 2
+                            width: 60 + Math.random() * 190
+                            radius: 1
+                            y: pl.d / 2 + (index - 3) * 9
+                            x: -width - pl.d * 0.35
+                            gradient: Gradient {
+                                orientation: Gradient.Horizontal
+                                GradientStop { position: 0.0; color: "#ffffff00" }
+                                GradientStop { position: 0.7; color: "#ffffff" }
+                                GradientStop { position: 1.0; color: "#ffffff" }
+                            }
+                            opacity: 0.35 + Math.random() * 0.5
+                            transformOrigin: Item.Right
+                            SequentialAnimation on scale {
+                                running: win.flying; loops: Animation.Infinite
+                                NumberAnimation { to: 1.4; duration: 150 }
+                                NumberAnimation { to: 0.8; duration: 150 }
+                            }
+                        }
+                    }
+                }
 
                 // motion streak, trailing the direction of travel
                 Rectangle {
