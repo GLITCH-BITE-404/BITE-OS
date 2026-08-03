@@ -37,6 +37,14 @@ mkdir -p "$RUNDIR"
 rm -f "$RUNDIR/request.json" "$RUNDIR/status.json"
 cp -f "$HERE/Dig.qml" "$RUNDIR/Dig.qml"
 
+# QML cannot read environment variables, so hand the settings over as a file.
+CINE="${TOY_CINEMATICS:-on}"
+SEARX="${TOY_WEB_INSTANCE:-}"
+printf '{"cinematics":%s,"searx":%s,"root":"%s"}\n' \
+    "$([ "$CINE" = on ] && echo true || echo false)" \
+    "$([ -n "$SEARX" ] && echo true || echo false)" \
+    "${TOY_ROOT:-~}" > "$RUNDIR/opts.json"
+
 python3 "$HERE/search.py" --serve "$RUNDIR" &
 ENGINE=$!
 trap 'kill "$ENGINE" 2>/dev/null; wait "$ENGINE" 2>/dev/null' EXIT INT TERM

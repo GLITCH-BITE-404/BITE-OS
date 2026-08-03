@@ -14,3 +14,9 @@ web_instance=
 # Depths turned on when the window opens
 # @choices names,names+contents,names+contents+media,all
 startdepths=names+contents
+
+# The entering sequence — the crash, the break-in, SUCCESS, and the lights
+# coming up. It looks great the first few times and gets old after that, so
+# turn it off and Enter just opens the thing immediately. Any key skips a
+# running one either way.
+cinematics=on

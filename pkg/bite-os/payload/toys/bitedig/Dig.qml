@@ -39,6 +39,7 @@ ApplicationWindow {
     property string note: ""
     property string root: "~"
     property bool searxConfigured: false
+    property bool cinematics: true      // read from opts.json the launcher writes
     property int  focusIdx: 0        // keyboard-focused planet
     property int  resIdx: 0          // keyboard-focused result row
 
@@ -151,7 +152,23 @@ ApplicationWindow {
         send({ q: query.text, depths: ds, root: root, limit: 40 })
     }
 
-    Component.onCompleted: send({ action: "engines" })
+    Component.onCompleted: {
+        // QML cannot read environment variables, so the launcher drops the
+        // settings next to us as json and we pick them up here.
+        var o = new XMLHttpRequest()
+        o.open("GET", "file://" + here("opts.json"))
+        o.onreadystatechange = function () {
+            if (o.readyState !== XMLHttpRequest.DONE || !o.responseText) return
+            try {
+                var j = JSON.parse(o.responseText)
+                if (j.cinematics !== undefined) win.cinematics = !!j.cinematics
+                if (j.searx) win.searxConfigured = true
+                if (j.root) win.root = j.root
+            } catch (e) {}
+        }
+        o.send()
+        send({ action: "engines" })
+    }
 
     Timer {
         interval: 110; running: true; repeat: true
@@ -877,108 +894,217 @@ ApplicationWindow {
         }
     }
 
-    // ── entering ─────────────────────────────────────────────────────────────
+    // ── entering: crash → break in → SUCCESS → the lights come up ───────────
+    //
+    // Four stages. It is deliberately theatrical, and deliberately skippable —
+    // `cinematics=off` in the config drops straight to opening the thing, and
+    // any key aborts mid-way. A five-second animation you cannot escape stops
+    // being cool the third time you see it.
     Item {
         id: matrix
         anchors.fill: parent
         z: 100
         visible: win.phase === "entering"
+        focus: visible
+
         property string target: ""
         property bool viaTor: false
+        property int  stage: 0          // 0 crash · 1 break-in · 2 success · 3 lights
         property real bloom: 0
-        property real prog: 0
+        property real glare: 1
 
         function start() {
             if (!target) return
-            bloom = 0; prog = 0
+            if (!win.cinematics) {           // straight to business
+                win.send({ action: "open", target: target, tor: viaTor })
+                win.note = "opening " + target
+                return
+            }
+            stage = 0; bloom = 0; glare = 1
+            feed.clear()
             win.phase = "entering"
-            rain.reset(); seqAnim.restart()
+            reel.restart()
+        }
+        function abort() {
+            reel.stop(); flood.stop()
+            win.phase = "detail"
+        }
+        Keys.onPressed: function (e) { matrix.abort(); e.accepted = true }
+
+        Rectangle { anchors.fill: parent; color: "#000000" }
+
+        // ── stage 1: the break-in, printed like a terminal ──
+        ListModel { id: feed }
+        Timer {
+            id: flood
+            interval: 55; repeat: true; running: matrix.stage === 1
+            property int n: 0
+            onTriggered: {
+                var host = matrix.target.replace(/^https?:\/\//, "").split("/")[0]
+                var hex = "0123456789abcdef"
+                function h(k) { var o=""; for (var i=0;i<k;i++)
+                    o += hex.charAt(Math.floor(Math.random()*16)); return o }
+                var lines = [
+                    "resolving " + host,
+                    "route " + h(2) + "." + h(2) + "." + h(2) + "." + h(2) + " -> gw",
+                    "handshake syn/ack  seq=0x" + h(8),
+                    "negotiating cipher suite " + h(4),
+                    "key exchange " + h(16),
+                    matrix.viaTor ? "circuit hop " + (1 + matrix.stage) + "/3  relay=" + h(6)
+                                  : "tls1.3  alpn=h2  sni=" + host,
+                    "payload " + h(24),
+                    "bypass " + h(4) + " :: " + h(4) + " :: " + h(4),
+                    "injecting " + h(12),
+                    "0x" + h(8) + "  " + h(8) + "  " + h(8) + "  " + h(8)
+                ]
+                feed.append({ line: lines[n % lines.length] })
+                if (feed.count > 26) feed.remove(0)
+                n += 1
+            }
+        }
+        ListView {
+            anchors.fill: parent
+            anchors.margins: 44
+            model: feed
+            visible: matrix.stage === 1
+            interactive: false
+            delegate: Text {
+                text: "> " + line
+                color: index > feed.count - 4 ? "#c8ffe4" : "#00b85e"
+                opacity: 0.35 + 0.65 * (index / Math.max(1, feed.count))
+                font.family: "monospace"; font.pixelSize: 13
+            }
+        }
+        // a dead machine flickers before it comes back
+        Rectangle {
+            anchors.fill: parent; color: "#000000"
+            opacity: matrix.stage === 0 ? 1 : 0
+            SequentialAnimation on opacity {
+                running: matrix.stage === 0
+                loops: 2
+                NumberAnimation { to: 0.86; duration: 60 }
+                NumberAnimation { to: 1.00; duration: 90 }
+            }
         }
 
-        Rectangle { anchors.fill: parent; color: "#000000"; opacity: 0.95 }
-
-        Canvas {
-            id: rain
-            anchors.fill: parent
-            property var cols: []
-            property int cell: 15
-            function reset() {
-                cols = []
-                for (var i = 0; i < Math.ceil(width / cell); i++)
-                    cols.push(-Math.random() * height)
+        // ── stage 2: SUCCESS ──
+        Item {
+            anchors.centerIn: parent
+            visible: matrix.stage === 2
+            Text {
+                id: successTxt
+                anchors.centerIn: parent
+                text: "SUCCESS"
+                color: "#00ff88"
+                font.family: "monospace"; font.pixelSize: 84
+                font.bold: true; font.letterSpacing: 16
+                // brightness breathing, plus a slow float
+                opacity: matrix.glare
+                SequentialAnimation on scale {
+                    running: matrix.stage === 2; loops: Animation.Infinite
+                    NumberAnimation { to: 1.04; duration: 620; easing.type: Easing.InOutSine }
+                    NumberAnimation { to: 1.00; duration: 620; easing.type: Easing.InOutSine }
+                }
+                SequentialAnimation on y {
+                    running: matrix.stage === 2; loops: Animation.Infinite
+                    NumberAnimation { to: -10; duration: 1500; easing.type: Easing.InOutSine }
+                    NumberAnimation { to:  10; duration: 1500; easing.type: Easing.InOutSine }
+                }
             }
-            Timer { running: matrix.visible; interval: 40; repeat: true
-                    onTriggered: rain.requestPaint() }
-            onPaint: {
-                var c = getContext("2d")
-                c.fillStyle = "rgba(0,0,0,0.09)"
-                c.fillRect(0, 0, width, height)
-                c.font = cell + "px monospace"
-                var g = "01ABCDEF#*+=<>/\\|{}[]$%&@BITEOS"
-                for (var i = 0; i < cols.length; i++) {
-                    var x = i * cell, y = cols[i]
-                    c.fillStyle = "rgba(200,255,225,0.95)"
-                    c.fillText(g.charAt(Math.floor(Math.random() * g.length)), x, y)
-                    c.fillStyle = "rgba(0,230,118,0.5)"
-                    c.fillText(g.charAt(Math.floor(Math.random() * g.length)), x, y - cell)
-                    c.fillStyle = "rgba(0,230,118,0.22)"
-                    c.fillText(g.charAt(Math.floor(Math.random() * g.length)), x, y - cell * 2)
-                    cols[i] = (y > height + Math.random() * 420) ? 0 : y + cell
+            Text {                                   // ghost behind it = glow
+                anchors.centerIn: successTxt
+                text: successTxt.text
+                color: "#00ff88"
+                font: successTxt.font
+                opacity: matrix.glare * 0.30
+                scale: successTxt.scale * 1.06
+            }
+            Text {
+                anchors { top: successTxt.bottom; topMargin: 26
+                          horizontalCenter: successTxt.horizontalCenter }
+                text: matrix.viaTor ? "circuit established" : "link established"
+                color: "#5f8f77"
+                font.family: "monospace"; font.pixelSize: 13; font.letterSpacing: 4
+            }
+        }
+
+        // ── stage 3: the LEDs come up, one by one, until the screen is the planet
+        Grid {
+            id: leds
+            anchors.fill: parent
+            visible: matrix.stage === 3
+            columns: Math.max(1, Math.floor(win.width / 26))
+            rows: Math.max(1, Math.floor(win.height / 26))
+            property color lit: detail.p ? detail.p.hue : win.accent
+            Repeater {
+                model: leds.columns * leds.rows
+                delegate: Rectangle {
+                    width: win.width / leds.columns
+                    height: win.height / leds.rows
+                    color: leds.lit
+                    // ripple outward from the middle, with a little scatter so it
+                    // reads as lamps warming up rather than a wipe
+                    property real cxi: (index % leds.columns) - leds.columns / 2
+                    property real cyi: Math.floor(index / leds.columns) - leds.rows / 2
+                    property real dist: Math.sqrt(cxi * cxi + cyi * cyi)
+                    opacity: 0
+                    NumberAnimation on opacity {
+                        running: matrix.stage === 3
+                        to: 1; duration: 420
+                        easing.type: Easing.OutQuad
+                    }
+                    Behavior on opacity { NumberAnimation { duration: 300 } }
+                    Timer {
+                        running: matrix.stage === 3
+                        interval: dist * 34 + Math.random() * 260
+                        repeat: false
+                        onTriggered: parent.opacity = 1
+                    }
+                    Component.onCompleted: opacity = 0
                 }
             }
         }
+        Rectangle {                                   // final wash to white
+            anchors.fill: parent
+            color: "#ffffff"
+            opacity: matrix.bloom
+        }
 
-        Rectangle { anchors.fill: parent; color: win.accent; opacity: matrix.bloom * 0.92 }
-
-        ColumnLayout {
-            anchors.centerIn: parent
-            spacing: win.s3
-            opacity: 1 - matrix.bloom
-            Text {
-                Layout.alignment: Qt.AlignHCenter
-                text: matrix.viaTor ? "R O U T I N G   T H R O U G H   T O R"
-                                    : "E S T A B L I S H I N G   L I N K"
-                color: "#c8ffe4"
-                font.family: "monospace"; font.pixelSize: 20; font.letterSpacing: 3
-            }
-            Text {
-                Layout.alignment: Qt.AlignHCenter
-                Layout.maximumWidth: win.width * 0.66
-                text: matrix.target
-                color: win.accent
-                font.family: "monospace"; font.pixelSize: 12
-                elide: Text.ElideMiddle
-            }
-            Rectangle {
-                Layout.alignment: Qt.AlignHCenter
-                width: 460; height: 2; color: "#0a1f16"
-                Rectangle { height: parent.height; color: win.accent
-                            width: parent.width * matrix.prog }
-            }
-            Text {
-                id: phaseTxt
-                Layout.alignment: Qt.AlignHCenter
-                text: "handshake"
-                color: win.inkFar
-                font.family: "monospace"; font.pixelSize: 10; font.letterSpacing: 2
-            }
+        Text {
+            anchors { bottom: parent.bottom; horizontalCenter: parent.horizontalCenter
+                      bottomMargin: 26 }
+            text: "any key to skip"
+            color: "#33564a"
+            font.family: "monospace"; font.pixelSize: 10
+            visible: matrix.stage < 3
         }
 
         SequentialAnimation {
-            id: seqAnim
-            NumberAnimation { target: matrix; property: "prog"; to: 0.34; duration: 720 }
-            ScriptAction { script: phaseTxt.text = matrix.viaTor ? "building circuit"
-                                                                 : "resolving host" }
-            NumberAnimation { target: matrix; property: "prog"; to: 0.71; duration: 820 }
-            ScriptAction { script: phaseTxt.text = "decrypting" }
-            NumberAnimation { target: matrix; property: "prog"; to: 1.0; duration: 700 }
-            ScriptAction { script: phaseTxt.text = "opening" }
-            NumberAnimation { target: matrix; property: "bloom"; to: 1; duration: 620 }
-            ScriptAction { script: win.send({ action:"open", target: matrix.target,
-                                              tor: matrix.viaTor }) }
+            id: reel
+            // 1. the machine dies
+            PauseAnimation { duration: 520 }
+            ScriptAction { script: matrix.stage = 1 }
+            // 2. breaking in
+            PauseAnimation { duration: 2300 }
+            ScriptAction { script: { matrix.stage = 2; matrix.glare = 1 } }
+            // 3. SUCCESS, brightness swelling
+            SequentialAnimation {
+                loops: 3
+                NumberAnimation { target: matrix; property: "glare"
+                                  to: 0.45; duration: 260 }
+                NumberAnimation { target: matrix; property: "glare"
+                                  to: 1.00; duration: 260 }
+            }
             PauseAnimation { duration: 420 }
-            NumberAnimation { target: matrix; property: "bloom"; to: 0; duration: 520 }
-            ScriptAction { script: win.phase = "detail" }
+            // 4. the lights come up
+            ScriptAction { script: matrix.stage = 3 }
+            PauseAnimation { duration: 1500 }
+            NumberAnimation { target: matrix; property: "bloom"; to: 1; duration: 480 }
+            ScriptAction { script: win.send({ action: "open", target: matrix.target,
+                                              tor: matrix.viaTor }) }
+            PauseAnimation { duration: 400 }
+            NumberAnimation { target: matrix; property: "bloom"; to: 0; duration: 420 }
+            ScriptAction { script: { matrix.stage = 0; win.phase = "detail" } }
         }
     }
 
