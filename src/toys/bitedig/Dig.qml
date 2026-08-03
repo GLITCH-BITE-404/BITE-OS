@@ -39,6 +39,8 @@ ApplicationWindow {
     property string note: ""
     property string root: "~"
     property bool searxConfigured: false
+    property int  focusIdx: 0        // keyboard-focused planet
+    property int  resIdx: 0          // keyboard-focused result row
 
     readonly property var planets: [
         { id:"names",      label:"FILES",      engine:"fd",         depth:"names",
@@ -78,6 +80,36 @@ ApplicationWindow {
         if (p.id === "searx") return searxConfigured && depthReady("web")
         return depthReady(p.depth)
     }
+    // Keyboard navigation only ever lands on a planet you can actually use.
+    function usableIdx() {
+        var out = []
+        for (var i = 0; i < planets.length; i++)
+            if (planetReady(planets[i])) out.push(i)
+        return out
+    }
+    function stepFocus(dir) {
+        var u = usableIdx()
+        if (!u.length) return
+        var at = u.indexOf(focusIdx)
+        if (at < 0) { focusIdx = u[0]; return }
+        focusIdx = u[(at + dir + u.length) % u.length]
+    }
+    function openFocused() {
+        if (!planetReady(planets[focusIdx])) return
+        if (phase === "idle") return
+        selected = focusIdx; resIdx = 0; phase = "detail"
+    }
+    function enterResult() {
+        var p = selected >= 0 ? planets[selected] : null
+        if (!p) return
+        var h = hitsFor(p)
+        if (!h.length) return
+        var pick = h[Math.max(0, Math.min(resIdx, h.length - 1))]
+        matrix.target = pick.url || pick.path || ""
+        matrix.viaTor = !!pick.needs_tor
+        matrix.start()
+    }
+
     function hitsFor(p) {
         var b = results[p.depth]; if (!b) return []
         var all = b.hits || []
@@ -276,12 +308,14 @@ ApplicationWindow {
     Item {
         id: space
         anchors { top: header.bottom; left: parent.left
-                  right: parent.right; bottom: parent.bottom }
+                  right: parent.right; bottom: parent.bottom
+                  bottomMargin: 34 }        // keep labels off the hint line
         clip: true
         property real cx: width / 2
-        property real cy: height / 2 - 26
+        property real cy: height / 2 - 44
         property real rx: Math.min(width * 0.36, 470)
-        property real ry: rx * 0.44
+        // Clamped so the bottom planet's label still fits above the edge.
+        property real ry: Math.min(rx * 0.44, (height / 2) - 150)
 
         // orbit path, drawn once the planets take their places
         Repeater {
@@ -317,7 +351,15 @@ ApplicationWindow {
                 property real ang: (index / win.planets.length) * 2 * Math.PI - Math.PI / 2
                 property real orbX: space.cx + Math.cos(ang) * space.rx - d / 2
                 property real orbY: space.cy + Math.sin(ang) * space.ry - d / 2
-                property real lane: space.height * (0.16 + 0.68 * (index / (win.planets.length - 1)))
+                // A planet is not just the globe: the label block under it runs
+                // another ~72px. Spreading lanes to 84% of the height put that
+                // text past the clip edge, so the bottom ones looked chopped.
+                readonly property real labelRoom: 78
+                readonly property real laneTop: 12
+                readonly property real laneBot: Math.max(laneTop,
+                                                space.height - d - labelRoom)
+                property real lane: laneTop + (laneBot - laneTop) *
+                                    (index / Math.max(1, win.planets.length - 1))
 
                 states: [
                     State {
@@ -360,6 +402,24 @@ ApplicationWindow {
                     width: pl.d; height: pl.d
                     opacity: pl.ready ? 1 : 0.26
                     Behavior on opacity { NumberAnimation { duration: 300 } }
+
+                    Rectangle {                          // keyboard focus ring
+                        visible: win.focusIdx === index && win.phase !== "idle"
+                                 && win.phase !== "entering"
+                        anchors.centerIn: parent
+                        width: parent.width * 1.62; height: width; radius: width / 2
+                        color: "transparent"
+                        border.color: pl.p.hue; border.width: 2
+                        opacity: 0.85
+                        SequentialAnimation on scale {
+                            running: win.focusIdx === index
+                            loops: Animation.Infinite
+                            NumberAnimation { to: 1.06; duration: 780
+                                              easing.type: Easing.InOutQuad }
+                            NumberAnimation { to: 1.00; duration: 780
+                                              easing.type: Easing.InOutQuad }
+                        }
+                    }
 
                     Rectangle {                          // atmosphere
                         anchors.centerIn: parent
@@ -612,7 +672,8 @@ ApplicationWindow {
                         delegate: Rectangle {
                             Layout.fillWidth: true
                             height: body.implicitHeight + win.s2 * 2
-                            color: rh.containsMouse ? "#07131a" : "transparent"
+                            color: (rh.containsMouse || win.resIdx === index)
+                                   ? "#07131a" : "transparent"
                             radius: 4
                             Behavior on color { ColorAnimation { duration: 140 } }
 
@@ -622,7 +683,8 @@ ApplicationWindow {
                                 x: 0
                                 radius: 1
                                 color: detail.p ? detail.p.hue : win.accent
-                                opacity: rh.containsMouse ? 0.9 : 0.25
+                                opacity: (rh.containsMouse || win.resIdx === index)
+                                         ? 0.95 : 0.25
                                 Behavior on opacity { NumberAnimation { duration: 140 } }
                             }
 
@@ -784,10 +846,71 @@ ApplicationWindow {
     Text {
         anchors { bottom: parent.bottom; left: parent.left; margins: win.s3 }
         z: 50
-        text: "esc back   ·   /  search   ·   ctrl+q  quit"
+        text: win.phase === "detail"
+              ? "↑↓ pick   ·   enter  open it   ·   ←/esc  back   ·   ctrl+q  quit"
+              : (win.phase === "orbit"
+                 ? "←→ or tab  pick a planet   ·   1-7 jump   ·   enter  open   ·   i  install   ·   /  search"
+                 : "type and press enter   ·   ←→  planets   ·   i  install   ·   ctrl+q  quit")
         color: win.inkFar
         font.family: "monospace"; font.pixelSize: 10; font.letterSpacing: 1
         opacity: 0.65
+    }
+
+    // ── keyboard: the whole tool is driveable without a pointer ─────────────
+    // This is not a nicety. A planets-and-clicking UI is unusable the moment a
+    // touchpad dies, and a search tool is exactly what you reach for when
+    // something is broken.
+    Item {
+        anchors.fill: parent
+        focus: true
+        Keys.onPressed: function (e) {
+            // typing in the box: let it through, except for the keys that steer
+            if (query.activeFocus && e.key !== Qt.Key_Escape
+                && e.key !== Qt.Key_Down && e.key !== Qt.Key_Tab) return
+
+            if (win.phase === "detail") {
+                var hs = win.selected >= 0 ? win.hitsFor(win.planets[win.selected]) : []
+                if (e.key === Qt.Key_Down || e.key === Qt.Key_J) {
+                    win.resIdx = Math.min(win.resIdx + 1, Math.max(0, hs.length - 1)); e.accepted = true
+                } else if (e.key === Qt.Key_Up || e.key === Qt.Key_K) {
+                    win.resIdx = Math.max(0, win.resIdx - 1); e.accepted = true
+                } else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter
+                           || e.key === Qt.Key_Space) {
+                    win.enterResult(); e.accepted = true
+                } else if (e.key === Qt.Key_Left) {
+                    win.phase = "orbit"; win.selected = -1; e.accepted = true
+                }
+                return
+            }
+
+            if (win.phase === "orbit" || win.phase === "idle") {
+                if (e.key === Qt.Key_Right || e.key === Qt.Key_L
+                    || e.key === Qt.Key_Tab) { win.stepFocus(1);  e.accepted = true }
+                else if (e.key === Qt.Key_Left || e.key === Qt.Key_H
+                         || e.key === Qt.Key_Backtab) { win.stepFocus(-1); e.accepted = true }
+                else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter
+                         || e.key === Qt.Key_Space) {
+                    if (win.phase === "orbit") { win.openFocused(); e.accepted = true }
+                }
+                else if (e.key >= Qt.Key_1 && e.key <= Qt.Key_7) {
+                    var i = e.key - Qt.Key_1
+                    if (i < win.planets.length && win.planetReady(win.planets[i])) {
+                        win.focusIdx = i
+                        if (win.phase === "orbit") { win.selected = i; win.resIdx = 0
+                                                     win.phase = "detail" }
+                    }
+                    e.accepted = true
+                }
+                else if (e.key === Qt.Key_I) {          // install the focused one
+                    var fp = win.planets[win.focusIdx]
+                    if (!win.planetReady(fp)) {
+                        win.note = "installing " + win.depthPackages(fp.depth).join(" ")
+                        win.send({ action:"install", packages: win.depthPackages(fp.depth) })
+                    }
+                    e.accepted = true
+                }
+            }
+        }
     }
 
     Shortcut { sequence: "Escape"; onActivated: {
