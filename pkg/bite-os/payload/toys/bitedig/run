@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# bitedig — search that goes deeper the further out you go.
+#
+# search.py is the engine (headless, every control is a flag), Dig.qml is the
+# face. QML cannot start a process, so they talk through a run directory.
+
+set -uo pipefail
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/bite-os"
+RUNDIR="$CACHE/dig-run"
+c_dim=$'\e[2m'; c_red=$'\e[31m'; c_rst=$'\e[0m'
+die() { printf '%s✗%s %s\n' "$c_red" "$c_rst" "$*" >&2; exit 1; }
+
+[[ -f "$HERE/search.py" ]] || die "search.py is missing from $HERE"
+
+if [[ "${1:-}" == "--preview" ]]; then
+    printf '  bitedig — names · contents · media · web · onion\n'
+    "$HERE/search.py" --engines 2>/dev/null | python3 -c '
+import json,sys
+for e in json.load(sys.stdin):
+    print("  %s %-9s %s" % ("\033[32m*\033[0m" if e["ready"] else "\033[31m-\033[0m",
+          e["depth"], "" if e["ready"] else "needs "+" ".join(e["packages"])))
+' 2>/dev/null || true
+    exit 0
+fi
+
+# Anything else goes straight to the engine — the GUI is the default, not the
+# only way in.
+if [[ $# -gt 0 && "${1:-}" != "--gui" ]]; then
+    exec python3 "$HERE/search.py" "$@"
+fi
+
+command -v qml6 >/dev/null 2>&1 || die "qml6 is missing — sudo pacman -S qt6-declarative"
+[[ -f "$HERE/Dig.qml" ]] || die "Dig.qml is missing from $HERE"
+
+mkdir -p "$RUNDIR"
+rm -f "$RUNDIR/request.json" "$RUNDIR/status.json"
+cp -f "$HERE/Dig.qml" "$RUNDIR/Dig.qml"
+
+python3 "$HERE/search.py" --serve "$RUNDIR" &
+ENGINE=$!
+trap 'kill "$ENGINE" 2>/dev/null; wait "$ENGINE" 2>/dev/null' EXIT INT TERM
+
+export QML_XHR_ALLOW_FILE_READ=1 QML_XHR_ALLOW_FILE_WRITE=1
+cd "$RUNDIR" || die "cannot enter $RUNDIR"
+qml6 Dig.qml

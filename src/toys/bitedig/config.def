@@ -1,0 +1,16 @@
+# Where a file search starts
+root=~
+
+# How many results per depth
+# @range 5-200
+limit=40
+
+# Your own SearxNG instance, if you run one — it gives far better web results
+# than the fallback. Leave it blank to use DuckDuckGo's and Wikipedia's open
+# APIs instead. Public Searx instances block API access, so pointing this at
+# someone else's will usually just fail.
+web_instance=
+
+# Depths turned on when the window opens
+# @choices names,names+contents,names+contents+media,all
+startdepths=names+contents

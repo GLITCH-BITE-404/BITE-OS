@@ -391,3 +391,4 @@ python-pillow
 qt6-declarative
 v4l-utils
 v4l2loopback-dkms
+fd

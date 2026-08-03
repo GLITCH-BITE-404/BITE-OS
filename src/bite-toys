@@ -76,7 +76,7 @@ meta() {
 kind_tag() {
     local dir="$1" k
     k="$(meta "$dir" kind)"
-    [[ "$k" == "tool" ]] && printf '%s·tool%s' "$c_cyn" "$c_rst"
+    [[ "$k" == "tool" ]] && printf '%s⚙%s' "$c_cyn" "$c_rst"
 }
 
 all_toys() {
