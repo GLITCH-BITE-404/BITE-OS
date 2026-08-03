@@ -128,10 +128,68 @@ to coordinate layers that normally don't know about each other, all from one tog
 
 ---
 
+## `bite-toys` — the toy hub
+
+A little package manager for the *fun* half of the system. Browse it, install what
+you want, tweak it, throw it away — `bite-toys` with no arguments opens a
+five-tab TUI, and every tab has a plain CLI equivalent underneath.
+
+**A toy is just a directory** — `toy.meta`, an executable, and `config.def`. No
+plugin API to learn:
+
+- Settings reach a toy as `TOY_<KEY>` environment variables, so **a toy never
+  parses configuration itself**. `# @choices a,b,c` and `# @range 0-10` above a
+  key let the hub cycle values with ← →, and they're *enforced* — a typo is
+  rejected rather than silently clamped at runtime.
+- `deps=` distinguishes the **command** a toy needs from the **package** that
+  provides it (`qml6:qt6-declarative`), because guessing one from the other
+  sends people to a package that doesn't exist. Missing deps are offered as a
+  `pacman -S` on first run instead of crashing.
+- Installing symlinks a shim into `~/.local/bin` that re-enters the hub, so
+  settings are read **at run time, not baked in at install time**.
+
+**The catalog is the trust anchor.** A toy is arbitrary code, so `fetch` checks
+every tarball against its published sha256 and refuses to unpack a mismatch.
+`bite-toys pack` builds the tarballs and the catalog together and does it
+reproducibly — same toy in, same bytes out, same hash — so the checksums can't
+drift from the files they describe.
+
+**Uninstalling can't lose your work.** `remove` only deletes files when a bundled
+copy exists to fall back on; otherwise it just takes the toy off your `PATH` and
+tells you where the files are. Deleting them is a separate, explicit `purge`.
+
+**Previews never touch your hardware.** Each toy renders a built-in sample scene
+for the preview pane, so nothing opens your camera or reads your player — it's
+instant, repeatable, and works on a machine with no webcam at all. In the
+PREVIEW tab nothing runs until you press Enter; `c` freezes the picture while
+you change settings, Enter re-runs it with the new values, and **nothing is
+written to your config until you press `w`**.
+
+**Speed is why it's bash and not a framework.** The hub redraws the whole frame
+on every keypress, so nothing per-row may fork. Re-parsing `config.def` with
+`sed`/`awk` per setting per frame cost ~96 processes and 700 ms per keystroke —
+it read as the hub freezing. Settings are parsed once into arrays, the layout
+helpers are pure bash, and the frame is written in a single `printf` so the
+screen never tears. Same work, ~60 ms.
+
+### The toys that ship with it
+
+| toy | what it is |
+|---|---|
+| `bitecam` | your webcam, live, as ASCII — records to mp4/gif/cast, and `v` publishes it as a **real webcam** Zoom and Discord can select |
+| `bitemask` | finds your face and refuses to show it — bar, visor, mosaic, glitch, static, or **vanish**, which learns the room behind you and paints it back over your head. Real pixels, not ASCII, so it works as a webcam and records 1080×1920 for posting |
+| `bitebeat` | whatever's playing over MPRIS, with its lyrics sweeping in time, karaoke style. Big text is rasterised at runtime, so Hebrew renders as happily as English |
+| `bitemuseum` | your own disk as a fullscreen exhibition — install day, oldest files, earliest photos, what you've forgotten |
+
+Downloadable toys live in their own repo:
+**[BITE-OS-toys](https://github.com/GLITCH-BITE-404/BITE-OS-toys)**
+
+---
+
 <div align="center">
 
 *More tools live in [`src/`](src/) — readable, no build step.*
 
-`BITE-OS` · hand-built by **GLITCH-BITE404** · 🐕 [Laffy](LAFFY.md)
+`BITE-OS` · hand-built by **GLITCH-BITE-404** · 🐕 [Laffy](LAFFY.md)
 
 </div>

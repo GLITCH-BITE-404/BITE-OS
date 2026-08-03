@@ -16,4 +16,4 @@ own, with no build step required.
 These are copies of the live scripts shipped inside the ISO. They are MIT
 licensed — see [`../LICENSE`](../LICENSE).
 
-`// THE SYSTEM BIT YOU` — GLITCH-BITE404
+`// THE SYSTEM BIT YOU` — GLITCH-BITE-404

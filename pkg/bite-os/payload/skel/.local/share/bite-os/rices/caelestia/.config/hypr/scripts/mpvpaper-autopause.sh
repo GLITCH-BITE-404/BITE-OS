@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  ◈ BITE-OS  ·  © 2026 GLITCH-BITE404  ·  // THE SYSTEM BIT YOU
-#  https://github.com/GLITCH-BITE404/BITE-OS  ·  GPLv3 — keep this notice
+#  ◈ BITE-OS  ·  © 2026 GLITCH-BITE-404  ·  // THE SYSTEM BIT YOU
+#  https://github.com/GLITCH-BITE-404/BITE-OS  ·  GPLv3 — keep this notice
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # mpvpaper-autopause — SIGSTOP mpvpaper while any window is fullscreen,
 # SIGCONT when fullscreen exits. Reads Hyprland's IPC event socket

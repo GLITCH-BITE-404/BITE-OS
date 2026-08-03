@@ -467,17 +467,47 @@ if [ -s "$REPO_PUBKEY" ]; then
     if ! grep -q '^\[bite-os\]' /etc/pacman.conf; then
         cat >> /etc/pacman.conf <<'EOF'
 
-# BITE-OS rice updates (signed) — delivers GLITCH-BITE404's own changes,
+# BITE-OS rice updates (signed) — delivers GLITCH-BITE-404's own changes,
 # on top of the normal CachyOS/Arch upstream.
 [bite-os]
 SigLevel = Required
-Server = https://github.com/GLITCH-BITE404/BITE-OS/releases/download/repo
+Server = https://github.com/GLITCH-BITE-404/BITE-OS/releases/download/repo
 EOF
     fi
     echo "[customize_airootfs] [bite-os] signed update repo wired + key trusted"
 else
     echo "[customize_airootfs] no repo signing key — skipping [bite-os] update repo (CachyOS-only updates)"
 fi
+
+# Pin the caelestia stack. The rice ships a CUSTOMISED copy of the caelestia
+# 1.6.x shell tree in /etc/skel/.config/quickshell/caelestia — it is NOT
+# upstream-current and only loads against:
+#     caelestia-shell  1.6.1        (2.x dropped CachingImageManager from the
+#                                    Caelestia.Internal plugin)
+#     libcava          0.10.7-2     (1.0.0 moved the soname .so.0 -> .so.1)
+# Either upgrade alone makes the shell QML fail to load OUTRIGHT — which kills
+# the bar AND the keybinds, so the desktop looks completely dead and reads as
+# "Hyprland crashed". This happened on the dev machine 2026-08-02.
+# Without this, the FIRST `bite-os-update` on a fresh install bricks the rice.
+# Drop the pin only when the rice QML is ported to the 2.x Caelestia.Images API.
+# IgnorePkg is ONLY honoured inside [options]. By this point the [cachyos] and
+# [bite-os] sections have already been appended, so a plain >> would drop the
+# pin into a repo section where pacman ignores it. Always place it in [options]:
+# extend an existing directive, else replace the commented template, else insert
+# directly after the [options] header.
+BITE_PINS="caelestia-shell caelestia-shell-git libcava"
+if grep -qE '^\s*IgnorePkg\s*=' /etc/pacman.conf; then
+    # Append only the pins that aren't already listed.
+    for _p in $BITE_PINS; do
+        grep -qE "^\s*IgnorePkg\s*=.*\b${_p}\b" /etc/pacman.conf \
+            || sed -i -E "0,/^\s*IgnorePkg\s*=/s//& ${_p}/" /etc/pacman.conf
+    done
+elif grep -qE '^\s*#\s*IgnorePkg' /etc/pacman.conf; then
+    sed -i -E "0,/^\s*#\s*IgnorePkg.*$/s//IgnorePkg   = ${BITE_PINS}/" /etc/pacman.conf
+else
+    sed -i -E "0,/^\s*\[options\]\s*$/s//&\nIgnorePkg   = ${BITE_PINS}/" /etc/pacman.conf
+fi
+echo "[customize_airootfs] caelestia stack pinned: $(grep -E '^\s*IgnorePkg' /etc/pacman.conf)"
 
 # 3d. Performance stack — sched-ext scheduler (scx_lavd) + the spaceship max-perf
 #     power helper. Installed SYSTEM-WIDE so every BITE-OS install gets them; the

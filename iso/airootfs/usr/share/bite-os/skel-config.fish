@@ -55,7 +55,7 @@ if status is-interactive
     source ~/.config/caelestia/user-config.fish 2> /dev/null
 
     # ─────────────────────────────────────────────────────────────────────────────
-    #  GLITCH-BITE404 ENGINE :: Gacha Executor
+    #  GLITCH-BITE-404 ENGINE :: Gacha Executor
     # ─────────────────────────────────────────────────────────────────────────────
     set -g __glitch_script "$HOME/.config/glitch/bin/glitch-fetch.sh"
 

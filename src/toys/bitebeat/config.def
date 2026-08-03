@@ -1,0 +1,43 @@
+# Which player to follow — 'auto' takes whichever is active
+player=auto
+
+# Colour of the sung text and the progress bar
+# @choices green,cyan,magenta,red,amber,white
+accent=green
+
+# Height of the big lyric line, in terminal rows
+# @range 2-14
+bigsize=7
+
+# How many lines to show above and below the current one
+# @range 0-5
+context=2
+
+# Your own .lrc files live here
+lrcdir=~/.local/share/bite-os/lyrics
+
+# Look lyrics up at lrclib.net when there's no local .lrc. This sends the
+# track and artist name to that service; turn it off to stay fully offline.
+online=on
+
+# Nudge the lyrics earlier or later, in seconds — also on the [ and ] keys
+offset=0
+
+# Redraw rate
+# @range 5-60
+fps=20
+
+# Make the letters shake and spike with the music (needs cava)
+react=on
+
+# How violently they react
+# @range 0-10
+reactamount=4
+
+# Spectrum resolution
+# @range 8-64
+bars=24
+
+# Seconds a new line takes to slide and brighten in
+# @range 0-1.5
+transition=0.25

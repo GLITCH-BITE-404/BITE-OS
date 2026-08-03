@@ -1,0 +1,57 @@
+#!/bin/bash
+# bitemuseum — your machine's history, as a fullscreen exhibition.
+#
+# Two halves: scan.py builds a catalogue of the disk into JSON (slow, cached),
+# Museum.qml is the exhibition itself (instant). The launcher stages both into a
+# run directory because the QML loads its data by RELATIVE path — command-line
+# arguments do not reach a qml6 script reliably.
+
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/bite-os"
+RUNDIR="$CACHE/museum-run"
+DATA="$CACHE/museum.json"
+
+ROOT="${TOY_ROOT:-$HOME}"
+HISTORY="${TOY_HISTORY:-on}"
+REDACT="${TOY_REDACT:-on}"
+MAXAGE="${TOY_MAXAGE:-7}"          # days before the catalogue is rebuilt
+CHAPTER="${TOY_CHAPTER:-0}"
+
+c_grn=$'\e[32m'; c_dim=$'\e[2m'; c_red=$'\e[31m'; c_rst=$'\e[0m'
+say() { printf '%s\n' "$*"; }
+die() { printf '%s✗%s %s\n' "$c_red" "$c_rst" "$*" >&2; exit 1; }
+
+command -v qml6 >/dev/null 2>&1 || die "qml6 is missing — sudo pacman -S qt6-declarative"
+[[ -f "$HERE/Museum.qml" ]] || die "Museum.qml is missing from $HERE"
+[[ -f "$HERE/scan.py" ]]    || die "scan.py is missing from $HERE"
+
+mkdir -p "$RUNDIR"
+
+rescan=0
+if [[ "${1:-}" == "--rescan" || ! -f "$DATA" ]]; then
+    rescan=1
+elif [[ -n "$(find "$DATA" -mtime "+$MAXAGE" 2>/dev/null)" ]]; then
+    rescan=1
+fi
+
+if [[ $rescan -eq 1 ]]; then
+    say "${c_dim}Opening the archives…${c_rst}"
+    args=("$ROOT")
+    [[ "$HISTORY" == "on" ]] || args+=(--no-history)
+    python3 "$HERE/scan.py" "${args[@]}" || die "the scan failed"
+fi
+
+[[ -f "$DATA" ]] || die "no catalogue was produced"
+
+cp -f "$HERE/Museum.qml" "$RUNDIR/Museum.qml"
+cp -f "$DATA" "$RUNDIR/museum.json"
+printf '{"chapter":%d,"redact":%s}\n' \
+    "$CHAPTER" "$([[ "$REDACT" == "on" ]] && echo true || echo false)" \
+    > "$RUNDIR/opts.json"
+
+# Qt blocks XMLHttpRequest against local files unless this is set.
+export QML_XHR_ALLOW_FILE_READ=1
+cd "$RUNDIR" || die "cannot enter $RUNDIR"
+exec qml6 Museum.qml

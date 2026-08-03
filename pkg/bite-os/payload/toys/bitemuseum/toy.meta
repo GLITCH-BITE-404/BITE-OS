@@ -1,0 +1,11 @@
+name=bitemuseum
+version=1.0
+desc=Your machine's history as a fullscreen exhibition
+category=visual
+author=GLITCH-BITE-404
+exec=run
+nopreview=bitemuseum is a fullscreen Qt/QML exhibition, not a terminal drawing — there is nothing to sample into a text pane. Press Enter on it in INSTALLED to open the real thing.
+deps=qml6:qt6-declarative python3:python
+usage=bitemuseum   ·   ↑↓ select, ⏎ open, F folder, → next, T tour, B reveal, Q quit
+keys=→/←:next or previous chapter|↑/↓:select an exhibit|enter:open the selected file|f:open its folder|t:guided tour, hands-free|b:reveal or hide urls|?:show or hide this list|q:quit
+about=Turns your own disk into a museum. Opens on a title card — welcome to your device museum — then walks through chapters: the day the machine was installed, the oldest files you still own, your earliest photos shown for real, the first sites you ever visited, the heaviest things you're carrying, and what you've forgotten. Press T for a guided tour: it advances through the chapters on its own every 7 seconds so you can film it hands-free. Pick any exhibit with the arrows and press Enter to open the real file, or F to open its folder. Strictly read-only; browser history starts hidden until you press B.

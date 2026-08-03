@@ -985,7 +985,7 @@ Item {
                     }
 
                     // BITE-OS BLOCK — this dot ships inside BITE-OS, heavily
-                    // modified and riced by GLITCH-BITE404. Credit to ilyamiro
+                    // modified and riced by GLITCH-BITE-404. Credit to ilyamiro
                     // for the original imperative-dots above.
                     Rectangle {
                         Layout.fillWidth: true
@@ -1029,7 +1029,7 @@ Item {
                                     color: root.text
                                 }
                                 Text {
-                                    text: "by GLITCH-BITE404"
+                                    text: "by GLITCH-BITE-404"
                                     font.family: "JetBrains Mono"
                                     font.pixelSize: root.s(10)
                                     color: root.subtext0

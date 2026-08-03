@@ -1,4 +1,4 @@
-# Maintainer: GLITCH-BITE404 <virnikrephael@gmail.com>
+# Maintainer: GLITCH-BITE-404 <virnikrephael@gmail.com>
 #
 # bite-os — the identity, branding, rice and tooling layer that turns a
 # CachyOS base into BITE-OS. Installing this one package pulls the whole
@@ -10,7 +10,7 @@
 
 pkgname=bite-os
 pkgver=1.1
-pkgrel=13
+pkgrel=16
 pkgdesc="BITE-OS — identity, branding, rice system and tooling (CachyOS-based)"
 arch=('any')
 url="https://tiktok.com/@glitchbite404"
@@ -22,6 +22,9 @@ depends=(
     'fastfetch' 'kitty' 'nwg-dock-hyprland' 'xdg-desktop-portal-hyprland'
     'caelestia-shell' 'caelestia-cli' 'jq' 'curl' 'playerctl' 'swayosd'
     'cliphist' 'wl-clip-persist' 'bibata-cursor-git' 'hypridle'
+    # bite-toys hub + the bundled toys (bitebeat / bitecam / bitemuseum):
+    'ffmpeg' 'python' 'python-numpy' 'python-pillow' 'qt6-declarative'
+    'v4l-utils' 'v4l2loopback-dkms'
 )
 
 # These BITE-OS files replace whatever CachyOS shipped:
@@ -50,6 +53,17 @@ package() {
     install -m755 bin/bite-os-fix-boot       "$pkgdir/usr/bin/"
     install -m755 bin/bite-os-fix-fastfetch  "$pkgdir/usr/bin/"
     install -m755 bin/bite-os-update         "$pkgdir/usr/bin/"
+    install -m755 bin/bite-toys              "$pkgdir/usr/bin/"
+
+    # --- bundled toys: the offline half of the bite-toys hub catalog ---
+    # bite-toys looks here for toys that ship on the ISO and work with no
+    # network; anything it fetches later lands in ~/.local/share/bite-os/toys.
+    # `run` (and bitemuseum's scan.py) must stay executable — the hub shims
+    # exec them directly.
+    install -d "$pkgdir/usr/share/bite-os/toys"
+    cp -a toys/. "$pkgdir/usr/share/bite-os/toys/"
+    find "$pkgdir/usr/share/bite-os/toys" -name '__pycache__' -type d -prune -exec rm -rf {} +
+    find "$pkgdir/usr/share/bite-os/toys" -type f \( -name run -o -name '*.py' \) -exec chmod 755 {} +
 
     # --- pacman hooks (zz- so they run AFTER cachyos and win) ---
     install -d "$pkgdir/usr/share/libalpm/hooks"

@@ -40,8 +40,35 @@ REBUILD_FOREIGN=0
 # HARD-EXCLUDES x86_64_v3/_v4 arch builds: those need AVX2(+) and would crash
 # the ISO on older CPUs and in VMs — the repo must only ever ship generic
 # x86_64 (or any-arch) packages.
+# --- version pins ------------------------------------------------------------
+# The rice ships a CUSTOMISED caelestia 1.6.x tree that only loads against these
+# exact versions: caelestia-shell 2.x dropped CachingImageManager from the
+# Caelestia.Internal plugin, and libcava 1.0.0 moved the soname .so.0 -> .so.1.
+# Either one makes the shell QML fail to load outright — no bar, no keybinds.
+# find_pkg() otherwise takes `sort -V | tail -1` (NEWEST wins), which would
+# happily pull libcava-1.0.0 out of paru's clone cache and bake the breakage
+# into the ISO. Pinned packages are matched exactly and are never rebuilt from
+# the AUR. The installed system is pinned to match in customize_airootfs.sh.
+declare -A PINS=(
+    [caelestia-shell]="1.6.1-1"
+    [libcava]="0.10.7-2"
+)
+
+is_pinned() { [ -n "${PINS[$1]+x}" ]; }
+
 find_pkg() {
-    local name="$1" hit=""
+    local name="$1" hit="" want="${PINS[$1]:-}"
+    # Pinned: match the exact version, and also look in the repo dir itself so
+    # a good copy already sitting there keeps being used.
+    if [ -n "$want" ]; then
+        for c in "$REPO" "${CACHES[@]}"; do
+            hit="$(find "$c" -maxdepth 2 -name "${name}-${want}-*.pkg.tar.*" ! -name '*.sig' \
+                   ! -name '*-x86_64_v3.pkg.tar.*' ! -name '*-x86_64_v4.pkg.tar.*' 2>/dev/null \
+                   | sort -V | tail -1)"
+            [ -n "$hit" ] && { echo "$hit"; return 0; }
+        done
+        return 1
+    fi
     for c in "${CACHES[@]}"; do
         hit="$(find "$c" -maxdepth 2 -name "${name}-*.pkg.tar.*" ! -name '*.sig' \
                ! -name '*-x86_64_v3.pkg.tar.*' ! -name '*-x86_64_v4.pkg.tar.*' 2>/dev/null \
@@ -91,6 +118,18 @@ while read -r p; do
     # -bin packages ship prebuilt upstream binaries (generic), so the cache is
     # always safe for them; everything else is compiled here and must be
     # rebuilt with the portable flags when --rebuild-foreign is given.
+    # Pinned packages are resolved by exact version and NEVER handed to paru —
+    # paru would build whatever the AUR has today, which is the drift the pin
+    # exists to stop. If the pinned build isn't on disk anywhere, fail loudly
+    # rather than silently baking a newer, rice-breaking version into the ISO.
+    if is_pinned "$p"; then
+        if f="$(find_pkg "$p")"; then
+            cp "$f" "$REPO/"; echo "   ok    $p  (pinned ${PINS[$p]})"
+        else
+            missing+=("$p"); echo "   FAIL  $p  (pinned ${PINS[$p]} not found in repo/ or caches)"
+        fi
+        continue
+    fi
     if [ "$REBUILD_FOREIGN" -eq 0 ] || [[ "$p" == *-bin ]]; then
         if f="$(find_pkg "$p")"; then
             cp "$f" "$REPO/"; echo "   ok    $p"

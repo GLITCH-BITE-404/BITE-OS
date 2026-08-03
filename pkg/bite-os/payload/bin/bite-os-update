@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  ◈ BITE-OS — system updater  ·  © GLITCH-BITE404  ·  // THE SYSTEM BIT YOU
+#  ◈ BITE-OS — system updater  ·  © GLITCH-BITE-404  ·  // THE SYSTEM BIT YOU
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Updates EVERYTHING (kernel, apps, drivers, AUR, the rice) while staying
 # BITE-OS — the bite-os package's pacman hooks re-apply branding on every

@@ -1,6 +1,6 @@
 # Credits
 
-BITE-OS is a custom performance-focused Linux distribution by **GLITCH-BITE404**.
+BITE-OS is a custom performance-focused Linux distribution by **GLITCH-BITE-404**.
 
 ## What's in BITE-OS
 

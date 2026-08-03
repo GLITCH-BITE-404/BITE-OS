@@ -15,9 +15,9 @@ strings:
   versionedName:       BITE-OS 1.0 (dedsec)
   shortVersionedName:  BITE-OS 1.0
   bootloaderEntryName: BITE-OS
-  productUrl:          https://github.com/GLITCH-BITE404/BITE-OS
-  supportUrl:          https://github.com/GLITCH-BITE404/BITE-OS/issues
-  releaseNotesUrl:     https://github.com/GLITCH-BITE404/BITE-OS
+  productUrl:          https://github.com/GLITCH-BITE-404/BITE-OS
+  supportUrl:          https://github.com/GLITCH-BITE-404/BITE-OS/issues
+  releaseNotesUrl:     https://github.com/GLITCH-BITE-404/BITE-OS
 
 images:
   productLogo:    "logo.png"

@@ -1,0 +1,17 @@
+# Which directory the museum is built from
+root=~
+
+# Include the browser-history chapter at all
+history=on
+
+# Start with URLs hidden. Press B in the app to reveal them.
+# Leave this on if you're recording.
+redact=on
+
+# Rebuild the catalogue when it's older than this many days
+# @range 1-90
+maxage=7
+
+# Chapter to open on — handy for filming one part again
+# @range 0-8
+chapter=0

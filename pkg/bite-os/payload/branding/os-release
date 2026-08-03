@@ -4,13 +4,13 @@ ID=bite-os
 ID_LIKE="cachyos arch"
 BUILD_ID=rolling
 ANSI_COLOR="38;2;0;255;120"
-HOME_URL="https://github.com/GLITCH-BITE404/BITE-OS"
+HOME_URL="https://github.com/GLITCH-BITE-404/BITE-OS"
 SUPPORT_URL="https://www.tiktok.com/@glitch_bite404"
 LOGO=bite-os
 VERSION_CODENAME=dedsec
 # ── ownership ──────────────────────────────────────────────────────────────
-# BITE-OS is created and owned by GLITCH-BITE404. GPLv3 — forks must credit the
+# BITE-OS is created and owned by GLITCH-BITE-404. GPLv3 — forks must credit the
 # author and not present themselves as official BITE-OS. See LICENSE / NOTICE.
-VENDOR="GLITCH-BITE404"
-BITE_OS_AUTHOR="GLITCH-BITE404"
-BITE_OS_SOURCE="https://github.com/GLITCH-BITE404/BITE-OS"
+VENDOR="GLITCH-BITE-404"
+BITE_OS_AUTHOR="GLITCH-BITE-404"
+BITE_OS_SOURCE="https://github.com/GLITCH-BITE-404/BITE-OS"

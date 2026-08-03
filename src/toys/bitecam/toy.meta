@@ -1,0 +1,11 @@
+name=bitecam
+version=1.3
+desc=Your webcam, live, as ASCII art in the terminal
+category=visual
+author=GLITCH-BITE-404
+exec=run
+preview=--preview
+deps=ffmpeg py:numpy:python-numpy py:PIL:python-pillow
+usage=bitecam   ·   v webcam, r records, q quits, c colour, n charset
+keys=v:publish as a real webcam|r:start/stop recording|c:colour or mono|n:cycle the character ramp|i:invert light and dark|m:flip the mirror|s:show/hide the status bar|?:show or hide the key list|q:quit
+about=Turns your webcam into live ASCII in the terminal at whatever size the window is. ffmpeg grabs and scales the frames, so it stays smooth full-screen. Press n to cycle character ramps from clean ASCII through to solid blocks, c to flip between truecolour and mono, i to invert, and m to un-mirror it. Press r to record what you're seeing straight to an mp4 you can post, or v to publish it as a real webcam that Zoom, Discord and Meet can select — run bitecam --setup-camera once first.

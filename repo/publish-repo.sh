@@ -15,7 +15,7 @@ DISTRO="$(cd "$HERE/.." && pwd)"
 REPO="$HERE/x86_64"
 NAME="BITE-OS Repo Signing Key"
 RELEASE_TAG="repo"
-GH_REPO="GLITCH-BITE404/BITE-OS"
+GH_REPO="GLITCH-BITE-404/BITE-OS"
 
 KEYID="$(gpg --list-keys --with-colons "$NAME" 2>/dev/null | awk -F: '/^pub/{print $5; exit}')"
 [ -n "${KEYID:-}" ] || { echo "No signing key. Run first:  bash repo/setup-signing.sh" >&2; exit 1; }

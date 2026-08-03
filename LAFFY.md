@@ -57,6 +57,6 @@ always in here somewhere, watching. That's the point.
 
 **Good boy. Built different.** 🐾
 
-`BITE-OS` · by **GLITCH-BITE404** · for **Laffy**
+`BITE-OS` · by **GLITCH-BITE-404** · for **Laffy**
 
 </div>

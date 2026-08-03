@@ -1,0 +1,115 @@
+# Which camera to use
+device=/dev/video0
+
+# How your face gets covered. bar is the black REDACTED strip, eyes is just
+# the anonymity strip across your eyes, visor is a glowing band, vanish learns
+# the room behind you and paints it back over your head so you aren't there at
+# all, mosaic is heavy pixelation, blur softens it, glitch tears the colour
+# channels apart, static punches a hole of noise, ascii redraws the face as
+# characters. off leaves your face alone and just profiles it.
+# vanish needs a second or two of you out of frame to learn the background.
+# Cycle it live with b.
+# @choices bar,eyes,visor,vanish,mosaic,blur,glitch,static,ascii,off
+cover=bar
+
+# How chunky the mosaic cubes / ascii characters / blur are. Live keys: [ ]
+# @range 4-48
+blocksize=14
+
+# How much of your face the cover swallows — 1.0 is the detected box
+# exactly, higher spills past it. Live keys: - =
+# @range 0.7-2.0
+coversize=1.15
+
+# box is a hard rectangle, oval is a soft-edged ellipse. Live key: o
+# @choices box,oval
+covershape=box
+
+# The text written across the bar
+label=REDACTED
+
+# The surveillance profiler — brackets and the sweeping scan line
+profiler=on
+
+# The dossier panel beside your head (needs profiler on). Live key: d
+showdossier=on
+
+# How the video is drawn in the terminal. quad uses quadrant glyphs for twice
+# the horizontal detail of half; switch to half if your font shows gaps.
+# The preview is always coarser than what gets recorded — it is limited by
+# how many character cells your window has, so a bigger window or a smaller
+# font is what actually makes it sharper.
+# @choices quad,half
+preview=quad
+
+# Frames per second — drop this if it feels heavy
+# @range 5-60
+fps=30
+
+# Working resolution. Bigger looks sharper on the webcam and in recordings
+# but costs more to process every frame.
+# @choices 480,640,800,960
+procwidth=640
+
+# Flip it like a selfie camera
+mirror=on
+
+# Colour of the brackets, dossier and scan line
+# @choices green,red,cyan,amber,magenta,white
+accent=green
+
+# How hard it looks for faces. high finds you in bad light but will
+# occasionally lock onto a doorknob; low only fires on an obvious face.
+# @choices low,normal,high
+sensitivity=normal
+
+# Cover and profile every face in shot, or only the closest one
+multiface=on
+
+# Detection runs on a background thread; this is how many frames it waits
+# between attempts. Higher is lighter but the box lags your head more.
+# @range 1-8
+detectevery=2
+
+# What the dossier says. Split lines with | — these tokens get filled in:
+# {subject} {threat} {hash} {geo} {id} {time} {conf}
+dossier=SUBJECT: {subject}|MATCH: 0 RESULTS|THREAT: {threat}%|LOC: {geo}|SIG: {hash}
+
+# Filled into {subject} above
+subject=UNKNOWN
+
+# Filled into {geo} above. This is set dressing, not a real reading — pick
+# whatever coordinates look right on camera. Deliberately not anywhere near
+# you: it ships as a default, and a default that is your actual street is a
+# location leak in every clip and every install.
+geo=40.7128N 74.0060W
+
+# Show the raw tracking box and telemetry over the face
+trackbox=off
+
+# Show the size / fps / keys bar along the bottom
+stats=on
+
+# What `r` saves
+# @choices mp4,mkv
+recformat=mp4
+
+# source keeps the camera's own shape, vertical crops and scales to
+# 1080x1920 so it's ready to post without editing
+# @choices source,vertical
+recshape=source
+
+# Where recordings go. Cycle the common spots with the arrows, or press
+# Enter to type any folder you like.
+# @choices auto,desktop,downloads,pictures,documents,home
+recdir=auto
+
+# Which virtual camera device to publish on — 'auto' finds the
+# v4l2loopback one. Set it up first with: bitemask --setup-camera
+vcamdevice=auto
+
+# Draw the video in the terminal at all. A terminal can only show one glyph
+# per character cell, so the preview is coarse however large the window is —
+# press f for a real window at the full working resolution instead, and turn
+# this off if you only want that one.
+termpreview=on

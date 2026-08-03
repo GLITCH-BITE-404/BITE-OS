@@ -1,0 +1,1948 @@
+#!/bin/bash
+# bite-toys — BITE-OS toy hub. Browse, install, configure and remove the fun stuff.
+#
+# Two catalogs, one view:
+#   /usr/share/bite-os/toys/<name>/        bundled — ships on the ISO, works offline
+#   ~/.local/share/bite-os/toys/<name>/    fetched — pulled from the toys repo
+#
+# A toy is just a directory:
+#   toy.meta      name/version/desc/category/exec/deps  (key=value)
+#   run           the executable (or whatever `exec=` names)
+#   config.def    default settings, key=value, `#` lines above a key are its help
+#
+# Installing a toy symlinks a shim into ~/.local/bin so it becomes a plain
+# command. Removing deletes the shim (and the fetched copy, if it was fetched).
+# Bundled toys are never deleted — remove just un-installs them from PATH.
+#
+# Settings live in ~/.config/bite-os/toys/<name>.conf and are handed to the toy
+# as TOY_<KEY> environment vars, so a toy never has to parse config itself.
+
+set -euo pipefail
+
+APP="BITE-OS"
+# Resolved path to this script — shims point here, so they keep working whether
+# bite-toys lives in /usr/bin or you're testing a copy out of the build tree.
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+SYS_TOYS="/usr/share/bite-os/toys"
+USR_TOYS="${XDG_DATA_HOME:-$HOME/.local/share}/bite-os/toys"
+CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/bite-os/toys"
+BIN_DIR="${HOME}/.local/bin"
+STATE="${XDG_DATA_HOME:-$HOME/.local/share}/bite-os/toys.installed"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/bite-os"
+
+# Where `bite-toys update` pulls the catalog from. Override in
+# ~/.config/bite-os/hub.conf to point at a fork or a local mirror.
+REPO="https://raw.githubusercontent.com/GLITCH-BITE-404/BITE-OS-toys/main"
+HUB_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/bite-os/hub.conf"
+[[ -f "$HUB_CONF" ]] && . "$HUB_CONF"
+
+mkdir -p "$USR_TOYS" "$CONF_DIR" "$BIN_DIR" "$CACHE"
+touch "$STATE"
+
+c_red=$'\e[31m'; c_grn=$'\e[32m'; c_ylw=$'\e[33m'; c_cyn=$'\e[36m'
+c_mag=$'\e[35m'; c_bld=$'\e[1m'; c_dim=$'\e[2m'; c_rst=$'\e[0m'
+say()  { printf '%s\n' "$*"; }
+ok()   { printf '%s✓%s %s\n' "$c_grn" "$c_rst" "$*"; }
+warn() { printf '%s!%s %s\n' "$c_ylw" "$c_rst" "$*"; }
+err()  { printf '%s✗%s %s\n' "$c_red" "$c_rst" "$*" >&2; }
+die()  { err "$*"; exit 1; }
+
+# ─── toy lookup ──────────────────────────────────────────────────────────────
+
+# Fetched copies shadow bundled ones, so `bite-toys update` can ship a newer version
+# of a toy that came with the ISO without touching /usr.
+toy_dir() {
+    local name="$1"
+    [[ -d "$USR_TOYS/$name" ]] && { printf '%s' "$USR_TOYS/$name"; return 0; }
+    [[ -d "$SYS_TOYS/$name" ]] && { printf '%s' "$SYS_TOYS/$name"; return 0; }
+    return 1
+}
+
+toy_origin() {
+    [[ -d "$USR_TOYS/$1" ]] && { echo fetched; return; }
+    echo bundled
+}
+
+# Read one key out of a toy.meta. Missing key -> empty string, never an error,
+# so a toy with a sparse meta still lists cleanly.
+meta() {
+    local dir="$1" key="$2"
+    [[ -f "$dir/toy.meta" ]] || return 0
+    sed -n "s/^${key}=//p" "$dir/toy.meta" | head -1
+}
+
+all_toys() {
+    { [[ -d "$SYS_TOYS" ]] && find "$SYS_TOYS" -maxdepth 1 -mindepth 1 -type d -printf '%f\n'
+      find "$USR_TOYS" -maxdepth 1 -mindepth 1 -type d -printf '%f\n'
+    } 2>/dev/null | sort -u
+}
+
+is_installed() { grep -qxF "$1" "$STATE" 2>/dev/null; }
+
+# ─── dependencies ────────────────────────────────────────────────────────────
+#
+# A `deps=` entry is one of:
+#   cmd                  a command, package assumed to share its name
+#   cmd:package          a command whose package is named differently
+#   py:module:package    an importable python module
+#
+# Commands are what a toy actually needs at runtime; packages are what pacman
+# has to install. They are often not the same word — qml6 lives in
+# qt6-declarative — so guessing from the command name alone would send people
+# to a package that does not exist.
+MISSING_LABELS=(); MISSING_PKGS=()
+
+# Friendly names for display: "qml6:qt6-declarative" reads as "qml6".
+deps_pretty() {
+    local dir="$1" d out=""
+    for d in $(meta "$dir" deps); do
+        case "$d" in
+            py:*) d="${d#py:}"; out+="${d%%:*} " ;;
+            *)    out+="${d%%:*} " ;;
+        esac
+    done
+    printf '%s' "${out% }"
+}
+
+deps_missing() {
+    local dir="$1" d mod pkg cmd
+    MISSING_LABELS=(); MISSING_PKGS=()
+    [[ -n "$dir" ]] || return 0
+    for d in $(meta "$dir" deps); do
+        case "$d" in
+            py:*)
+                mod="${d#py:}"; pkg="${mod#*:}"; mod="${mod%%:*}"
+                [[ "$pkg" == "$mod" ]] && pkg="python-${mod}"
+                python3 -c "import ${mod}" >/dev/null 2>&1 && continue
+                MISSING_LABELS+=("python module ${mod}"); MISSING_PKGS+=("$pkg") ;;
+            *)
+                cmd="${d%%:*}"; pkg="${d#*:}"
+                command -v "$cmd" >/dev/null 2>&1 && continue
+                MISSING_LABELS+=("$cmd"); MISSING_PKGS+=("$pkg") ;;
+        esac
+    done
+    return 0
+}
+
+# Offer to install what's missing. Returns 0 if the toy can run.
+deps_ensure() {
+    local name="$1" dir="$2"
+    [[ -n "${BITE_NO_DEPCHECK:-}" ]] && return 0
+    deps_missing "$dir"
+    [[ ${#MISSING_PKGS[@]} -eq 0 ]] && return 0
+
+    printf '\n%s%s needs something you do not have yet:%s\n\n' "$c_ylw" "$name" "$c_rst"
+    local i
+    for i in "${!MISSING_LABELS[@]}"; do
+        printf '   %s✗%s %-22s %sfrom %s%s\n' "$c_red" "$c_rst" \
+            "${MISSING_LABELS[$i]}" "$c_dim" "${MISSING_PKGS[$i]}" "$c_rst"
+    done
+    printf '\n'
+
+    # Never prompt when there is nobody to answer — the hub renders previews by
+    # capturing a toy's output, and a blocked read there would hang the UI.
+    if [[ ! -t 0 || ! -t 1 ]]; then
+        err "install them with: sudo pacman -S --needed ${MISSING_PKGS[*]}"
+        return 1
+    fi
+    if ! command -v pacman >/dev/null 2>&1; then
+        err "install them with your package manager: ${MISSING_PKGS[*]}"
+        return 1
+    fi
+
+    printf '%sInstall %s now? %s[y/N]%s ' \
+        "$c_bld" "${MISSING_PKGS[*]}" "$c_dim" "$c_rst"
+    local ans=""
+    IFS= read -r ans </dev/tty || true
+    case "$ans" in
+        y|Y|yes|YES) ;;
+        *) printf '\n%sskipped — %s cannot run without it%s\n' \
+               "$c_dim" "$name" "$c_rst"; return 1 ;;
+    esac
+
+    printf '\n%ssudo will ask for your password%s\n\n' "$c_dim" "$c_rst"
+    if ! sudo pacman -S --needed "${MISSING_PKGS[@]}"; then
+        err "the install did not finish — $name still cannot run"
+        return 1
+    fi
+
+    deps_missing "$dir"
+    if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
+        err "still missing: ${MISSING_LABELS[*]}"
+        return 1
+    fi
+    ok "all set — starting $name"
+    return 0
+}
+
+# ─── settings ────────────────────────────────────────────────────────────────
+
+# Effective value for a key: user override if set, else the config.def default.
+#
+# Presence in the file decides, not whether the value looks empty. `label=` is
+# a real answer — it means "no text on the bar" — and treating it as unset made
+# that setting impossible to choose.
+setting_get() {
+    local name="$1" key="$2" dir line val found=0
+    dir="$(toy_dir "$name")" || return 1
+    if [[ -f "$CONF_DIR/$name.conf" ]]; then
+        while IFS= read -r line; do
+            [[ "$line" == \#* || "$line" != "${key}="* ]] && continue
+            val="${line#*=}"; found=1        # last assignment wins
+        done < "$CONF_DIR/$name.conf"
+    fi
+    [[ $found -eq 1 ]] && { printf '%s' "$val"; return 0; }
+    sed -n "s/^${key}=//p" "$dir/config.def" 2>/dev/null | head -1
+}
+
+setting_keys() {
+    local dir="$1"
+    [[ -f "$dir/config.def" ]] || return 0
+    grep -oP '^[A-Za-z_][A-Za-z0-9_]*(?==)' "$dir/config.def" 2>/dev/null || true
+}
+
+# The `#` comment lines directly above a key are its help text. Lines starting
+# `# @` are directives (@choices / @range), not prose — they're skipped here.
+setting_help() {
+    local dir="$1" key="$2"
+    [[ -f "$dir/config.def" ]] || return 0
+    awk -v k="$key" '
+        /^# *@/ { next }
+        /^#/    { sub(/^# ?/,""); buf = (buf ? buf " " : "") $0; next }
+        /^$/    { buf=""; next }
+        index($0, k "=") == 1 { print buf; exit }
+        { buf="" }
+    ' "$dir/config.def"
+}
+
+# Directive lookup: `# @choices a,b,c` or `# @range 0-10` above a key.
+setting_directive() {
+    local dir="$1" key="$2" what="$3"
+    [[ -f "$dir/config.def" ]] || return 0
+    awk -v k="$key" -v w="$what" '
+        $0 ~ "^# *@" w " " { sub("^# *@" w " ",""); val=$0; next }
+        /^$/ { val=""; next }
+        index($0, k "=") == 1 { print val; exit }
+        !/^#/ { val="" }
+    ' "$dir/config.def"
+}
+
+# What values can this setting take? Explicit @choices wins; on/off defaults
+# are inferred as booleans so the UI can toggle them without extra markup.
+setting_choices() {
+    local dir="$1" key="$2" c def
+    c="$(setting_directive "$dir" "$key" choices)"
+    if [[ -n "$c" ]]; then printf '%s' "${c//,/ }"; return 0; fi
+    def="$(sed -n "s/^${key}=//p" "$dir/config.def" 2>/dev/null | head -1)"
+    case "$def" in
+        on|off)   printf 'on off' ;;
+        yes|no)   printf 'yes no' ;;
+        true|false) printf 'true false' ;;
+    esac
+}
+
+# ─── commands ────────────────────────────────────────────────────────────────
+
+cmd_list() {
+    local filter="${1:-}" found=0
+    printf '%s%s toys%s  %s(● installed  ○ available)%s\n\n' \
+        "$c_bld" "$APP" "$c_rst" "$c_dim" "$c_rst"
+
+    local name dir desc cat ver mark colour
+    while read -r name; do
+        [[ -n "$name" ]] || continue
+        dir="$(toy_dir "$name")" || continue
+        cat="$(meta "$dir" category)"; cat="${cat:-misc}"
+        [[ -n "$filter" && "$filter" != "$cat" ]] && continue
+        found=1
+        desc="$(meta "$dir" desc)"
+        ver="$(meta "$dir" version)"
+        if is_installed "$name"; then mark="●"; colour="$c_grn"
+        else                          mark="○"; colour="$c_dim"; fi
+        printf '  %s%s%s %s%-14s%s %s%-9s%s %s\n' \
+            "$colour" "$mark" "$c_rst" "$c_bld" "$name" "$c_rst" \
+            "$c_mag" "$cat" "$c_rst" "$desc"
+        [[ -n "$ver" ]] && printf '    %sv%s · %s%s\n' "$c_dim" "$ver" "$(toy_origin "$name")" "$c_rst"
+    done < <(all_toys)
+
+    if [[ $found -eq 0 ]]; then
+        [[ -n "$filter" ]] && warn "no toys in category '$filter'" \
+                           || warn "no toys found — try: bite-toys update"
+        return 0
+    fi
+    printf '\n%sbite-toys info <toy>%s for details · %sbite-toys install <toy>%s to add it\n' \
+        "$c_cyn" "$c_rst" "$c_cyn" "$c_rst"
+}
+
+cmd_info() {
+    local name="${1:-}"; [[ -n "$name" ]] || die "usage: bite-toys info <toy>"
+    local dir; dir="$(toy_dir "$name")" || die "no such toy: $name"
+
+    printf '\n%s%s%s  %sv%s%s\n' "$c_bld" "$name" "$c_rst" \
+        "$c_dim" "$(meta "$dir" version)" "$c_rst"
+    printf '%s\n\n' "$(meta "$dir" desc)"
+
+    # Every toy ships an `about=` paragraph and nothing used to print it.
+    local about; about="$(meta "$dir" about)"
+    if [[ -n "$about" ]]; then
+        local w; w=$(( $(tput cols 2>/dev/null || echo 80) - 4 ))
+        [[ $w -lt 40 ]] && w=40
+        printf '%s' "$about" | fold -s -w "$w" | sed 's/^/  /'
+        printf '\n'
+    fi
+
+    printf '  %-10s %s\n' "category"  "$(meta "$dir" category)"
+    printf '  %-10s %s\n' "author"    "$(meta "$dir" author)"
+    printf '  %-10s %s\n' "origin"    "$(toy_origin "$name")"
+    printf '  %-10s %s\n' "path"      "$dir"
+    is_installed "$name" && printf '  %-10s %sinstalled%s\n' "status" "$c_grn" "$c_rst" \
+                         || printf '  %-10s %snot installed%s\n' "status" "$c_dim" "$c_rst"
+
+    local deps
+    deps="$(meta "$dir" deps)"
+    if [[ -n "$deps" ]]; then
+        deps_missing "$dir"
+        if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
+            printf '  %-10s %s%s%s\n' "needs" "$c_ylw" "${MISSING_LABELS[*]}" "$c_rst"
+            printf '  %-10s %ssudo pacman -S --needed %s%s\n' "" "$c_dim" \
+                "${MISSING_PKGS[*]}" "$c_rst"
+        else
+            printf '  %-10s %s %s(all present)%s\n' "needs" "$(deps_pretty "$dir")" "$c_dim" "$c_rst"
+        fi
+    fi
+
+    local keys; keys="$(setting_keys "$dir")"
+    if [[ -n "$keys" ]]; then
+        printf '\n  %ssettings%s\n' "$c_bld" "$c_rst"
+        local k
+        while read -r k; do
+            [[ -n "$k" ]] || continue
+            printf '    %s%-12s%s %-14s %s%s%s\n' "$c_cyn" "$k" "$c_rst" \
+                "$(setting_get "$name" "$k")" "$c_dim" "$(setting_help "$dir" "$k")" "$c_rst"
+        done <<< "$keys"
+        printf '    %sbite-toys config %s <key> <value>%s\n' "$c_dim" "$name" "$c_rst"
+    fi
+    echo
+}
+
+cmd_install() {
+    [[ $# -gt 0 ]] || die "usage: bite-toys install <toy> [toy...]"
+    local name dir exec_name shim failed=0
+    for name in "$@"; do
+        dir="$(toy_dir "$name")" || { err "no such toy: $name (try: bite-toys update)"; failed=1; continue; }
+
+        if is_installed "$name"; then warn "$name is already installed"; continue; fi
+
+        exec_name="$(meta "$dir" exec)"; exec_name="${exec_name:-run}"
+        [[ -x "$dir/$exec_name" ]] || { err "$name is broken: missing executable '$exec_name'"; failed=1; continue; }
+
+        # Refuse to shadow an unrelated command already on PATH — silently
+        # hijacking `top` or `fetch` would be a nightmare to debug later.
+        shim="$BIN_DIR/$name"
+        if [[ -e "$shim" && ! -L "$shim" ]]; then
+            err "$BIN_DIR/$name exists and isn't ours — not overwriting"; failed=1; continue
+        fi
+        local clash; clash="$(command -v "$name" 2>/dev/null || true)"
+        if [[ -n "$clash" && "$clash" != "$shim" ]]; then
+            warn "'$name' already resolves to $clash — the toy will take priority once ~/.local/bin wins your PATH"
+        fi
+
+        # The shim re-enters this script so config is applied at run time, not
+        # baked in at install time. Edit a setting, next run picks it up.
+        ln -sfn "$SELF" "$shim"
+
+        printf '%s\n' "$name" >> "$STATE"
+        sort -u -o "$STATE" "$STATE"
+        cmd_seed_config "$name"
+        ok "installed $c_bld$name$c_rst — run it with: $c_cyn$name$c_rst"
+
+        deps_missing "$dir"
+        [[ ${#MISSING_PKGS[@]} -gt 0 ]] && \
+            warn "  needs ${MISSING_LABELS[*]} — it will offer to install this on first run"
+    done
+    case ":$PATH:" in
+        *":$BIN_DIR:"*) ;;
+        *) warn "$BIN_DIR is not on your PATH — installed toys won't run as bare commands" ;;
+    esac
+    return $failed
+}
+
+# Write a user config seeded from config.def, but never clobber existing edits.
+cmd_seed_config() {
+    local name="$1" dir; dir="$(toy_dir "$name")" || return 0
+    [[ -f "$dir/config.def" ]] || return 0
+    [[ -f "$CONF_DIR/$name.conf" ]] && return 0
+    { printf '# %s settings — edit freely, or use: bite-toys config %s <key> <value>\n' "$name" "$name"
+      printf '# Delete a line to fall back to the default.\n\n'
+      cat "$dir/config.def"
+    } > "$CONF_DIR/$name.conf"
+}
+
+cmd_remove() {
+    [[ $# -gt 0 ]] || die "usage: bite-toys remove <toy> [toy...]"
+    local name shim failed=0
+    for name in "$@"; do
+        if ! is_installed "$name"; then warn "$name is not installed"; failed=1; continue; fi
+
+        shim="$BIN_DIR/$name"
+        [[ -L "$shim" ]] && rm -f "$shim"
+        grep -vxF "$name" "$STATE" > "$STATE.tmp" 2>/dev/null || true
+        mv "$STATE.tmp" "$STATE"
+
+        # Deleting a fetched copy is only safe when a bundled one is behind it.
+        # With no bundled catalog — the hub isn't packaged yet, or someone
+        # hand-copied their toys into place — that directory IS the only copy
+        # on the machine, and `remove` would be data loss rather than an
+        # uninstall. Uninstalling must never be able to lose your work; use
+        # `bite-toys purge` when deleting the files is what you actually mean.
+        if [[ -d "$USR_TOYS/$name" && -d "$SYS_TOYS/$name" ]]; then
+            rm -rf "$USR_TOYS/$name"
+            ok "removed $name (deleted the downloaded copy — the bundled one is still there)"
+        elif [[ -d "$USR_TOYS/$name" ]]; then
+            ok "removed $name from your PATH"
+            printf '  %sits files are kept at %s — there is no bundled copy to fall back on%s\n' \
+                "$c_dim" "$USR_TOYS/$name" "$c_rst"
+            printf '  %sdelete them for good with: bite-toys purge %s%s\n' \
+                "$c_dim" "$name" "$c_rst"
+        else
+            ok "removed $name (bundled toy stays available — reinstall any time)"
+        fi
+        [[ -f "$CONF_DIR/$name.conf" ]] && \
+            printf '  %ssettings kept at %s — delete it yourself if you want a clean slate%s\n' \
+                "$c_dim" "$CONF_DIR/$name.conf" "$c_rst"
+    done
+    return $failed
+}
+
+# The explicit, destructive counterpart to `remove`: actually delete a toy's
+# files. It exists so that `remove` never has to be the dangerous one.
+cmd_purge() {
+    local name="${1:-}" force="${2:-}"
+    [[ -n "$name" ]] || die "usage: bite-toys purge <toy> [--force]"
+    [[ -d "$USR_TOYS/$name" ]] || die "$name has no downloaded copy to delete"
+
+    if [[ ! -d "$SYS_TOYS/$name" ]]; then
+        warn "$USR_TOYS/$name is the only copy of $name on this machine"
+        if [[ "$force" != "--force" ]]; then
+            [[ -t 0 && -t 1 ]] || die "refusing to delete the only copy non-interactively (pass --force)"
+            printf '%sDelete it for good? %s[y/N]%s ' "$c_bld" "$c_dim" "$c_rst"
+            local ans=""; IFS= read -r ans </dev/tty || true
+            case "$ans" in y|Y|yes|YES) ;; *) say "left alone"; return 0 ;; esac
+        fi
+    fi
+
+    is_installed "$name" && cmd_remove "$name" >/dev/null 2>&1
+    rm -rf "$USR_TOYS/$name"
+    ok "deleted $USR_TOYS/$name"
+}
+
+cmd_run() {
+    local name="${1:-}"; [[ -n "$name" ]] || die "usage: bite-toys run <toy> [args...]"
+    shift
+    local dir; dir="$(toy_dir "$name")" || die "no such toy: $name"
+    local exec_name; exec_name="$(meta "$dir" exec)"; exec_name="${exec_name:-run}"
+    [[ -x "$dir/$exec_name" ]] || die "$name is broken: missing executable '$exec_name'"
+
+    deps_ensure "$name" "$dir" || exit 1
+
+    # Hand settings over as TOY_<KEY> so toys stay dead simple to write.
+    local keys k v ovr
+    keys="$(setting_keys "$dir")"
+    while read -r k; do
+        [[ -n "$k" ]] || continue
+        # The hub's preview sets BITE_OVR_<KEY> to try a value out without
+        # committing it to the config file first.
+        ovr="BITE_OVR_${k^^}"
+        if [[ -n "${!ovr+x}" ]]; then v="${!ovr}"; else v="$(setting_get "$name" "$k")"; fi
+        export "TOY_${k^^}=$v"
+    done <<< "$keys"
+    export TOY_NAME="$name" TOY_DIR="$dir" BITE_TOY_HUB=1
+
+    exec "$dir/$exec_name" "$@"
+}
+
+cmd_config() {
+    local name="${1:-}"; [[ -n "$name" ]] || die "usage: bite-toys config <toy> [key] [value]"
+    local dir; dir="$(toy_dir "$name")" || die "no such toy: $name"
+    local key="${2:-}" val="${3:-}"
+
+    # No key: show everything.
+    if [[ -z "$key" ]]; then
+        local keys; keys="$(setting_keys "$dir")"
+        [[ -n "$keys" ]] || { warn "$name has no settings"; return 0; }
+        printf '\n%s%s settings%s  %s(%s)%s\n\n' "$c_bld" "$name" "$c_rst" \
+            "$c_dim" "$CONF_DIR/$name.conf" "$c_rst"
+        local k
+        while read -r k; do
+            [[ -n "$k" ]] || continue
+            printf '  %s%-12s%s %-16s %s%s%s\n' "$c_cyn" "$k" "$c_rst" \
+                "$(setting_get "$name" "$k")" "$c_dim" "$(setting_help "$dir" "$k")" "$c_rst"
+        done <<< "$keys"
+        echo
+        return 0
+    fi
+
+    setting_keys "$dir" | grep -qxF "$key" || die "$name has no setting '$key' (see: bite-toys config $name)"
+
+    # Key but no value: read it back. Bare value on its own line, so it can be
+    # captured in a script: fps=$(bite-toys config matrix speed)
+    [[ $# -ge 3 ]] || { printf '%s\n' "$(setting_get "$name" "$key")"; return 0; }
+
+    # A value outside @choices / @range gets silently clamped by the toy, which
+    # leaves the hub confidently displaying a setting the toy is not using.
+    # Rejecting it here keeps what you see and what runs the same thing.
+    local allowed lo hi
+    allowed="$(setting_choices "$dir" "$key")"
+    if [[ -n "$allowed" && " $allowed " != *" $val "* ]]; then
+        die "$name: $key must be one of: ${allowed// / · }"
+    fi
+    local rng; rng="$(setting_directive "$dir" "$key" range)"
+    if [[ -n "$rng" && "$rng" =~ ^(-?[0-9.]+)-([0-9.]+)$ ]]; then
+        lo="${BASH_REMATCH[1]}"; hi="${BASH_REMATCH[2]}"
+        [[ "$val" =~ ^-?[0-9]+(\.[0-9]+)?$ ]] \
+            || die "$name: $key must be a number between $lo and $hi"
+        awk -v v="$val" -v lo="$lo" -v hi="$hi" \
+            'BEGIN{ exit !(v+0 >= lo+0 && v+0 <= hi+0) }' \
+            || die "$name: $key must be between $lo and $hi (got $val)"
+    fi
+
+    cmd_seed_config "$name"
+    local f="$CONF_DIR/$name.conf"
+    if grep -q "^${key}=" "$f" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=${val}|" "$f"
+    else
+        printf '%s=%s\n' "$key" "$val" >> "$f"
+    fi
+    ok "$name: $key = $val"
+}
+
+cmd_reset() {
+    local name="${1:-}"; [[ -n "$name" ]] || die "usage: bite-toys reset <toy>"
+    toy_dir "$name" >/dev/null || die "no such toy: $name"
+    [[ -f "$CONF_DIR/$name.conf" ]] || { warn "$name is already at defaults"; return 0; }
+    rm -f "$CONF_DIR/$name.conf"
+    cmd_seed_config "$name"
+    ok "$name reset to defaults"
+}
+
+cmd_search() {
+    local q="${1:-}"; [[ -n "$q" ]] || die "usage: bite-toys search <text>"
+    local name dir hit=0
+    while read -r name; do
+        [[ -n "$name" ]] || continue
+        dir="$(toy_dir "$name")" || continue
+        if grep -qi -- "$q" <<< "$name $(meta "$dir" desc) $(meta "$dir" category)"; then
+            hit=1
+            printf '  %s%-14s%s %s\n' "$c_bld" "$name" "$c_rst" "$(meta "$dir" desc)"
+        fi
+    done < <(all_toys)
+    [[ $hit -eq 1 ]] || warn "nothing matched '$q'"
+}
+
+# Split one catalog line into name/ver/sha/desc without letting bash collapse
+# empty fields the way IFS=$'\t' does.
+split_tsv() {
+    local line="$1" rest
+    TSV_NAME="${line%%$'\t'*}"; rest="${line#*$'\t'}"
+    TSV_VER="${rest%%$'\t'*}";  rest="${rest#*$'\t'}"
+    TSV_SHA="${rest%%$'\t'*}";  TSV_DESC="${rest#*$'\t'}"
+    return 0
+}
+
+cmd_update() {
+    command -v curl >/dev/null 2>&1 || die "curl is required for bite-toys update"
+    local index="$CACHE/catalog.tsv"
+    say "Fetching catalog from ${c_dim}${REPO}${c_rst}..."
+    if ! curl -fsSL --connect-timeout 10 "$REPO/catalog.tsv" -o "$index.tmp"; then
+        err "couldn't reach the toys repo"
+        say "${c_dim}  bundled toys still work — this only affects downloadable ones${c_rst}"
+        return 1
+    fi
+    mv "$index.tmp" "$index"
+
+    local name ver sha desc line n=0 new=0
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        split_tsv "$line"
+        name="$TSV_NAME"; ver="$TSV_VER"; desc="$TSV_DESC"
+        [[ -n "$name" ]] || continue
+        n=$((n+1))
+        local have=""
+        local dir; dir="$(toy_dir "$name" 2>/dev/null)" && have="$(meta "$dir" version)"
+        if [[ "$have" != "$ver" ]]; then
+            new=$((new+1))
+            [[ -n "$have" ]] && printf '  %s↑%s %-14s %s → %s\n' "$c_ylw" "$c_rst" "$name" "$have" "$ver" \
+                             || printf '  %s+%s %-14s %s%s%s\n' "$c_grn" "$c_rst" "$name" "$c_dim" "$desc" "$c_rst"
+        fi
+    done < "$index"
+
+    ok "catalog updated — $n toys known, $new new or updated"
+    if [[ $new -gt 0 ]]; then
+        say "${c_dim}  bite-toys fetch <toy>     download one you don't have${c_rst}"
+        say "${c_dim}  bite-toys upgrade         update the ones you already run${c_rst}"
+    fi
+    return 0
+}
+
+cmd_fetch() {
+    local name="${1:-}"; [[ -n "$name" ]] || die "usage: bite-toys fetch <toy>"
+    command -v curl >/dev/null 2>&1 || die "curl is required for bite-toys fetch"
+    local index="$CACHE/catalog.tsv"
+    [[ -f "$index" ]] || die "no catalog yet — run: bite-toys update"
+
+    local line; line="$(awk -F'\t' -v n="$name" '$1==n' "$index" | head -1)"
+    [[ -n "$line" ]] || die "'$name' is not in the catalog (try: bite-toys update)"
+    local ver sha
+    ver="$(cut -f2 <<< "$line")"; sha="$(cut -f3 <<< "$line")"
+
+    local tarball="$CACHE/$name-$ver.tar.gz"
+    say "Downloading $name v$ver..."
+    curl -fsSL --connect-timeout 15 "$REPO/toys/$name-$ver.tar.gz" -o "$tarball" \
+        || die "download failed"
+
+    # The catalog is the trust anchor: a toy is arbitrary code, so a tarball
+    # that doesn't match its published hash never gets unpacked.
+    if [[ -n "$sha" && "$sha" != "-" ]]; then
+        local got; got="$(sha256sum "$tarball" | cut -d' ' -f1)"
+        if [[ "$got" != "$sha" ]]; then
+            rm -f "$tarball"
+            die "checksum mismatch for $name — refusing to install"
+        fi
+    else
+        warn "no checksum published for $name — installing unverified"
+    fi
+
+    rm -rf "$USR_TOYS/$name"
+    mkdir -p "$USR_TOYS/$name"
+    tar -xzf "$tarball" -C "$USR_TOYS/$name" --strip-components=1 \
+        || die "couldn't unpack $name"
+    chmod +x "$USR_TOYS/$name"/* 2>/dev/null || true
+    rm -f "$tarball"
+    if [[ -n "${FETCH_QUIET:-}" ]]; then
+        ok "fetched $name v$ver"
+    else
+        ok "fetched $name v$ver — install it with: ${c_cyn}bite-toys install $name${c_rst}"
+    fi
+}
+
+# ─── upgrading ───────────────────────────────────────────────────────────────
+
+# What the catalog says is current for a toy, if we have a catalog at all.
+catalog_version() {
+    local index="$CACHE/catalog.tsv"
+    [[ -f "$index" ]] || return 0
+    awk -F'\t' -v n="$1" '$1==n { print $2; exit }' "$index"
+}
+
+# Upgradable when the catalog names a version different from the one on disk.
+# Deliberately string inequality rather than "is newer": the catalog is the
+# publisher's word on what current means, and that includes a rollback.
+toy_upgradable() {
+    local name="$1" have want dir
+    want="$(catalog_version "$name")"
+    [[ -n "$want" ]] || return 1
+    dir="$(toy_dir "$name")" || return 1
+    have="$(meta "$dir" version)"
+    [[ -n "$have" && "$have" != "$want" ]]
+}
+
+# `update` only ever reported that a newer version existed; this is the half
+# that acts on it. Files are replaced, the shim and the user's config are not,
+# so an upgrade never costs anyone their settings.
+cmd_upgrade() {
+    local -a targets=()
+    if [[ $# -gt 0 ]]; then
+        targets=("$@")
+    else
+        local n
+        while read -r n; do
+            [[ -n "$n" ]] && toy_upgradable "$n" && targets+=("$n")
+        done < "$STATE"
+    fi
+
+    if [[ ${#targets[@]} -eq 0 ]]; then
+        [[ -f "$CACHE/catalog.tsv" ]] || { warn "no catalog yet — run: bite-toys update"; return 1; }
+        ok "everything is up to date"
+        return 0
+    fi
+
+    local name was want failed=0
+    for name in "${targets[@]}"; do
+        if ! toy_upgradable "$name"; then warn "$name is already current"; continue; fi
+        was="$(meta "$(toy_dir "$name")" version)"
+        want="$(catalog_version "$name")"
+        say "Upgrading ${c_bld}${name}${c_rst} ${c_dim}${was} → ${want}${c_rst}"
+        # A subshell, because cmd_fetch dies on a bad download and one failed
+        # toy must not abandon the rest of the upgrade.
+        if ( FETCH_QUIET=1; cmd_fetch "$name" ); then
+            is_installed "$name" || cmd_install "$name" >/dev/null
+            ok "$name is now v${want}"
+        else
+            err "couldn't upgrade $name"; failed=1
+        fi
+    done
+    return $failed
+}
+
+# ─── publishing ──────────────────────────────────────────────────────────────
+#
+# The other half of `update` / `fetch`: turn toy directories into the tarballs
+# and the catalog rows the repo serves. Doing this by hand meant rolling a tar,
+# running sha256sum and editing a TSV in three separate steps — which is exactly
+# how a catalog ends up publishing a checksum that doesn't match its tarball,
+# and `fetch` refuses to install anything that doesn't match.
+
+cmd_pack() {
+    local out="./dist"
+    local -a names=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --out) out="${2:-}"; [[ -n "$out" ]] || die "--out needs a directory"; shift 2 ;;
+            -*)    die "unknown option: $1" ;;
+            *)     names+=("$1"); shift ;;
+        esac
+    done
+    command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required for pack"
+
+    if [[ ${#names[@]} -eq 0 ]]; then
+        local t
+        while read -r t; do [[ -n "$t" ]] && names+=("$t"); done < <(all_toys)
+    fi
+    [[ ${#names[@]} -gt 0 ]] || die "no toys to pack"
+
+    mkdir -p "$out/toys"
+    local index="$out/catalog.tsv"
+    printf '# BITE-OS toy catalog — name\tversion\tsha256\tdescription\n' > "$index"
+
+    local name dir ver desc exec_name tarball sha staged n=0 failed=0
+    for name in "${names[@]}"; do
+        if ! dir="$(toy_dir "$name")"; then err "no such toy: $name"; failed=1; continue; fi
+        ver="$(meta "$dir" version)"; ver="${ver:-0.0}"
+        desc="$(meta "$dir" desc)"
+        exec_name="$(meta "$dir" exec)"; exec_name="${exec_name:-run}"
+        if [[ ! -x "$dir/$exec_name" ]]; then
+            err "$name has no runnable '$exec_name' — not packing it"; failed=1; continue
+        fi
+
+        # fetch unpacks with --strip-components=1, so the tarball must contain
+        # exactly one top-level directory named after the toy.
+        staged="$(mktemp -d)"
+        cp -a "$dir" "$staged/$name"
+        find "$staged/$name" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+
+        # Reproducible bytes: same toy in, same checksum out. Without pinning the
+        # mtimes and dropping gzip's timestamp header, every single rebuild
+        # produces a different sha and the catalog churns for no reason.
+        tarball="$out/toys/$name-$ver.tar.gz"
+        tar --sort=name --owner=0 --group=0 --numeric-owner \
+            --mtime="@${SOURCE_DATE_EPOCH:-0}" \
+            -cf - -C "$staged" "$name" | gzip -n9 > "$tarball"
+        rm -rf "$staged"
+
+        sha="$(sha256sum "$tarball" | cut -d' ' -f1)"
+        printf '%s\t%s\t%s\t%s\n' "$name" "$ver" "$sha" "$desc" >> "$index"
+        ok "$name v$ver  ${c_dim}$(du -h "$tarball" | cut -f1)  ${sha:0:12}…${c_rst}"
+        n=$((n+1))
+    done
+
+    echo
+    ok "packed $n toy(s) into $out"
+    say "${c_dim}  $index${c_rst}"
+    say "${c_dim}  publish by committing that directory to the toys repo${c_rst}"
+    return $failed
+}
+
+# Scaffold a toy that already speaks the whole contract, so writing one is
+# editing three files rather than reverse-engineering them from a working toy.
+cmd_new() {
+    local name="${1:-}"
+    [[ -n "$name" ]] || die "usage: bite-toys new <name>"
+    [[ "$name" =~ ^[a-z][a-z0-9-]*$ ]] \
+        || die "a toy name is lowercase letters, digits and dashes (got '$name')"
+    toy_dir "$name" >/dev/null 2>&1 && die "$name already exists"
+
+    local dir="$USR_TOYS/$name"
+    mkdir -p "$dir"
+
+    cat > "$dir/toy.meta" <<EOF
+name=$name
+version=0.1
+desc=A one-line description, shown in every list
+category=misc
+author=${USER:-you}
+exec=run
+usage=$name   ·   q quits
+keys=q:quit|?:show or hide the key list
+about=The long version. This is what the hub shows when someone presses a on it, so say what it does, what it needs and what the good keys are.
+EOF
+
+    cat > "$dir/config.def" <<'EOF'
+# Comment lines directly above a key are its help text, shown in the settings
+# screen. Blank lines separate one setting from the next.
+
+# A word from a fixed list — the arrows cycle it
+# @choices green,cyan,magenta,amber
+accent=green
+
+# A number the arrows step within its range
+# @range 1-60
+fps=30
+
+# on/off is understood without an @choices line
+enabled=on
+EOF
+
+    cat > "$dir/run" <<'EOF'
+#!/usr/bin/env bash
+# Settings arrive as TOY_<KEY> environment variables — the hub reads config.def
+# and the user's overrides, so a toy never parses configuration itself.
+# Defaults are repeated here so the toy still works when run directly.
+set -euo pipefail
+
+ACCENT="${TOY_ACCENT:-green}"
+FPS="${TOY_FPS:-30}"
+ENABLED="${TOY_ENABLED:-on}"
+
+# The hub renders the PREVIEW pane by capturing this with `preview=` from
+# toy.meta. Keep it short, non-interactive, and make it exit on its own.
+if [[ "${1:-}" == "--preview" ]]; then
+    printf 'accent=%s fps=%s enabled=%s\n' "$ACCENT" "$FPS" "$ENABLED"
+    exit 0
+fi
+
+printf 'hello from %s (accent=%s, fps=%s)\n' "${TOY_NAME:-toy}" "$ACCENT" "$FPS"
+EOF
+    chmod +x "$dir/run"
+
+    ok "created $c_bld$name$c_rst at $dir"
+    say ""
+    say "  ${c_cyn}\$EDITOR $dir/run${c_rst}          write the thing"
+    say "  ${c_cyn}bite-toys install $name${c_rst}        try it"
+    say "  ${c_cyn}bite-toys pack $name${c_rst}           build its tarball + catalog row"
+}
+
+cmd_doctor() {
+    printf '%s%s toy hub — checkup%s\n\n' "$c_bld" "$APP" "$c_rst"
+    local issues=0
+
+    if [[ -d "$SYS_TOYS" ]]; then ok "bundled catalog: $SYS_TOYS"
+    else warn "bundled catalog missing ($SYS_TOYS)"; issues=$((issues+1)); fi
+
+    case ":$PATH:" in
+        *":$BIN_DIR:"*) ok "$BIN_DIR is on PATH" ;;
+        *) err "$BIN_DIR is NOT on PATH — toys won't run as commands"
+           say "${c_dim}  fish: fish_add_path ~/.local/bin${c_rst}"
+           issues=$((issues+1)) ;;
+    esac
+
+    local name dir exec_name broken=0
+    while read -r name; do
+        [[ -n "$name" ]] || continue
+        if ! dir="$(toy_dir "$name")"; then
+            err "installed toy '$name' no longer exists"; broken=$((broken+1)); continue
+        fi
+        exec_name="$(meta "$dir" exec)"; exec_name="${exec_name:-run}"
+        [[ -x "$dir/$exec_name" ]] || { err "'$name' has no runnable '$exec_name'"; broken=$((broken+1)); }
+        [[ -L "$BIN_DIR/$name" ]] || { warn "'$name' is installed but its shim is gone — bite-toys install $name"; broken=$((broken+1)); }
+    done < "$STATE"
+    [[ $broken -eq 0 ]] && ok "all installed toys look healthy"
+    issues=$((issues+broken))
+
+    echo
+    [[ $issues -eq 0 ]] && ok "no problems found" || warn "$issues issue(s) above"
+}
+
+cmd_help() {
+    cat <<EOF
+${c_bld}bite${c_rst} — the $APP toy hub ${c_dim}(fun stuff, on demand)${c_rst}
+
+${c_bld}BROWSE${c_rst}
+  ${c_cyn}bite-toys list${c_rst} [category]     show every toy, installed or not
+  ${c_cyn}bite-toys search${c_rst} <text>       find a toy by name or description
+  ${c_cyn}bite-toys info${c_rst} <toy>          what it does, what it needs, what you can tweak
+
+${c_bld}USE${c_rst}
+  ${c_cyn}bite-toys install${c_rst} <toy>...    add it to your PATH as a real command
+  ${c_cyn}bite-toys remove${c_rst} <toy>...     take it back off — never deletes your only copy
+  ${c_cyn}bite-toys purge${c_rst} <toy>         and delete its files too (asks first)
+  ${c_cyn}bite-toys run${c_rst} <toy> [args]    run it once without installing
+
+${c_bld}CUSTOMIZE${c_rst}
+  ${c_cyn}bite-toys config${c_rst} <toy>              list its settings
+  ${c_cyn}bite-toys config${c_rst} <toy> <key>        read one
+  ${c_cyn}bite-toys config${c_rst} <toy> <key> <val>  change one
+  ${c_cyn}bite-toys reset${c_rst} <toy>               back to defaults
+
+${c_bld}REPO${c_rst}
+  ${c_cyn}bite-toys update${c_rst}             refresh the catalog from the toys repo
+  ${c_cyn}bite-toys fetch${c_rst} <toy>        download one that didn't ship with the ISO
+  ${c_cyn}bite-toys upgrade${c_rst} [toy...]   update installed toys — settings are kept
+  ${c_cyn}bite-toys doctor${c_rst}             check for broken toys / PATH problems
+
+${c_bld}MAKE ONE${c_rst}
+  ${c_cyn}bite-toys new${c_rst} <name>          scaffold a toy that already works
+  ${c_cyn}bite-toys pack${c_rst} [--out dir]    build tarballs + catalog.tsv to publish
+
+${c_dim}Bundled toys live in $SYS_TOYS and always work offline.${c_rst}
+EOF
+}
+
+# ─── the hub UI ──────────────────────────────────────────────────────────────
+#
+# One full-screen frame is assembled into $F and written in a single printf, so
+# the screen never tears or flickers mid-redraw. Nothing repaints on a timer —
+# a redraw only happens in response to a keypress.
+
+TABS=(INSTALLED "GET MORE" CUSTOMIZE PREVIEW COMMANDS)
+TAB=0                       # active tab
+declare -a CUR=(0 0 0 0 0)  # cursor row, per tab
+declare -a TOP=(0 0 0 0 0)  # scroll offset, per tab
+PANE=0                      # customize: 0 = toy list, 1 = settings
+KEYSHOW=1                   # installed tab: show each toy's key list
+ABOUT=0                     # installed tab: 0 = grid, 1 = the about reader
+LIVE=0                      # settings screen: run the toy for a live preview?
+PV_PANE=0                   # preview tab: 0 browse · 1 watching · 2 tuning
+PV_SET_CUR=0                # preview tab: selected setting
+PV_STARTING=0               # draw "starting…" once before the toy is run
+REDRAW=0                    # draw again immediately, without waiting for a key
+declare -A PV_TMP=()        # values being tried out, not yet written to disk
+SET_CUR=0                   # customize: selected setting
+FLASH=""                    # transient status message
+CONFIRM=""                  # toy awaiting a second x to be uninstalled
+declare -a INST=() AVAIL=() ADESC=() ASTATE=()
+declare -A UPG=()           # toy -> 1 when the catalog has a different version
+
+ui_enter() {
+    printf '\e[?1049h\e[?25l'
+    stty -echo -icanon min 1 time 0 2>/dev/null || true
+}
+ui_leave() {
+    stty echo icanon 2>/dev/null || true
+    printf '\e[?25h\e[?1049l'
+}
+
+ui_key() {
+    local k rest=""
+    IFS= read -rsn1 k 2>/dev/null || return 1
+    if [[ "$k" == $'\e' ]]; then
+        IFS= read -rsn2 -t 0.05 rest 2>/dev/null || true
+        k+="$rest"
+    fi
+    printf '%s' "$k"
+}
+
+F=""
+row()   { F+="${1-}"$'\e[K\n'; }
+flush() { printf '\e[H%s\e[J' "$F"; F=""; }
+
+# Visible length of a string once ANSI colour codes are stripped — needed to
+# pad columns correctly, since printf's %-*s counts escape bytes as width.
+# Visible width once ANSI colour codes are stripped. This runs for every cell
+# of every frame, so it is pure bash — a `sed` here was costing a fork per cell,
+# and the command substitution cost another. Result lands in $VLEN.
+VLEN=0
+vlen() {
+    local s="${1-}" seen=""
+    while [[ $s == *$'\e['* ]]; do
+        seen+=${s%%$'\e['*}
+        s=${s#*$'\e['}
+        s=${s#*m}
+    done
+    VLEN=$(( ${#seen} + ${#s} ))
+}
+pad() {
+    local s="${1-}" w="$2"
+    vlen "$s"
+    printf '%s%*s' "$s" $(( w > VLEN ? w - VLEN : 0 )) ""
+}
+
+# One horizontal rule, sized to the terminal.
+hr() {
+    local w=$(( ${COLS:-80} > 2 ? COLS - 2 : 78 )) line
+    printf -v line '%*s' "$w" ''
+    printf '%s' "${line// /─}"
+}
+
+ui_refresh() {
+    INST=(); AVAIL=(); ADESC=(); ASTATE=(); UPG=()
+    local n
+    while read -r n; do [[ -n "$n" ]] && INST+=("$n"); done < "$STATE"
+
+    # GET MORE lists EVERY toy the hub knows about and says which ones you
+    # already have — it used to hide anything installed, so with everything
+    # installed the tab read as "nothing to get" and the catalogue was
+    # invisible. A toy can be both in the catalog and on disk, hence the
+    # seen-set: without it the same name appeared twice.
+    local -A seen=()
+    local index="$CACHE/catalog.tsv" name ver sha desc line
+    if [[ -f "$index" ]]; then
+        while IFS= read -r line; do
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            split_tsv "$line"
+            name="$TSV_NAME"
+            [[ -n "$name" ]] || continue
+            [[ -n "${seen[$name]:-}" ]] && continue
+            seen[$name]=1
+            AVAIL+=("$name"); ADESC+=("$TSV_DESC")
+        done < "$index"
+    fi
+    local t d
+    while read -r t; do
+        [[ -n "$t" ]] || continue
+        [[ -n "${seen[$t]:-}" ]] && continue
+        d="$(toy_dir "$t")" || continue
+        seen[$t]=1
+        AVAIL+=("$t"); ADESC+=("$(meta "$d" desc)")
+    done < <(all_toys)
+
+    # One state per entry, in the same order: have it · on disk · needs fetching.
+    for name in "${AVAIL[@]}"; do
+        if is_installed "$name"; then                    ASTATE+=("installed")
+        elif toy_dir "$name" >/dev/null 2>&1; then       ASTATE+=("onbox")
+        else                                             ASTATE+=("remote"); fi
+    done
+
+    # Which installed toys the catalog has moved past, so tab 1 can say so.
+    local i
+    for i in "${INST[@]}"; do toy_upgradable "$i" && UPG[$i]=1; done
+    return 0
+}
+
+ui_header() {
+    local cols="${COLS:-80}"
+    if [[ $cols -ge 62 ]]; then
+        row "$c_cyn ██████╗ ██╗████████╗███████╗       ██████╗ ███████╗$c_rst"
+        row "$c_cyn ██╔══██╗██║╚══██╔══╝██╔════╝      ██╔═══██╗██╔════╝$c_rst"
+        row "$c_cyn ██████╔╝██║   ██║   █████╗        ██║   ██║███████╗$c_rst"
+        row "$c_mag ██╔══██╗██║   ██║   ██╔══╝        ██║   ██║╚════██║$c_rst"
+        row "$c_mag ██████╔╝██║   ██║   ███████╗      ╚██████╔╝███████║$c_rst"
+        row "$c_mag ╚═════╝ ╚═╝   ╚═╝   ╚══════╝       ╚═════╝ ╚══════╝$c_rst"
+        row " ${c_dim}░▒▓█${c_rst}${c_grn}▓▒░ // t o y s ░▒▓${c_rst}${c_dim}█▓▒░${c_rst}  ${c_dim}${#INST[@]} installed · ${#AVAIL[@]} in the catalogue${c_rst}"
+    else
+        row " ${c_cyn}${c_bld}BITE-OS${c_rst}${c_grn}//toys${c_rst}  ${c_dim}${#INST[@]} installed${c_rst}"
+    fi
+    row
+    return 0
+}
+
+ui_tabbar() {
+    local i line="" t
+    for i in "${!TABS[@]}"; do
+        t=" $((i+1)) ${TABS[$i]} "
+        if [[ $i -eq $TAB ]]; then line+="${c_bld}${c_cyn}\e[7m${t}${c_rst}"
+        else                       line+="${c_dim}${t}${c_rst}"; fi
+    done
+    row "$(printf '%b' "$line")"
+    row "${c_dim}$(hr)${c_rst}"
+    return 0
+}
+# Toys are laid out as a grid of cards — name on one line, description greyed
+# out under it — because a 12-item single column pushes everything else off the
+# screen. GRID_COLS is what the arrow keys use as their stride, so the cursor
+# moves the way the eye expects.
+GRID_COLS=2
+G_NAMES=(); G_DESCS=(); G_TAGS=()
+
+ui_grid() {
+    local n=${#G_NAMES[@]}
+    [[ $n -eq 0 ]] && return 0
+    local cols=2 w="${COLS:-80}"
+    [[ $w -lt 76 ]] && cols=1
+    GRID_COLS=$cols
+    local cw=$(( (w - 4) / cols ))
+
+    # Rows of cards, 3 screen lines each (name / description / gap).
+    local rows=$(( (n + cols - 1) / cols ))
+    local avail=$(( ${LINES:-24} - 17 )); [[ $avail -lt 3 ]] && avail=3
+    local vis=$(( avail / 3 )); [[ $vis -lt 1 ]] && vis=1
+
+    local cur=${CUR[$TAB]}
+    [[ $cur -ge $n ]] && cur=$(( n - 1 )); [[ $cur -lt 0 ]] && cur=0
+    CUR[$TAB]=$cur
+    local currow=$(( cur / cols )) toprow=${TOP[$TAB]}
+    [[ $currow -lt $toprow ]] && toprow=$currow
+    [[ $currow -ge $(( toprow + vis )) ]] && toprow=$(( currow - vis + 1 ))
+    [[ $toprow -lt 0 ]] && toprow=0
+    TOP[$TAB]=$toprow
+
+    local r c i nameline descline label tag
+    for (( r=toprow; r<rows && r<toprow+vis; r++ )); do
+        nameline=""; descline=""
+        for (( c=0; c<cols; c++ )); do
+            i=$(( r * cols + c ))
+            if [[ $i -ge $n ]]; then
+                nameline+="$(pad "" $cw)"; descline+="$(pad "" $cw)"
+                continue
+            fi
+            tag=""; [[ -n "${G_TAGS[$i]:-}" ]] && tag=" ${G_TAGS[$i]}"
+            if [[ $i -eq $cur ]]; then
+                label="${c_grn}▎${c_rst}${c_bld}$(( i + 1 )). ${G_NAMES[$i]}${c_rst}${tag}"
+            else
+                label=" ${c_dim}$(( i + 1 )).${c_rst} ${G_NAMES[$i]}${tag}"
+            fi
+            nameline+="$(pad "$label" $cw)"
+            descline+="$(pad "    ${c_dim}$(trunc "${G_DESCS[$i]}" $(( cw - 6 )))${c_rst}" $cw)"
+        done
+        row "  $nameline"
+        row "  $descline"
+        row
+    done
+    [[ $(( toprow + vis )) -lt $rows ]] && \
+        row "  ${c_dim}↓ $(( n - (toprow + vis) * cols )) more below${c_rst}"
+    return 0
+}
+
+trunc() {
+    local s="${1-}" w="$2"
+    [[ $w -lt 4 ]] && { printf ''; return 0; }
+    if [[ ${#s} -le $w ]]; then printf '%s' "$s"
+    else printf '%s…' "${s:0:$((w-1))}"; fi
+}
+
+# ── tab 1: installed ──
+ui_tab_installed() {
+    if [[ ${#INST[@]} -eq 0 ]]; then
+        row "  ${c_dim}Nothing installed yet.${c_rst}"
+        row
+        row "  Press ${c_cyn}2${c_rst} for ${c_bld}GET MORE${c_rst}, pick a toy, hit ${c_cyn}Enter${c_rst}."
+        return 0
+    fi
+    # `a` swaps the whole tab for the toy's about text rather than squeezing a
+    # paragraph in under the grid — same "two screens, not two panes" call the
+    # customize tab makes, and for the same reason.
+    [[ $ABOUT -eq 1 ]] && { ui_about; return 0; }
+
+    G_NAMES=(); G_DESCS=(); G_TAGS=()
+    local name dir
+    for name in "${INST[@]}"; do
+        dir="$(toy_dir "$name" 2>/dev/null)"
+        G_NAMES+=("$name")
+        G_DESCS+=("$( [[ -n "$dir" ]] && meta "$dir" desc )")
+        G_TAGS+=("$( [[ -n "${UPG[$name]:-}" ]] && printf '%s·update%s' "$c_ylw" "$c_rst" )")
+    done
+    ui_grid
+
+    local sel="${INST[${CUR[$TAB]}]}" sdir usage
+    sdir="$(toy_dir "$sel" 2>/dev/null)" || return 0
+    [[ -n "$sdir" ]] || return 0
+    usage="$(meta "$sdir" usage)"
+    row "${c_dim}$(hr)${c_rst}"
+    row "  ${c_bld}${c_grn}${sel}${c_rst}  ${c_dim}v$(meta "$sdir" version)${c_rst}"
+    [[ -n "${UPG[$sel]:-}" ]] && \
+        row "  ${c_ylw}↑${c_rst} v$(catalog_version "$sel") is out ${c_dim}— press u to upgrade${c_rst}"
+    [[ -n "$usage" ]] && row "  ${c_ylw}type:${c_rst} ${c_bld}${usage}${c_rst}"
+
+    # Every key the toy responds to, from its `keys=` field. Collapsible,
+    # because a full binding list under a 12-item grid is a lot of screen.
+    local keys; keys="$(meta "$sdir" keys)"
+    if [[ -n "$keys" ]]; then
+        if [[ $KEYSHOW -eq 0 ]]; then
+            row "  ${c_dim}k  show its keys${c_rst}"
+        else
+            row
+            local -a K=() ; local IFS='|'
+            read -ra K <<< "$keys"
+            IFS=$' \t\n'
+            local i line="" kk desc n=${#K[@]}
+            # two columns, so a long list does not push the grid off screen
+            local half=$(( (n + 1) / 2 ))
+            for (( i=0; i<half; i++ )); do
+                kk="${K[$i]%%:*}"; desc="${K[$i]#*:}"
+                line="  ${c_cyn}$(pad "$kk" 8)${c_rst}${c_dim}$(pad "$desc" 30)${c_rst}"
+                if [[ $(( i + half )) -lt $n ]]; then
+                    kk="${K[$((i+half))]%%:*}"; desc="${K[$((i+half))]#*:}"
+                    line+="${c_cyn}$(pad "$kk" 8)${c_rst}${c_dim}${desc}${c_rst}"
+                fi
+                row "$line"
+            done
+            row "  ${c_dim}k  hide${c_rst}"
+        fi
+    fi
+    [[ -n "$(meta "$sdir" about)" ]] && row "  ${c_dim}a  what it does${c_rst}"
+    return 0
+}
+
+# The about text, full width. Reached with `a` from the installed tab; any key
+# closes it again.
+ui_about() {
+    local sel="${INST[${CUR[0]}]}" sdir txt usage line
+    sdir="$(toy_dir "$sel" 2>/dev/null)" || return 0
+    row "  ${c_dim}← any key goes back${c_rst}   ${c_bld}${c_grn}${sel}${c_rst} ${c_dim}v$(meta "$sdir" version)${c_rst}"
+    row
+    txt="$(meta "$sdir" about)"
+    [[ -n "$txt" ]] || txt="$(meta "$sdir" desc)"
+    [[ -n "$txt" ]] || txt="(this toy shipped without a description)"
+    while IFS= read -r line; do row "  $line"; done \
+        < <(printf '%s\n' "$txt" | fold -s -w $(( ${COLS:-80} > 12 ? COLS - 6 : 74 )))
+    usage="$(meta "$sdir" usage)"
+    [[ -n "$usage" ]] && { row; row "  ${c_ylw}type:${c_rst} ${c_bld}${usage}${c_rst}"; }
+    return 0
+}
+
+# ── tab 2: get more ──
+ui_tab_getmore() {
+    if [[ ${#AVAIL[@]} -eq 0 ]]; then
+        row "  ${c_dim}No toys known yet.${c_rst}"
+        row
+        row "  Press ${c_cyn}u${c_rst} to pull the catalogue from the repo."
+        row "  ${c_dim}${REPO}${c_rst}"
+        return 0
+    fi
+    G_NAMES=(); G_DESCS=(); G_TAGS=()
+    local i n_have=0 n_get=0
+    for i in "${!AVAIL[@]}"; do
+        G_NAMES+=("${AVAIL[$i]}")
+        G_DESCS+=("${ADESC[$i]}")
+        case "${ASTATE[$i]}" in
+            installed) G_TAGS+=("${c_grn}·installed${c_rst}"); n_have=$((n_have+1)) ;;
+            onbox)     G_TAGS+=("${c_cyn}·downloaded${c_rst}"); n_have=$((n_have+1)) ;;
+            *)         G_TAGS+=("${c_dim}·get${c_rst}"); n_get=$((n_get+1)) ;;
+        esac
+    done
+    ui_grid
+    row "${c_dim}$(hr)${c_rst}"
+
+    local sel_state="${ASTATE[${CUR[$TAB]}]:-remote}"
+    local sel="${AVAIL[${CUR[$TAB]}]:-}"
+    case "$sel_state" in
+        installed) row "  ${c_grn}✓${c_rst} ${c_bld}${sel}${c_rst}${c_dim} is installed — press ${c_rst}${c_cyn}1${c_rst}${c_dim} to run it${c_rst}" ;;
+        onbox)     row "  ${c_bld}Enter${c_rst}${c_dim} installs ${c_rst}${c_bld}${sel}${c_rst}${c_dim} — already on this machine, no download${c_rst}" ;;
+        *)         row "  ${c_bld}Enter${c_rst}${c_dim} downloads and installs ${c_rst}${c_bld}${sel}${c_rst}" ;;
+    esac
+    row "  ${c_dim}${n_have} of ${#AVAIL[@]} already here · ${n_get} to get · ${c_rst}${c_bld}u${c_rst}${c_dim} refreshes the catalogue${c_rst}"
+    return 0
+}
+
+# Settings metadata, parsed ONCE per toy into arrays.
+#
+# The settings screen used to call setting_get / setting_choices / setting_help
+# / setting_directive for every row on every redraw — around eight forks per
+# setting, so a toy with a dozen of them cost ~100 processes per keystroke and
+# the hub visibly locked up. Everything is read in two passes here and served
+# from memory afterwards.
+SCACHE_TOY=""
+declare -a SC_KEYS=()
+declare -A SC_DEF=() SC_HELP=() SC_CHOICES=() SC_RANGE=() SC_VAL=() SC_HAS=()
+
+settings_load() {
+    local name="$1" dir="$2"
+    [[ "$SCACHE_TOY" == "$name" ]] && return 0
+    SCACHE_TOY="$name"
+    SC_KEYS=(); SC_DEF=(); SC_HELP=(); SC_CHOICES=(); SC_RANGE=(); SC_VAL=(); SC_HAS=()
+    [[ -n "$dir" && -f "$dir/config.def" ]] || return 0
+
+    # 0x1f, not tab: tab is IFS-whitespace so bash collapses runs of it, and a
+    # setting with no @choices would silently shift its @range into that slot.
+    local k def help ch rng
+    while IFS=$'\037' read -r k def help ch rng; do
+        [[ -n "$k" ]] || continue
+        SC_KEYS+=("$k")
+        SC_DEF[$k]="$def"; SC_HELP[$k]="$help"; SC_RANGE[$k]="$rng"
+        if [[ -n "$ch" ]]; then
+            SC_CHOICES[$k]="${ch//,/ }"
+        else
+            # on/off style defaults are toggles even without an @choices line
+            case "$def" in
+                on|off)     SC_CHOICES[$k]="on off" ;;
+                yes|no)     SC_CHOICES[$k]="yes no" ;;
+                true|false) SC_CHOICES[$k]="true false" ;;
+                *)          SC_CHOICES[$k]="" ;;
+            esac
+        fi
+    done < <(awk '
+        /^# *@choices +/ { sub(/^# *@choices +/,""); ch=$0; next }
+        /^# *@range +/   { sub(/^# *@range +/,"");   rg=$0; next }
+        /^#/             { sub(/^# ?/,""); h = (h ? h " " : "") $0; next }
+        /^[ \t]*$/       { h=""; ch=""; rg=""; next }
+        /^[A-Za-z_][A-Za-z0-9_]*=/ {
+            eq = index($0, "=")
+            printf "%s\037%s\037%s\037%s\037%s\n", substr($0,1,eq-1), substr($0,eq+1), h, ch, rg
+            h=""; ch=""; rg=""
+        }
+    ' "$dir/config.def")
+
+    # User overrides, one pass.
+    local line
+    if [[ -f "$CONF_DIR/$name.conf" ]]; then
+        while IFS= read -r line; do
+            [[ "$line" == \#* || -z "$line" || "$line" != *=* ]] && continue
+            k="${line%%=*}"; SC_VAL[$k]="${line#*=}"; SC_HAS[$k]=1
+        done < "$CONF_DIR/$name.conf"
+    fi
+    return 0
+}
+
+# Set-and-empty is a value, not an absence — see setting_get for why.
+sc_get() {                       # -> $SCV
+    local k="$1"
+    if [[ -n "${SC_HAS[$k]-}" ]]; then SCV="${SC_VAL[$k]-}"
+    else                               SCV="${SC_DEF[$k]-}"; fi
+    return 0
+}
+
+# ── tab 3: customize ──
+# Two screens, not two panes: pick a toy, then Enter opens that toy's settings
+# full-screen. A focus-toggle between side-by-side panes was the confusing part.
+ui_tab_customize() {
+    if [[ ${#INST[@]} -eq 0 ]]; then
+        row "  ${c_dim}Install a toy first — there's nothing to customize.${c_rst}"
+        return 0
+    fi
+
+    if [[ $PANE -eq 0 ]]; then
+        G_NAMES=(); G_DESCS=(); G_TAGS=()
+        local name dir nset
+        for name in "${INST[@]}"; do
+            dir="$(toy_dir "$name" 2>/dev/null)"
+            nset="$(setting_keys "$dir" 2>/dev/null | grep -c . || true)"
+            G_NAMES+=("$name")
+            G_DESCS+=("$( [[ ${nset:-0} -gt 0 ]] && echo "$nset settings" || echo "nothing to tweak" )")
+            G_TAGS+=("")
+        done
+        ui_grid
+        row "${c_dim}$(hr)${c_rst}"
+        row "  ${c_dim}Pick a toy and press ${c_rst}${c_cyn}Enter${c_rst}${c_dim} to open its settings.${c_rst}"
+        return 0
+    fi
+
+    # ── settings screen for one toy ──
+    local sel="${INST[${CUR[$TAB]}]}" sdir
+    sdir="$(toy_dir "$sel" 2>/dev/null)" || return 0
+    row "  ${c_dim}← Esc goes back${c_rst}     ${c_bld}${c_grn}${sel}${c_rst} ${c_dim}settings${c_rst}"
+    row
+
+    settings_load "$sel" "$sdir"
+    if [[ ${#SC_KEYS[@]} -eq 0 ]]; then row "  ${c_dim}${sel} has no settings.${c_rst}"; return 0; fi
+    [[ $SET_CUR -ge ${#SC_KEYS[@]} ]] && SET_CUR=$(( ${#SC_KEYS[@]} - 1 ))
+    [[ $SET_CUR -lt 0 ]] && SET_CUR=0
+
+    local i k ch rng hint shown
+    for i in "${!SC_KEYS[@]}"; do
+        k="${SC_KEYS[$i]}"
+        sc_get "$k"
+        # Long values (paths especially) must not run into the hint column.
+        shown="$SCV"
+        [[ -z "$shown" ]] && shown="(empty)"
+        [[ ${#shown} -gt 22 ]] && shown="${shown:0:21}…"
+        ch="${SC_CHOICES[$k]-}"; rng="${SC_RANGE[$k]-}"
+        if [[ -n "$ch" ]];    then hint="${ch// / · }"
+        elif [[ -n "$rng" ]]; then hint="${rng/-/ – }"
+        else                       hint="press Enter to type"; fi
+        if [[ $i -eq $SET_CUR ]]; then
+            row "  ${c_grn}▸${c_rst} ${c_bld}$(pad "$k" 13)${c_rst}${c_ylw}${c_bld}$(pad "$shown" 24)${c_rst}${c_dim}‹ ${hint} ›${c_rst}"
+            row "    ${c_dim}${SC_HELP[$k]-}${c_rst}"
+        else
+            row "    ${c_dim}$(pad "$k" 13)${c_rst}${c_ylw}$(pad "$shown" 24)${c_rst}${c_dim}${hint}${c_rst}"
+        fi
+    done
+
+    # A live result is useful for seeing a colour change without leaving the
+    # screen — but rendering it RUNS the toy, and for a camera toy that means
+    # opening the device just because you wanted to change a number. Opening
+    # settings must never start hardware, so this is opt-in on `p`.
+    local args out
+    args="$(meta "$sdir" preview)"
+    if [[ -n "$args" ]]; then
+        row
+        if [[ $LIVE -eq 0 ]]; then
+            row "  ${c_dim}p  live preview${c_rst}"
+        else
+            row "  ${c_dim}┌─ live ─────────────────────────${c_rst}"
+            out="$(preview_run "$sel" "$args")"
+            local l
+            while IFS= read -r l; do row "  ${c_dim}│${c_rst}  $l"; done <<< "$out"
+            row "  ${c_dim}└─ p closes · r re-rolls ────────${c_rst}"
+        fi
+    fi
+    return 0
+}
+
+# A preview costs a real subprocess — a camera toy has to open the device and
+# grab frames, which is seconds, not milliseconds. The hub redraws the whole
+# frame on every keystroke, so running it per redraw made the UI hang. Results
+# are cached against the toy, its args, its settings file and a manual re-roll
+# counter, so it runs once per actual change instead.
+PREVIEW_KEY=""
+PREVIEW_OUT=""
+PREVIEW_ROLL=0
+
+preview_run() {
+    local sel="$1" args="$2" key stamp ovr="" k
+    stamp="$(stat -c %Y "$CONF_DIR/$sel.conf" 2>/dev/null || echo 0)"
+    # Values being tried out ride along as BITE_OVR_<KEY> so a preview can show
+    # them without anything being written to the config first.
+    local -a envargs=()
+    for k in "${!PV_TMP[@]}"; do
+        envargs+=("BITE_OVR_${k^^}=${PV_TMP[$k]}")
+        ovr+="${k}=${PV_TMP[$k]};"
+    done
+    key="${sel}|${args}|${stamp}|${PREVIEW_ROLL}|${ovr}"
+    if [[ "$key" != "$PREVIEW_KEY" ]]; then
+        if command -v timeout >/dev/null 2>&1; then
+            PREVIEW_OUT="$(timeout 8 env "${envargs[@]}" "$SELF" run "$sel" $args </dev/null 2>&1 || true)"
+        else
+            PREVIEW_OUT="$(env "${envargs[@]}" "$SELF" run "$sel" $args </dev/null 2>&1 || true)"
+        fi
+        PREVIEW_KEY="$key"
+    fi
+    printf '%s' "$PREVIEW_OUT"
+}
+
+# Same stepping as the settings screen, but into the pending overrides instead
+# of the config file — nothing is written until w.
+pv_cur() {                       # -> $SCV
+    local k="$1"
+    if [[ -n "${PV_TMP[$k]+x}" ]]; then SCV="${PV_TMP[$k]}"; else sc_get "$k"; fi
+}
+
+pv_cycle() {
+    local toy="$1" key="$2" dir="$3" step="$4" cur ch rng lo hi new
+    settings_load "$toy" "$dir"
+    pv_cur "$key"; cur="$SCV"
+    ch="${SC_CHOICES[$key]-}"
+    if [[ -n "$ch" ]]; then
+        local -a C=($ch); local i idx=0
+        for i in "${!C[@]}"; do [[ "${C[$i]}" == "$cur" ]] && idx=$i; done
+        idx=$(( (idx + step + ${#C[@]}) % ${#C[@]} ))
+        PV_TMP[$key]="${C[$idx]}"
+    elif [[ "$cur" =~ ^-?[0-9]+$ ]]; then
+        lo=0; hi=999; rng="${SC_RANGE[$key]-}"
+        [[ "$rng" =~ ^(-?[0-9]+)-([0-9]+)$ ]] && { lo="${BASH_REMATCH[1]}"; hi="${BASH_REMATCH[2]}"; }
+        new=$(( cur + step ))
+        [[ $new -lt $lo ]] && new=$lo
+        [[ $new -gt $hi ]] && new=$hi
+        PV_TMP[$key]="$new"
+    elif [[ "$cur" =~ ^-?[0-9]*\.[0-9]+$ ]]; then
+        lo=0; hi=99; rng="${SC_RANGE[$key]-}"
+        [[ "$rng" =~ ^(-?[0-9.]+)-([0-9.]+)$ ]] && { lo="${BASH_REMATCH[1]}"; hi="${BASH_REMATCH[2]}"; }
+        PV_TMP[$key]="$(awk -v c="$cur" -v s="$step" -v lo="$lo" -v hi="$hi" 'BEGIN{
+            st = (hi-lo <= 2 ? 0.05 : (hi-lo <= 20 ? 0.1 : 1)); v = c + s*st
+            if (v < lo) v = lo; if (v > hi) v = hi; printf "%.2f", v }')"
+    else
+        FLASH=" ${c_dim}press Enter to type a value for $key${c_rst}"
+        return 0
+    fi
+    FLASH=" ${c_ylw}●${c_rst} $key = ${PV_TMP[$key]} ${c_dim}— Enter reloads it, w keeps it${c_rst}"
+}
+
+# Commit everything that was tried out. Validation still applies, so a bad
+# typed value is reported rather than written.
+pv_save() {
+    local toy="$1" k n=0 emsg
+    [[ ${#PV_TMP[@]} -eq 0 ]] && { FLASH=" ${c_dim}nothing changed yet${c_rst}"; return 0; }
+    for k in "${!PV_TMP[@]}"; do
+        if emsg="$( cmd_config "$toy" "$k" "${PV_TMP[$k]}" 2>&1 >/dev/null )"; then
+            n=$((n+1))
+        else
+            FLASH=" ${emsg%%$'\n'*}"; return 0
+        fi
+    done
+    PV_TMP=(); SCACHE_TOY=""
+    FLASH=" ${c_grn}✓${c_rst} kept $n change(s) to $toy"
+}
+
+# ── tab 4: preview ──
+#
+# Three screens: browse, watch, tune. A preview costs a real subprocess and for
+# a camera toy it opens the device, so NOTHING runs until Enter. Opening the
+# settings holds the last frame instead of re-running the toy behind you, and
+# tuning writes nothing until you say so.
+ui_tab_preview() {
+    if [[ ${#INST[@]} -eq 0 ]]; then row "  ${c_dim}Install a toy to preview it.${c_rst}"; return 0; fi
+
+    local sel sdir args out l
+    # ── browse ──
+    if [[ $PV_PANE -eq 0 ]]; then
+        G_NAMES=(); G_DESCS=(); G_TAGS=()
+        local name dir a
+        for name in "${INST[@]}"; do
+            dir="$(toy_dir "$name" 2>/dev/null)"
+            a="$( [[ -n "$dir" ]] && meta "$dir" preview )"
+            G_NAMES+=("$name")
+            G_DESCS+=("$( [[ -n "$dir" ]] && meta "$dir" desc )")
+            G_TAGS+=("$( [[ -z "$a" ]] && printf '%s·fullscreen%s' "$c_dim" "$c_rst" )")
+        done
+        ui_grid
+        row "${c_dim}$(hr)${c_rst}"
+        sel="${INST[${CUR[$TAB]}]}"
+        sdir="$(toy_dir "$sel" 2>/dev/null)" || return 0
+        if [[ -z "$(meta "$sdir" preview)" ]]; then
+            # A toy can say WHY it has no preview; that beats a generic excuse.
+            local why; why="$(meta "$sdir" nopreview)"
+            [[ -n "$why" ]] || why="${sel} takes over the whole screen — run it from tab 1 instead"
+            local wl
+            while IFS= read -r wl; do row "  ${c_dim}${wl}${c_rst}"; done \
+                < <(printf '%s\n' "$why" | fold -s -w $(( ${COLS:-80} > 12 ? COLS - 6 : 74 )))
+        else
+            row "  ${c_bld}Enter${c_rst}${c_dim} starts ${c_rst}${c_bld}${sel}${c_rst}${c_dim} — nothing runs until you do${c_rst}"
+        fi
+        return 0
+    fi
+
+    # ── watching / tuning ──
+    sel="${INST[${CUR[$TAB]}]}"
+    sdir="$(toy_dir "$sel" 2>/dev/null)" || return 0
+    args="$(meta "$sdir" preview)"
+
+    local badge=""
+    [[ ${#PV_TMP[@]} -gt 0 ]] && badge="   ${c_ylw}● ${#PV_TMP[@]} unsaved${c_rst}"
+    if [[ $PV_PANE -eq 2 ]]; then
+        row "  ${c_dim}← Esc back to the picture${c_rst}   ${c_bld}${c_grn}${sel}${c_rst}   ${c_dim}paused while you tune${c_rst}${badge}"
+    else
+        row "  ${c_dim}← Esc back${c_rst}   ${c_bld}${c_grn}${sel}${c_rst}${badge}"
+    fi
+    row
+
+    if [[ $PV_STARTING -eq 1 ]]; then
+        # A preview is a real subprocess and can take seconds. Without this the
+        # last frame just sits there and the hub looks hung, which is exactly
+        # what "it lags" means from the outside.
+        PV_STARTING=0
+        row "  ${c_dim}starting ${c_rst}${c_bld}${sel}${c_rst}${c_dim}…${c_rst}"
+        row
+        row "  ${c_dim}(it opens the camera / reads the device, so give it a moment)${c_rst}"
+        return 0
+    fi
+    if [[ $PV_PANE -eq 2 ]]; then
+        out="$PREVIEW_OUT"          # held still: tuning must not re-run the toy
+    else
+        out="$(preview_run "$sel" "$args")"
+    fi
+    local plines=0
+    while IFS= read -r l; do row "  $l"; plines=$(( plines + 1 )); done <<< "$out"
+
+    if [[ $PV_PANE -eq 1 ]]; then
+        row
+        row "  ${c_dim}c  change its settings   ·   r  run it again${c_rst}"
+        return 0
+    fi
+
+    # ── the tuning list, windowed so a 26-setting toy still fits ──
+    row
+    settings_load "$sel" "$sdir"
+    if [[ ${#SC_KEYS[@]} -eq 0 ]]; then row "  ${c_dim}${sel} has no settings.${c_rst}"; return 0; fi
+    local n=${#SC_KEYS[@]}
+    [[ $PV_SET_CUR -ge $n ]] && PV_SET_CUR=$(( n - 1 ))
+    [[ $PV_SET_CUR -lt 0 ]] && PV_SET_CUR=0
+
+    local vis=$(( ${LINES:-24} - plines - 16 ))
+    [[ $vis -lt 3 ]] && vis=3
+    [[ $vis -gt $n ]] && vis=$n
+    local top=$(( PV_SET_CUR - vis / 2 ))
+    [[ $top -lt 0 ]] && top=0
+    [[ $top -gt $(( n - vis )) ]] && top=$(( n - vis ))
+
+    local i k v hint ch rng mark
+    for (( i=top; i<top+vis; i++ )); do
+        k="${SC_KEYS[$i]}"
+        if [[ -n "${PV_TMP[$k]+x}" ]]; then v="${PV_TMP[$k]}"; mark="${c_ylw}●${c_rst}"
+        else                                 sc_get "$k"; v="$SCV"; mark=" "; fi
+        [[ -z "$v" ]] && v="(empty)"
+        [[ ${#v} -gt 20 ]] && v="${v:0:19}…"
+        ch="${SC_CHOICES[$k]-}"; rng="${SC_RANGE[$k]-}"
+        if [[ -n "$ch" ]];    then hint="${ch// / · }"
+        elif [[ -n "$rng" ]]; then hint="${rng/-/ – }"
+        else                       hint="Enter to type"; fi
+        if [[ $i -eq $PV_SET_CUR ]]; then
+            row "  ${c_grn}▸${c_rst}${mark}${c_bld}$(pad "$k" 13)${c_rst}${c_ylw}${c_bld}$(pad "$v" 22)${c_rst}${c_dim}‹ ${hint} ›${c_rst}"
+        else
+            row "   ${mark}${c_dim}$(pad "$k" 13)${c_rst}${c_ylw}$(pad "$v" 22)${c_rst}${c_dim}${hint}${c_rst}"
+        fi
+    done
+    [[ $(( top + vis )) -lt $n ]] && row "  ${c_dim}↓ $(( n - top - vis )) more${c_rst}"
+    return 0
+}
+
+# ── tab 5: commands ──
+ui_tab_commands() {
+    row "  ${c_bld}THE ONLY KEYS YOU NEED${c_rst}"
+    row
+    row "    ${c_cyn}$(pad '1 2 3 4 5' 14)${c_rst}${c_dim}jump straight to a tab${c_rst}"
+    row "    ${c_cyn}$(pad 'Tab' 14)${c_rst}${c_dim}next tab${c_rst}"
+    row "    ${c_cyn}$(pad '← ↑ ↓ →' 14)${c_rst}${c_dim}move around the toys${c_rst}"
+    row "    ${c_cyn}$(pad 'Enter' 14)${c_rst}${c_dim}do it — run · install · open settings${c_rst}"
+    row "    ${c_cyn}$(pad 'Esc' 14)${c_rst}${c_dim}back out of settings${c_rst}"
+    row "    ${c_cyn}$(pad 'q' 14)${c_rst}${c_dim}quit${c_rst}"
+    row
+    row "  ${c_bld}EXTRAS${c_rst}  ${c_dim}(the footer always shows the ones that apply)${c_rst}"
+    row "    ${c_cyn}$(pad 'a' 14)${c_rst}${c_dim}read what the highlighted toy actually does${c_rst}"
+    row "    ${c_cyn}$(pad 'k' 14)${c_rst}${c_dim}show or hide a toy's key list${c_rst}"
+    row "    ${c_cyn}$(pad 'c' 14)${c_rst}${c_dim}jump to the highlighted toy's settings${c_rst}"
+    row "    ${c_cyn}$(pad 'x x' 14)${c_rst}${c_dim}uninstall the highlighted toy (press it twice)${c_rst}"
+    row "    ${c_cyn}$(pad 'u' 14)${c_rst}${c_dim}tab 1: upgrade this toy · tab 2: refresh the list${c_rst}"
+    row "    ${c_cyn}$(pad 'r' 14)${c_rst}${c_dim}re-roll the preview${c_rst}"
+    row "    ${c_cyn}$(pad 'R' 14)${c_rst}${c_dim}reset a toy's settings to default${c_rst}"
+    row
+    row "  ${c_bld}FROM THE SHELL${c_rst} ${c_dim}(same thing, no menu)${c_rst}"
+    row "    ${c_dim}$(pad 'bite-toys' 34)${c_rst}open this hub"
+    row "    ${c_dim}$(pad 'bite-toys list · search <q>' 34)${c_rst}browse toys"
+    row "    ${c_dim}$(pad 'bite-toys info <toy>' 34)${c_rst}what it does, what it needs"
+    row "    ${c_dim}$(pad 'bite-toys install/remove <toy>' 34)${c_rst}add it / take it off"
+    row "    ${c_dim}$(pad 'bite-toys run <toy> [args]' 34)${c_rst}run without installing"
+    row "    ${c_dim}$(pad 'bite-toys config <toy> <key> <val>' 34)${c_rst}change a setting"
+    row "    ${c_dim}$(pad 'bite-toys update · fetch <toy>' 34)${c_rst}pull from the toys repo"
+    row "    ${c_dim}$(pad 'bite-toys doctor' 34)${c_rst}find broken toys / PATH problems"
+    return 0
+}
+
+ui_footer() {
+    row
+    row "${c_dim}$(hr)${c_rst}"
+    if [[ -n "$FLASH" ]]; then
+        row " $FLASH"
+    else
+        local nav=" ${c_bld}←↑↓→${c_rst}${c_dim} move${c_rst}   "
+        case $TAB in
+            0) if [[ $ABOUT -eq 1 ]]; then
+                   row " ${c_dim}any key goes back${c_rst}   ${c_bld}q${c_rst}${c_dim} quit${c_rst}"
+               else
+                   row "${nav}${c_bld}Enter${c_rst}${c_dim} run${c_rst}  ${c_bld}a${c_rst}${c_dim} about${c_rst}  ${c_bld}k${c_rst}${c_dim} keys${c_rst}  ${c_bld}c${c_rst}${c_dim} settings${c_rst}  ${c_bld}x${c_rst}${c_dim} uninstall${c_rst}  ${c_bld}q${c_rst}${c_dim} quit${c_rst}"
+               fi ;;
+            1) row "${nav}${c_bld}Enter${c_rst}${c_dim} get it${c_rst}   ${c_bld}u${c_rst}${c_dim} refresh list${c_rst}   ${c_bld}q${c_rst}${c_dim} quit${c_rst}" ;;
+            2) if [[ $PANE -eq 1 ]]; then
+                   row " ${c_bld}↑↓${c_rst}${c_dim} pick${c_rst}  ${c_bld}←→${c_rst}${c_dim} change${c_rst}  ${c_bld}Enter${c_rst}${c_dim} type${c_rst}  ${c_bld}p${c_rst}${c_dim} live${c_rst}  ${c_bld}R${c_rst}${c_dim} defaults${c_rst}  ${c_bld}Esc${c_rst}${c_dim} back${c_rst}"
+               else
+                   row "${nav}${c_bld}Enter${c_rst}${c_dim} open its settings${c_rst}   ${c_bld}q${c_rst}${c_dim} quit${c_rst}"
+               fi ;;
+            3) case $PV_PANE in
+                 0) row "${nav}${c_bld}Enter${c_rst}${c_dim} start it${c_rst}   ${c_bld}q${c_rst}${c_dim} quit${c_rst}" ;;
+                 1) row " ${c_bld}c${c_rst}${c_dim} settings${c_rst}   ${c_bld}r${c_rst}${c_dim} again${c_rst}   ${c_bld}Esc${c_rst}${c_dim} back${c_rst}   ${c_bld}q${c_rst}${c_dim} quit${c_rst}" ;;
+                 *) row " ${c_bld}↑↓${c_rst}${c_dim} pick${c_rst}  ${c_bld}←→${c_rst}${c_dim} change${c_rst}  ${c_bld}t${c_rst}${c_dim} type${c_rst}  ${c_bld}Enter${c_rst}${c_dim} see it${c_rst}  ${c_bld}w${c_rst}${c_dim} keep it${c_rst}  ${c_bld}Esc${c_rst}${c_dim} back${c_rst}" ;;
+               esac ;;
+            4) row " ${c_bld}1${c_rst}${c_dim}-${c_rst}${c_bld}5${c_rst}${c_dim} tabs${c_rst}   ${c_bld}Tab${c_rst}${c_dim} next${c_rst}   ${c_bld}q${c_rst}${c_dim} quit${c_rst}" ;;
+        esac
+    fi
+    return 0
+}
+
+ui_draw() {
+    COLS="$(tput cols 2>/dev/null || echo 80)"
+    LINES="$(tput lines 2>/dev/null || echo 24)"
+    ui_header
+    ui_tabbar
+    case $TAB in
+        0) ui_tab_installed ;;
+        1) ui_tab_getmore ;;
+        2) ui_tab_customize ;;
+        3) ui_tab_preview ;;
+        4) ui_tab_commands ;;
+    esac
+    ui_footer
+    flush
+}
+
+# Drop out of the UI, run something, come back. Used for running a toy and for
+# downloads, so the user sees real output instead of a frozen menu.
+ui_shellout() {
+    ui_leave
+    printf '\n'
+    "$@" || true
+    printf '\n%s[ press any key to go back ]%s' "$c_dim" "$c_rst"
+    local _k; IFS= read -rsn1 _k 2>/dev/null || true
+    ui_enter
+}
+
+# Callers capture the answer with $(ui_prompt ...), so every byte meant for the
+# screen — the label and the terminal mode switches — must go to /dev/tty.
+# Anything printed to stdout here ends up inside the captured value instead.
+ui_prompt() {
+    local label="$1" ans=""
+    { ui_leave; printf '\n%s%s%s ' "$c_cyn" "$label" "$c_rst"; } >/dev/tty
+    IFS= read -r ans </dev/tty 2>/dev/null || true
+    ui_enter >/dev/tty
+    printf '%s' "$ans"
+}
+
+# Bump a setting to the next/previous allowed value. Enumerated choices rotate;
+# numbers step within their @range; anything else is left to typed input.
+ui_cycle() {
+    local toy="$1" key="$2" dir="$3" dir_sign="$4"
+    settings_load "$toy" "$dir"
+    local ch cur
+    ch="${SC_CHOICES[$key]-}"
+    sc_get "$key"; cur="$SCV"
+    if [[ -n "$ch" ]]; then
+        local -a C=($ch); local i idx=0
+        for i in "${!C[@]}"; do [[ "${C[$i]}" == "$cur" ]] && idx=$i; done
+        idx=$(( (idx + dir_sign + ${#C[@]}) % ${#C[@]} ))
+        cmd_config "$toy" "$key" "${C[$idx]}" >/dev/null
+        SC_VAL[$key]="${C[$idx]}"; SC_HAS[$key]=1
+        FLASH=" ${c_grn}✓${c_rst} $key = ${c_ylw}${C[$idx]}${c_rst}"
+        return 0
+    fi
+    if [[ "$cur" =~ ^-?[0-9]+$ ]]; then
+        local rng lo=0 hi=999 new
+        rng="${SC_RANGE[$key]-}"
+        [[ "$rng" =~ ^(-?[0-9]+)-([0-9]+)$ ]] && { lo="${BASH_REMATCH[1]}"; hi="${BASH_REMATCH[2]}"; }
+        new=$(( cur + dir_sign ))
+        [[ $new -lt $lo ]] && new=$lo
+        [[ $new -gt $hi ]] && new=$hi
+        cmd_config "$toy" "$key" "$new" >/dev/null
+        SC_VAL[$key]="$new"; SC_HAS[$key]=1
+        FLASH=" ${c_grn}✓${c_rst} $key = ${c_ylw}${new}${c_rst}"
+        return 0
+    fi
+    # Fractional settings — coversize, transition — used to land in the "type a
+    # value" branch below, so the arrows did nothing on them. Step size comes
+    # from how wide the range is, so 0.7–2.0 moves in 0.05s and 0–60 in 1s.
+    if [[ "$cur" =~ ^-?[0-9]*\.[0-9]+$ ]]; then
+        local rng lo=0 hi=99 new
+        rng="${SC_RANGE[$key]-}"
+        [[ "$rng" =~ ^(-?[0-9.]+)-([0-9.]+)$ ]] && { lo="${BASH_REMATCH[1]}"; hi="${BASH_REMATCH[2]}"; }
+        new="$(awk -v c="$cur" -v d="$dir_sign" -v lo="$lo" -v hi="$hi" 'BEGIN{
+            s = (hi-lo <= 2 ? 0.05 : (hi-lo <= 20 ? 0.1 : 1))
+            v = c + d*s
+            if (v < lo) v = lo
+            if (v > hi) v = hi
+            printf "%.2f", v
+        }')"
+        cmd_config "$toy" "$key" "$new" >/dev/null
+        SC_VAL[$key]="$new"; SC_HAS[$key]=1
+        FLASH=" ${c_grn}✓${c_rst} $key = ${c_ylw}${new}${c_rst}"
+        return 0
+    fi
+    FLASH=" ${c_dim}press Enter to type a value for $key${c_rst}"
+}
+
+cmd_ui() {
+    [[ -t 0 && -t 1 ]] || die "the hub needs an interactive terminal (try: bite-toys list)"
+    ui_refresh
+    ui_enter
+    trap 'ui_leave' EXIT INT TERM
+
+    # errexit is right for the one-shot CLI commands but wrong here: in a UI
+    # loop a merely-false test (a cursor at the end of a list, an empty catalog)
+    # would tear the whole hub down mid-frame and dump the user back to a shell.
+    set +e
+
+    local key sel sdir kk nk nv emsg
+    local -a SKEYS=()
+    while :; do
+        ui_draw
+        FLASH=""
+        # A frame that only exists to say "working on it" must not wait for a
+        # keypress before the real one replaces it.
+        if [[ $REDRAW -eq 1 ]]; then REDRAW=0; continue; fi
+        key="$(ui_key)" || break
+
+        # Inside a toy's settings screen the arrows edit values. This is the one
+        # place they don't move a cursor through the grid, and Esc gets you out.
+        if [[ $TAB -eq 2 && $PANE -eq 1 && ${#INST[@]} -gt 0 ]]; then
+            sel="${INST[${CUR[2]}]}"
+            sdir="$(toy_dir "$sel" 2>/dev/null)"
+            settings_load "$sel" "$sdir"
+            SKEYS=("${SC_KEYS[@]}")
+
+            case "$key" in
+                $'\e[A') SET_CUR=$(( SET_CUR > 0 ? SET_CUR - 1 : 0 )); continue ;;
+                $'\e[B') SET_CUR=$(( SET_CUR + 1 )); continue ;;
+                $'\e[C') [[ ${#SKEYS[@]} -gt 0 ]] && ui_cycle "$sel" "${SKEYS[$SET_CUR]}" "$sdir" 1; continue ;;
+                $'\e[D') [[ ${#SKEYS[@]} -gt 0 ]] && ui_cycle "$sel" "${SKEYS[$SET_CUR]}" "$sdir" -1; continue ;;
+                '')      if [[ ${#SKEYS[@]} -gt 0 ]]; then
+                             nk="${SKEYS[$SET_CUR]}"
+                             nv="$(ui_prompt "$sel · $nk =")"
+                             if [[ -n "$nv" ]]; then
+                                 # cmd_config rejects a value outside @choices /
+                                 # @range by dying. The subshell keeps that exit
+                                 # from taking the whole hub down with it.
+                                 if emsg="$( cmd_config "$sel" "$nk" "$nv" 2>&1 >/dev/null )"; then
+                                     SC_VAL[$nk]="$nv"; SC_HAS[$nk]=1
+                                     FLASH=" ${c_grn}✓${c_rst} $nk = ${c_ylw}${nv}${c_rst}"
+                                 else
+                                     FLASH=" ${emsg%%$'\n'*}"
+                                 fi
+                             fi
+                         fi; continue ;;
+                $'\e'|$'\177'|$'\b')
+                         PANE=0; LIVE=0; continue ;;
+                p|P)     LIVE=$(( 1 - LIVE )); continue ;;
+                r)       PREVIEW_ROLL=$(( PREVIEW_ROLL + 1 )); continue ;;
+                R)       cmd_reset "$sel" >/dev/null 2>&1
+                         SCACHE_TOY=""      # force a re-read of the fresh conf
+                         FLASH=" ${c_grn}✓${c_rst} $sel back to defaults"; continue ;;
+                q|Q)     break ;;
+                1) TAB=0; PANE=0; continue ;;  2) TAB=1; PANE=0; continue ;;
+                3) PANE=0; continue ;;
+                4) TAB=3; PANE=0; continue ;;  5) TAB=4; PANE=0; continue ;;
+                *)       continue ;;
+            esac
+        fi
+
+        # ── preview tab: watching, or tuning with the picture held still ──
+        if [[ $TAB -eq 3 && $PV_PANE -gt 0 && ${#INST[@]} -gt 0 ]]; then
+            sel="${INST[${CUR[3]}]}"
+            sdir="$(toy_dir "$sel" 2>/dev/null)"
+            if [[ $PV_PANE -eq 2 ]]; then
+                settings_load "$sel" "$sdir"
+                SKEYS=("${SC_KEYS[@]}")
+                case "$key" in
+                    $'\e[A') PV_SET_CUR=$(( PV_SET_CUR > 0 ? PV_SET_CUR - 1 : 0 )); continue ;;
+                    $'\e[B') PV_SET_CUR=$(( PV_SET_CUR + 1 )); continue ;;
+                    $'\e[C') [[ ${#SKEYS[@]} -gt 0 ]] && pv_cycle "$sel" "${SKEYS[$PV_SET_CUR]}" "$sdir" 1; continue ;;
+                    $'\e[D') [[ ${#SKEYS[@]} -gt 0 ]] && pv_cycle "$sel" "${SKEYS[$PV_SET_CUR]}" "$sdir" -1; continue ;;
+                    '')      # run it again with whatever is pending, and watch
+                             PV_PANE=1; PREVIEW_ROLL=$(( PREVIEW_ROLL + 1 ))
+                             PV_STARTING=1; REDRAW=1; continue ;;
+                    t|T)     if [[ ${#SKEYS[@]} -gt 0 ]]; then
+                                 nk="${SKEYS[$PV_SET_CUR]}"
+                                 nv="$(ui_prompt "$sel · $nk =")"
+                                 [[ -n "$nv" ]] && { PV_TMP[$nk]="$nv"
+                                     FLASH=" ${c_ylw}●${c_rst} $nk = $nv ${c_dim}— Enter reloads it, w keeps it${c_rst}"; }
+                             fi; continue ;;
+                    w|W)     pv_save "$sel"; continue ;;
+                    R)       cmd_reset "$sel" >/dev/null 2>&1; SCACHE_TOY=""; PV_TMP=()
+                             PREVIEW_ROLL=$(( PREVIEW_ROLL + 1 ))
+                             FLASH=" ${c_grn}✓${c_rst} $sel back to defaults"; continue ;;
+                    $'\e'|$'\177'|$'\b') PV_PANE=1; continue ;;
+                    q|Q)     break ;;
+                    *)       continue ;;
+                esac
+            fi
+            case "$key" in
+                c|C)  PV_PANE=2; PV_SET_CUR=0; continue ;;
+                r)    PREVIEW_ROLL=$(( PREVIEW_ROLL + 1 )); PV_STARTING=1; REDRAW=1; continue ;;
+                $'\e'|$'\177'|$'\b')
+                      # Backing out drops anything unsaved — say so, don't lose it silently.
+                      [[ ${#PV_TMP[@]} -gt 0 ]] && FLASH=" ${c_dim}discarded ${#PV_TMP[@]} unsaved change(s)${c_rst}"
+                      PV_PANE=0; PV_TMP=(); continue ;;
+                q|Q)  break ;;
+                1) TAB=0; PV_PANE=0; PV_TMP=(); continue ;;
+                2) TAB=1; PV_PANE=0; PV_TMP=(); continue ;;
+                3) TAB=2; PV_PANE=0; PV_TMP=(); continue ;;
+                5) TAB=4; PV_PANE=0; PV_TMP=(); continue ;;
+                *)    continue ;;
+            esac
+        fi
+
+        # The about screen is a reader, not a menu — any key returns to the grid.
+        if [[ $TAB -eq 0 && $ABOUT -eq 1 ]]; then
+            case "$key" in q|Q) break ;; *) ABOUT=0 ;; esac
+            continue
+        fi
+
+        # Uninstalling arms on the first x and fires on the second, so a
+        # mistyped key can't take a toy off in one press. Anything else disarms.
+        case "$key" in x|X) ;; *) CONFIRM="" ;; esac
+
+        # Everywhere else the model is deliberately flat: numbers and Tab change
+        # tab, arrows move the cursor through the grid, Enter acts. Arrows no
+        # longer double as tab-switchers — that overload was the confusing part.
+        #
+        # No vim aliases here either: h/j/k/l used to shadow the letter keys, so
+        # `k` on the installed tab moved the cursor AND toggled the key list at
+        # the same time. The arrows are what every screen documents.
+        case "$key" in
+            q|Q)        break ;;
+            $'\t')      [[ $TAB -lt 4 ]] && TAB=$((TAB+1)) || TAB=0; PANE=0 ;;
+            $'\e[Z')    [[ $TAB -gt 0 ]] && TAB=$((TAB-1)) || TAB=4; PANE=0 ;;
+            1) TAB=0; PANE=0 ;;  2) TAB=1; PANE=0 ;;  3) TAB=2; PANE=0 ;;
+            4) TAB=3; PANE=0 ;;  5) TAB=4; PANE=0 ;;
+            '?') TAB=4 ;;
+            $'\e[D')  CUR[$TAB]=$(( CUR[TAB] - 1 )) ;;
+            $'\e[C')  CUR[$TAB]=$(( CUR[TAB] + 1 )) ;;
+            $'\e[A')  CUR[$TAB]=$(( CUR[TAB] - GRID_COLS )) ;;
+            $'\e[B')  CUR[$TAB]=$(( CUR[TAB] + GRID_COLS )) ;;
+        esac
+        [[ ${CUR[$TAB]} -lt 0 ]] && CUR[$TAB]=0
+
+        case "$TAB:$key" in
+            "0:")  if [[ ${#INST[@]} -gt 0 ]]; then
+                       sel="${INST[${CUR[0]}]}"
+                       sdir="$(toy_dir "$sel" 2>/dev/null)"
+                       # A toy that reads stdin would silently block on a blank
+                       # screen if we just launched it, so anything declaring
+                       # `input=` asks for its argument first.
+                       nk="$(meta "$sdir" input)"
+                       if [[ -n "$nk" ]]; then
+                           nv="$(ui_prompt "$sel · $nk:")"
+                           [[ -n "$nv" ]] && ui_shellout "$SELF" run "$sel" "$nv"
+                       else
+                           ui_shellout "$SELF" run "$sel"
+                       fi
+                   fi ;;
+            0:x|0:X) if [[ ${#INST[@]} -gt 0 ]]; then
+                         sel="${INST[${CUR[0]}]}"
+                         if [[ "$CONFIRM" == "$sel" ]]; then
+                             cmd_remove "$sel" >/dev/null 2>&1 || true
+                             CONFIRM=""; ui_refresh
+                             FLASH=" ${c_grn}✓${c_rst} uninstalled $sel ${c_dim}— its files are kept${c_rst}"
+                         else
+                             CONFIRM="$sel"
+                             FLASH=" ${c_ylw}?${c_rst} uninstall ${c_bld}${sel}${c_rst}? ${c_dim}x again to confirm · any other key cancels${c_rst}"
+                         fi
+                     fi ;;
+            0:c|0:C) TAB=2; PANE=1; SET_CUR=0; CUR[2]=${CUR[0]} ;;
+            0:k|0:K) KEYSHOW=$(( 1 - KEYSHOW )) ;;
+            0:a|0:A) [[ ${#INST[@]} -gt 0 ]] && ABOUT=1 ;;
+            0:u|0:U) if [[ ${#INST[@]} -gt 0 ]]; then
+                         sel="${INST[${CUR[0]}]}"
+                         if [[ -n "${UPG[$sel]:-}" ]]; then
+                             ui_shellout "$SELF" upgrade "$sel"; ui_refresh
+                         else
+                             FLASH=" ${c_dim}$sel is already current${c_rst}"
+                         fi
+                     fi ;;
+            "1:")  if [[ ${#AVAIL[@]} -gt 0 ]]; then
+                       sel="${AVAIL[${CUR[1]}]}"
+                       case "${ASTATE[${CUR[1]}]:-remote}" in
+                           installed)
+                               FLASH=" ${c_grn}✓${c_rst} $sel is already installed ${c_dim}— tab 1 runs it${c_rst}" ;;
+                           onbox)
+                               cmd_install "$sel" >/dev/null 2>&1 || true
+                               ui_refresh
+                               FLASH=" ${c_grn}✓${c_rst} installed $sel" ;;
+                           *)
+                               ui_shellout bash -c "\"\$0\" fetch \"\$1\" && \"\$0\" install \"\$1\"" "$SELF" "$sel"
+                               ui_refresh ;;
+                       esac
+                   fi ;;
+            1:u|1:U) ui_shellout "$SELF" update; ui_refresh ;;
+            "2:")  [[ ${#INST[@]} -gt 0 ]] && { PANE=1; SET_CUR=0; } ;;
+            "3:")  if [[ ${#INST[@]} -gt 0 ]]; then
+                       sel="${INST[${CUR[3]}]}"
+                       sdir="$(toy_dir "$sel" 2>/dev/null)"
+                       if [[ -n "$(meta "$sdir" preview)" ]]; then
+                           PV_PANE=1; PV_TMP=(); PREVIEW_ROLL=$(( PREVIEW_ROLL + 1 ))
+                           PV_STARTING=1; REDRAW=1
+                       else
+                           FLASH=" ${c_dim}${sel} has no preview — run it from tab 1${c_rst}"
+                       fi
+                   fi ;;
+        esac
+    done
+
+    set -e
+    ui_leave
+    trap - EXIT INT TERM
+    return 0
+}
+
+# ─── entry ───────────────────────────────────────────────────────────────────
+
+# Invoked through a shim (~/.local/bin/<toy> -> bite)? Then run that toy.
+self="$(basename "$0")"
+if [[ "$self" != "bite-toys" ]] && toy_dir "$self" >/dev/null 2>&1; then
+    cmd_run "$self" "$@"
+fi
+
+case "${1:-ui}" in
+    ui|hub|menu)      cmd_ui ;;
+    list|ls)          shift; cmd_list "$@" ;;
+    info|show)        shift; cmd_info "$@" ;;
+    install|add|i)    shift; cmd_install "$@" ;;
+    remove|rm|uninstall) shift; cmd_remove "$@" ;;
+    purge|delete)     shift; cmd_purge "$@" ;;
+    upgrade|up)       shift; cmd_upgrade "$@" ;;
+    pack|publish)     shift; cmd_pack "$@" ;;
+    new|scaffold)     shift; cmd_new "$@" ;;
+    run|exec)         shift; cmd_run "$@" ;;
+    config|set|cfg)   shift; cmd_config "$@" ;;
+    reset)            shift; cmd_reset "$@" ;;
+    search|find)      shift; cmd_search "$@" ;;
+    update|sync)      shift; cmd_update "$@" ;;
+    fetch|get|dl)     shift; cmd_fetch "$@" ;;
+    doctor|check)     shift; cmd_doctor "$@" ;;
+    help|-h|--help)   cmd_help ;;
+    --version|-v)     say "bite-toys 1.0 ($APP toy hub)" ;;
+    *)                err "unknown command: $1"; echo; cmd_help; exit 1 ;;
+esac

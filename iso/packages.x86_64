@@ -384,3 +384,10 @@ irqbalance
 scx-scheds
 scx-manager
 fuzzel
+
+# bite-toys hub — bundled toys (bitebeat / bitecam / bitemuseum)
+python-numpy
+python-pillow
+qt6-declarative
+v4l-utils
+v4l2loopback-dkms

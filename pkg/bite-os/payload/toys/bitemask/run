@@ -1,0 +1,2194 @@
+#!/usr/bin/env python3
+"""bitemask — your face, covered and profiled, live.
+
+Unlike bitecam this works on real pixels rather than characters: a censor bar
+drawn over ASCII would not be censoring anything. ffmpeg captures and scales,
+OpenCV finds the face, numpy does the covering.
+
+Detection is the expensive part — around 26 ms a go, which would blow the frame
+budget if it ran inline. It runs on a background thread instead: the main loop
+hands over a downscaled frame and never waits for the answer, drawing the boxes
+from whenever the detector last finished. The picture therefore never stutters,
+it only ever tracks slightly behind your head.
+
+The terminal preview is drawn with QUADRANT glyphs — four subpixels per cell
+against a half-block's two — but a terminal is a hard ceiling for this. Filling
+a 1500px window needs ~375 columns, and emitting truecolour escapes for that
+many cells is tens of MB/s, which is what makes a terminal preview stutter and
+stall. Sixel was measured and rejected (10 fps at 480x270), ffmpeg here has no
+sixel muxer, kitty's protocol needs kitty (the rice runs foot), and sextants
+would be sharper but JetBrains Mono has no glyphs for them.
+
+So `f` opens a real window (ffplay, which ships with ffmpeg) showing the full
+working resolution with no terminal in the way. The terminal preview stays as
+the default because it is the look, but it is the coarse one by nature.
+
+Overlays are drawn TWICE at different scales: once at working resolution for
+the recorder, the webcam and the window, and again at the terminal's own much
+smaller resolution. Drawing them once and downscaling turned the dossier into
+unreadable mush, because 10px text does not survive being halved.
+
+Everything worth changing is live-adjustable: TAB opens a settings panel drawn
+over the preview only, so recordings and the webcam feed stay clean.
+
+Settings arrive from the hub as TOY_* env vars (see config.def). Defaults are
+repeated here so the toy still runs standalone, outside the hub.
+"""
+
+import array
+import fcntl
+import math
+import os
+import queue
+import random
+import re
+import select
+import shutil
+import signal
+import subprocess
+import sys
+import termios
+import threading
+import time
+import tty
+
+
+def _env(key, default):
+    v = os.environ.get("TOY_" + key.upper(), "")
+    return v if v != "" else default
+
+
+def _on(v):
+    return str(v).lower() in ("on", "yes", "true", "1")
+
+
+def _int(v, lo, hi, default):
+    try:
+        return max(lo, min(hi, int(float(v))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _float(v, lo, hi, default):
+    try:
+        return max(lo, min(hi, float(v)))
+    except (TypeError, ValueError):
+        return default
+
+
+COVER_ORDER = ["bar", "eyes", "visor", "vanish", "mosaic", "blur", "glitch",
+               "static", "ascii", "off"]
+ACCENT_ORDER = ["green", "red", "cyan", "amber", "magenta", "white"]
+SHAPE_ORDER = ["box", "oval"]
+SENS_ORDER = ["low", "normal", "high"]
+PREVIEW_ORDER = ["quad", "half"]
+LABEL_PRESETS = ["REDACTED", "CLASSIFIED", "NO SIGNAL", "ERROR", "DENIED",
+                 "UNKNOWN", "404"]
+
+# Deliberately bright: these are drawn over a face, in a terminal, and get
+# re-encoded by whatever site the clip ends up on.
+ACCENTS = {
+    "green":   (0, 255, 120),
+    "red":     (255, 42, 60),
+    "cyan":    (0, 229, 255),
+    "amber":   (255, 176, 0),
+    "magenta": (255, 0, 200),
+    "white":   (235, 235, 235),
+}
+
+# scaleFactor, minNeighbors. Lower/looser finds faces in bad light at the cost
+# of occasionally locking onto something that merely resembles one.
+SENS_PARAMS = {"low": (1.3, 8), "normal": (1.2, 5), "high": (1.1, 3)}
+
+
+def _choice(v, options, default):
+    return v if v in options else default
+
+
+# Everything the panel can edit lives in one dict, so drawing the panel,
+# changing a value and writing the config back are all the same operation.
+S = {
+    "cover":      _choice(_env("cover", "bar"), COVER_ORDER, "bar"),
+    "blocksize":  _int(_env("blocksize", "14"), 4, 48, 14),
+    "coversize":  _float(_env("coversize", "1.15"), 0.7, 2.0, 1.15),
+    "covershape": _choice(_env("covershape", "box"), SHAPE_ORDER, "box"),
+    "label":      _env("label", "REDACTED"),
+    "profiler":   _on(_env("profiler", "on")),
+    "showdossier": _on(_env("showdossier", "on")),
+    "accent":     _choice(_env("accent", "green"), ACCENT_ORDER, "green"),
+    "sensitivity": _choice(_env("sensitivity", "normal"), SENS_ORDER, "normal"),
+    "multiface":  _on(_env("multiface", "on")),
+    "mirror":     _on(_env("mirror", "on")),
+    "trackbox":   _on(_env("trackbox", "off")),
+    "preview":    _choice(_env("preview", "quad"), PREVIEW_ORDER, "quad"),
+    "termpreview": _on(_env("termpreview", "on")),
+    "stats":      _on(_env("stats", "on")),
+}
+
+DEVICE   = _env("device", "/dev/video0")
+FPS      = _int(_env("fps", "30"), 5, 60, 30)
+PROCW    = _int(_env("procwidth", "640"), 320, 1920, 640)
+DETEVERY = _int(_env("detectevery", "2"), 1, 8, 2)
+DOSSIER  = _env("dossier",
+                "SUBJECT: {subject}|MATCH: 0 RESULTS|THREAT: {threat}%"
+                "|LOC: {geo}|SIG: {hash}")
+SUBJECT  = _env("subject", "UNKNOWN")
+GEO      = _env("geo", "32.0853N 34.7818E")
+RECFMT   = _env("recformat", "mp4")
+RECSHAPE = _env("recshape", "source")
+VCAMDEV  = _env("vcamdevice", "auto")
+
+CONF_PATH = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+    "bite-os", "toys", "bitemask.conf")
+
+
+def xdg_dir(key):
+    """A real XDG folder, whatever language it's named in.
+
+    Hardcoding ~/Videos is wrong on any localised install — here it's ~/וידאו.
+    xdg-user-dir is the authority; the env var and user-dirs.dirs are fallbacks
+    for when it isn't installed.
+    """
+    try:
+        p = subprocess.run(["xdg-user-dir", key], capture_output=True,
+                           text=True, timeout=3).stdout.strip()
+        if p and os.path.isdir(p):
+            return p
+    except Exception:
+        pass
+    p = os.environ.get("XDG_%s_DIR" % key, "")
+    if p and os.path.isdir(os.path.expandvars(p)):
+        return os.path.expandvars(p)
+    try:
+        with open(os.path.expanduser("~/.config/user-dirs.dirs"),
+                  encoding="utf-8") as fh:
+            m = re.search(r'^XDG_%s_DIR="(.*)"' % key, fh.read(), re.M)
+        if m:
+            p = os.path.expandvars(
+                m.group(1).replace("$HOME", os.path.expanduser("~")))
+            if os.path.isdir(p):
+                return p
+    except Exception:
+        pass
+    return os.path.expanduser("~")
+
+
+RECDIR_PRESETS = {
+    "auto": "VIDEOS", "videos": "VIDEOS", "desktop": "DESKTOP",
+    "downloads": "DOWNLOAD", "pictures": "PICTURES", "documents": "DOCUMENTS",
+}
+
+_recdir = _env("recdir", "auto").strip()
+if _recdir in RECDIR_PRESETS:
+    RECDIR = os.path.join(xdg_dir(RECDIR_PRESETS[_recdir]), "bitemask")
+elif _recdir == "home":
+    RECDIR = os.path.join(os.path.expanduser("~"), "bitemask")
+else:
+    RECDIR = os.path.expanduser(os.path.expandvars(_recdir))
+
+
+def die(msg, hint=""):
+    sys.stderr.write("\n  bitemask: %s\n" % msg)
+    if hint:
+        sys.stderr.write("  %s\n" % hint)
+    sys.stderr.write("\n")
+    sys.exit(1)
+
+
+try:
+    import numpy as np
+except ImportError:
+    die("numpy is not installed", "sudo pacman -S python-numpy")
+
+try:
+    import cv2
+except ImportError:
+    die("the python opencv bindings are not installed",
+        "sudo pacman -S python-opencv")
+
+if not shutil.which("ffmpeg"):
+    die("ffmpeg is not installed", "sudo pacman -S ffmpeg")
+
+
+def cascade_path():
+    """Find the face cascade OpenCV ships as data.
+
+    cv2.data was dropped in OpenCV 5, which is what every tutorial online still
+    tells you to use, and the xml lives in the `opencv` package rather than
+    `python-opencv` — so having the bindings installed is not enough.
+    """
+    try:
+        p = os.path.join(cv2.data.haarcascades,
+                         "haarcascade_frontalface_default.xml")
+        if os.path.exists(p):
+            return p
+    except AttributeError:
+        pass
+    for base in ("/usr/share/opencv5/haarcascades",
+                 "/usr/share/opencv4/haarcascades",
+                 "/usr/share/opencv/haarcascades",
+                 "/usr/share/OpenCV/haarcascades"):
+        p = os.path.join(base, "haarcascade_frontalface_default.xml")
+        if os.path.exists(p):
+            return p
+    return None
+
+
+CASCADE_XML = cascade_path()
+
+WANT_SETUP = "--setup-camera" in sys.argv or "--setup-cam" in sys.argv
+WANT_PREVIEW = "--preview" in sys.argv
+
+if not WANT_SETUP and not WANT_PREVIEW:
+    if CASCADE_XML is None:
+        die("the face detection data is missing",
+            "sudo pacman -S opencv   (the xml files live there, not in "
+            "python-opencv)")
+    if not os.path.exists(DEVICE):
+        found = sorted(p for p in os.listdir("/dev") if p.startswith("video"))
+        die("no camera at %s" % DEVICE,
+            ("try one of: " + ", ".join("/dev/" + f for f in found)) if found
+            else "no /dev/video* devices exist — is a camera plugged in?")
+
+
+def source_aspect():
+    """Native camera aspect, so faces don't come out stretched.
+
+    ffprobe writes the answer to stdout but also reports a harmless QBUF error
+    on teardown, so failure here is non-fatal — 16:9 covers most webcams.
+    """
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-f", "v4l2", "-i", DEVICE,
+             "-show_entries", "stream=width,height", "-of", "csv=p=0"],
+            capture_output=True, text=True, timeout=5).stdout
+        m = re.search(r"(\d+),(\d+)", out)
+        if m:
+            w, h = int(m.group(1)), int(m.group(2))
+            if w > 0 and h > 0:
+                return w / h
+    except Exception:
+        pass
+    return 16 / 9
+
+
+# The hub gives a preview 3 seconds total, and probing the camera for its
+# aspect costs 0.6s of that for a ratio 16:9 covers anyway.
+ASPECT = 16 / 9 if (WANT_SETUP or WANT_PREVIEW) else source_aspect()
+
+# h264 and v4l2 both want even dimensions.
+PROCW = PROCW // 2 * 2
+PROCH = max(240, int(PROCW / ASPECT)) // 2 * 2
+
+# Detection runs on a fixed-width downscale: faces are found just as reliably
+# and the cost stops depending on the working resolution.
+DETW = 320
+DETH = max(120, int(DETW / ASPECT)) // 2 * 2
+DET_SCALE = PROCW / float(DETW)
+
+
+def grid_for(term_cols, term_rows, mode):
+    """Largest cols×rows preserving the camera's aspect inside the terminal.
+
+    The sub-pixel layout does NOT enter this calculation, which is the trap
+    here. A cell is drawn at cell_w x cell_h no matter how many sub-pixels it
+    carries, and a cell is about twice as tall as it is wide — so the picture
+    occupies cols*cell_w by rows*2*cell_w on screen, and preserving the aspect
+    is rows = cols / (2 * ASPECT) in quadrant and half-block mode alike.
+
+    Deriving the factor from px/py instead made half-block ask for twice the
+    rows it should, squashing the picture to 0.89 of the source aspect where
+    16:9 wants 1.78 — the face came out visibly squeezed horizontally.
+    """
+    avail_rows = max(term_rows - 1, 1)
+    cols = max(term_cols, 8)
+    rows = int(cols / (2.0 * ASPECT))
+    if rows > avail_rows:
+        rows = avail_rows
+        cols = int(rows * 2.0 * ASPECT)
+    return max(cols, 8), max(rows, 4)
+
+
+def start_ffmpeg():
+    vf = []
+    if S["mirror"]:
+        vf.append("hflip")
+    vf.append("fps=%d" % FPS)
+    vf.append("scale=%d:%d:flags=fast_bilinear" % (PROCW, PROCH))
+    vf.append("format=rgb24")
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
+           "-f", "v4l2", "-i", DEVICE,
+           "-vf", ",".join(vf),
+           "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, bufsize=0)
+
+
+def read_exact(pipe, n):
+    """Raw frames arrive in arbitrary chunks; a partial read is not EOF."""
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = pipe.read(n - len(buf))
+        if not chunk:
+            return None
+        buf += chunk
+    return bytes(buf)
+
+
+# ── detection, off the hot path ───────────────────────────────────────────────
+
+class Detector(threading.Thread):
+    """Runs the cascade on the newest frame handed to it, forever.
+
+    submit() overwrites rather than queues: if detection is running behind
+    there is no value in working through stale frames, only in starting the
+    next attempt from the most recent one.
+    """
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.cascade = cv2.CascadeClassifier(CASCADE_XML)
+        self._lock = threading.Lock()
+        self._pending = None
+        self._boxes = []
+        self._stamp = 0.0
+        self._wake = threading.Event()
+        self._stop = False
+
+    def submit(self, gray):
+        with self._lock:
+            self._pending = gray
+        self._wake.set()
+
+    def result(self):
+        with self._lock:
+            return self._boxes, self._stamp
+
+    def stop(self):
+        self._stop = True
+        self._wake.set()
+
+    def run(self):
+        minsz = max(24, int(DETW * 0.11))
+        while not self._stop:
+            self._wake.wait(0.2)
+            self._wake.clear()
+            with self._lock:
+                gray = self._pending
+                self._pending = None
+            if gray is None:
+                continue
+            # Read live so the panel's sensitivity control takes effect at once.
+            sf, mn = SENS_PARAMS[S["sensitivity"]]
+            try:
+                found = self.cascade.detectMultiScale(
+                    gray, scaleFactor=sf, minNeighbors=mn,
+                    minSize=(minsz, minsz))
+            except Exception:
+                found = []
+            boxes = [(float(x), float(y), float(w), float(h))
+                     for (x, y, w, h) in found]
+            with self._lock:
+                self._boxes = boxes
+                self._stamp = time.time()
+
+
+# ── tracking ──────────────────────────────────────────────────────────────────
+#
+# The cascade has no notion of identity: it returns a fresh unordered list every
+# attempt, boxes jitter by several pixels between frames, and it drops the face
+# entirely whenever you turn your head. Smoothing and holding here is what makes
+# the cover sit still on a face instead of vibrating around it.
+
+LOST_GRACE = 1.2      # seconds a face is held after detection loses it
+
+
+class Track:
+    _next_id = 1
+
+    def __init__(self, box, now):
+        self.x, self.y, self.w, self.h = box
+        self.id = Track._next_id
+        Track._next_id += 1
+        self.born = now
+        self.last_seen = now
+        self.seed = random.random()
+        self.hits = 1
+
+    @property
+    def center(self):
+        return self.x + self.w / 2, self.y + self.h / 2
+
+    def blend(self, box, now, alpha=0.45):
+        x, y, w, h = box
+        self.x += (x - self.x) * alpha
+        self.y += (y - self.y) * alpha
+        self.w += (w - self.w) * alpha
+        self.h += (h - self.h) * alpha
+        self.last_seen = now
+        self.hits += 1
+
+    def decay(self, now):
+        """1.0 while detection has it, falling to 0 once it's been lost."""
+        lost = now - self.last_seen
+        if lost <= 0.12:
+            return 1.0
+        return max(0.0, 1.0 - (lost - 0.12) / LOST_GRACE)
+
+    def rect(self, w_limit, h_limit, grow=1.0):
+        cx, cy = self.center
+        w = self.w * grow
+        h = self.h * grow
+        x1 = int(max(0, min(w_limit - 2, cx - w / 2)))
+        y1 = int(max(0, min(h_limit - 2, cy - h / 2)))
+        x2 = int(max(x1 + 2, min(w_limit, cx + w / 2)))
+        y2 = int(max(y1 + 2, min(h_limit, cy + h / 2)))
+        return x1, y1, x2, y2
+
+    def eye_rect(self, w_limit, h_limit, grow=1.0):
+        """Just the eye band of the face box, widened a little.
+
+        The cascade's box is the whole face, and eyes sit a little above its
+        middle — this is the classic anonymity strip, not a full cover.
+        """
+        cx, cy = self.center
+        w = self.w * grow * 1.12
+        h = self.h * grow
+        x1 = int(max(0, cx - w / 2))
+        x2 = int(min(w_limit, cx + w / 2))
+        top = cy - h / 2
+        y1 = int(max(0, top + h * 0.20))
+        y2 = int(min(h_limit, top + h * 0.50))
+        return x1, max(0, y1), max(x1 + 2, x2), max(y1 + 2, y2)
+
+
+class Tracker:
+    def __init__(self):
+        self.tracks = []
+        self._last_stamp = 0.0
+
+    def update(self, boxes, stamp, now):
+        # Only fold in a detection result once; between attempts the existing
+        # tracks simply age, which is what holds the box steady on your face.
+        fresh = stamp > self._last_stamp
+        if fresh:
+            self._last_stamp = stamp
+            scaled = [(x * DET_SCALE, y * DET_SCALE,
+                       w * DET_SCALE, h * DET_SCALE) for (x, y, w, h) in boxes]
+            unmatched = list(range(len(scaled)))
+            for t in self.tracks:
+                best, bestd = None, None
+                tcx, tcy = t.center
+                for i in unmatched:
+                    x, y, w, h = scaled[i]
+                    d = math.hypot(x + w / 2 - tcx, y + h / 2 - tcy)
+                    # A face cannot jump further than its own width between
+                    # attempts; anything that far away is a different person.
+                    if d < max(t.w, w) * 0.7 and (bestd is None or d < bestd):
+                        best, bestd = i, d
+                if best is not None:
+                    t.blend(scaled[best], now)
+                    unmatched.remove(best)
+            for i in unmatched:
+                self.tracks.append(Track(scaled[i], now))
+
+        self.tracks = [t for t in self.tracks if t.decay(now) > 0.0]
+        # Two people standing at the same distance shouldn't swap places on
+        # screen every frame, so order by size and keep it stable.
+        self.tracks.sort(key=lambda t: t.w * t.h, reverse=True)
+        if not S["multiface"]:
+            return self.tracks[:1]
+        return self.tracks
+
+
+# ── covering a face ───────────────────────────────────────────────────────────
+
+def _noise(h, w, hi=70):
+    """Cheap static: generated small and stretched, not per-pixel at full size."""
+    sh, sw = max(2, h // 4), max(2, w // 4)
+    n = np.random.randint(0, hi, (sh, sw, 1), dtype=np.uint8)
+    return cv2.resize(np.repeat(n, 3, axis=2), (w, h),
+                      interpolation=cv2.INTER_NEAREST)
+
+
+def _blend(img, x1, y1, x2, y2, new):
+    """Write `new` into the region, respecting the box/oval shape setting.
+
+    Oval is soft-edged: a hard ellipse against a moving face looks like a
+    sticker, a feathered one looks like it belongs to the picture.
+    """
+    roi = img[y1:y2, x1:x2]
+    if roi.size == 0:
+        return
+    if S["covershape"] == "box":
+        roi[:] = new
+        return
+    h, w = roi.shape[:2]
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.ellipse(mask, (w // 2, h // 2), (max(1, int(w * 0.5)),
+                                         max(1, int(h * 0.5))),
+                0, 0, 360, 255, -1)
+    mask = cv2.GaussianBlur(mask, (0, 0), max(1.0, w * 0.03))
+    m = (mask.astype(np.float32) / 255.0)[:, :, None]
+    roi[:] = (roi * (1 - m) + new * m).astype(np.uint8)
+
+
+def _fit_text(text, box_w, base):
+    fs = max(0.28, base)
+    th = max(1, int(fs * 2))
+    (tw, thh), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, th)
+    while tw > box_w * 0.88 and fs > 0.2:
+        fs -= 0.04
+        th = max(1, int(fs * 2))
+        (tw, thh), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, th)
+    return fs, th, tw, thh
+
+
+def cover_bar(img, t, now, accent):
+    x1, y1, x2, y2 = t.rect(PROCW, PROCH, S["coversize"])
+    d = t.decay(now)
+    new = np.zeros((y2 - y1, x2 - x1, 3), np.uint8)
+    if d < 0.99:
+        # Losing the face eats the bar away in bands rather than blinking it
+        # off — it reads as interference instead of a dropped frame.
+        h = new.shape[0]
+        keep = int(h * (1.0 - d))
+        if keep > 0:
+            off = int((now * 40 + t.seed * 50) % max(1, h))
+            band = slice(off, min(h, off + keep))
+            if new[band].shape[0]:
+                new[band] = _noise(new[band].shape[0], new.shape[1], 90)
+    _blend(img, x1, y1, x2, y2, new)
+    w = x2 - x1
+    fs, th, tw, thh = _fit_text(S["label"], w, w / 260.0)
+    cv2.putText(img, S["label"], (x1 + (w - tw) // 2, (y1 + y2) // 2 + thh // 2),
+                cv2.FONT_HERSHEY_SIMPLEX, fs, (255, 255, 255), th, cv2.LINE_AA)
+
+
+def cover_eyes(img, t, now, accent):
+    x1, y1, x2, y2 = t.eye_rect(PROCW, PROCH, S["coversize"])
+    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 0), -1)
+    w, h = x2 - x1, y2 - y1
+    fs, th, tw, thh = _fit_text(S["label"], w, h / 46.0)
+    if thh < h * 0.85:
+        cv2.putText(img, S["label"], (x1 + (w - tw) // 2, (y1 + y2) // 2 + thh // 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs, (245, 245, 245), th, cv2.LINE_AA)
+
+
+def cover_visor(img, t, now, accent):
+    """A glowing band across the eyes — the covering that still looks like a face."""
+    x1, y1, x2, y2 = t.eye_rect(PROCW, PROCH, S["coversize"])
+    h, w = y2 - y1, x2 - x1
+    if h < 2 or w < 2:
+        return
+    band = np.zeros((h, w, 3), np.uint8)
+    # vertical gradient of the accent, brightest through the middle
+    ramp = np.abs(np.linspace(-1.0, 1.0, h))[:, None]
+    glow = (1.0 - ramp ** 2)
+    band[:] = (np.array(accent, np.float32)[None, None, :] *
+               glow[:, :, None] * 0.9).astype(np.uint8)
+    band[::3] = (band[::3].astype(np.uint16) * 40 // 100).astype(np.uint8)
+    # a brighter scan travelling along the visor
+    sx = int(((now * 0.8 + t.seed) % 1.0) * w)
+    lo, hi = max(0, sx - w // 12), min(w, sx + w // 12)
+    if hi > lo:
+        band[:, lo:hi] = np.clip(
+            band[:, lo:hi].astype(np.uint16) + 70, 0, 255).astype(np.uint8)
+    roi = img[y1:y2, x1:x2]
+    img[y1:y2, x1:x2] = np.clip(roi.astype(np.uint16) * 0.15 +
+                                band.astype(np.uint16), 0, 255).astype(np.uint8)
+    cv2.rectangle(img, (x1, y1), (x2, y2), accent, max(1, int(PROCW / 640)))
+
+
+def cover_mosaic(img, t, now, accent):
+    x1, y1, x2, y2 = t.rect(PROCW, PROCH, S["coversize"])
+    roi = img[y1:y2, x1:x2]
+    h, w = roi.shape[:2]
+    blocks = max(2, int(w / max(2, S["blocksize"])))
+    small = cv2.resize(roi, (blocks, max(2, int(blocks * h / max(1, w)))),
+                       interpolation=cv2.INTER_LINEAR)
+    _blend(img, x1, y1, x2, y2,
+           cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST))
+
+
+def cover_blur(img, t, now, accent):
+    x1, y1, x2, y2 = t.rect(PROCW, PROCH, S["coversize"])
+    roi = img[y1:y2, x1:x2]
+    if roi.size == 0:
+        return
+    sigma = max(2.0, S["blocksize"] * 0.9)
+    _blend(img, x1, y1, x2, y2, cv2.GaussianBlur(roi, (0, 0), sigma))
+
+
+def cover_glitch(img, t, now, accent):
+    x1, y1, x2, y2 = t.rect(PROCW, PROCH, S["coversize"])
+    roi = img[y1:y2, x1:x2]
+    h, w = roi.shape[:2]
+    out = roi.copy()
+    d = max(2, int(w * 0.05))
+    out[:, :, 0] = np.roll(roi[:, :, 0], d, axis=1)
+    out[:, :, 2] = np.roll(roi[:, :, 2], -d, axis=1)
+    rnd = random.Random(int(now * 12) * 31 + t.id)
+    for _ in range(5):
+        bh = rnd.randint(max(2, h // 22), max(3, h // 7))
+        by = rnd.randint(0, max(0, h - bh))
+        out[by:by + bh] = np.roll(out[by:by + bh],
+                                  rnd.randint(-w // 4, w // 4), axis=1)
+    out[::3] = (out[::3].astype(np.uint16) * 45 // 100).astype(np.uint8)
+    _blend(img, x1, y1, x2, y2, out)
+
+
+def cover_static(img, t, now, accent):
+    x1, y1, x2, y2 = t.rect(PROCW, PROCH, S["coversize"] * 1.05)
+    roi = img[y1:y2, x1:x2]
+    h, w = roi.shape[:2]
+    if h < 2 or w < 2:
+        return
+    fill = _noise(h, w, 55)
+    # A few accent-coloured sparks so the hole belongs to the same picture as
+    # the brackets rather than looking like a dead region.
+    sparks = np.random.random((h, w)) > 0.994
+    fill[sparks] = accent
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.ellipse(mask, (w // 2, h // 2), (int(w * 0.46), int(h * 0.5)),
+                0, 0, 360, 255, -1)
+    mask = cv2.GaussianBlur(mask, (0, 0), max(1.0, w * 0.02))
+    m = (mask.astype(np.float32) / 255.0)[:, :, None]
+    img[y1:y2, x1:x2] = (roi * (1 - m) + fill * m).astype(np.uint8)
+
+
+_ASCII_RAMP = " .:-=+*#%@"
+_atlas_cache = {}
+
+
+def _ascii_atlas(cw, ch):
+    """Every ramp character rasterised once into a (ch, cw) mask.
+
+    Composing the face from an atlas with one numpy indexing op costs the same
+    whatever the block size; drawing each glyph with putText per frame would
+    not keep up.
+    """
+    key = (cw, ch)
+    hit = _atlas_cache.get(key)
+    if hit is not None:
+        return hit
+    atlas = np.zeros((len(_ASCII_RAMP), ch, cw), np.uint8)
+    fs = max(0.25, ch / 22.0)
+    for i, chx in enumerate(_ASCII_RAMP):
+        tile = np.zeros((ch, cw), np.uint8)
+        if chx != " ":
+            (tw, thh), _ = cv2.getTextSize(chx, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)
+            cv2.putText(tile, chx, (max(0, (cw - tw) // 2),
+                                    min(ch - 1, (ch + thh) // 2)),
+                        cv2.FONT_HERSHEY_SIMPLEX, fs, 255, 1, cv2.LINE_AA)
+        atlas[i] = tile
+    _atlas_cache.clear()          # only ever one block size in play
+    _atlas_cache[key] = atlas
+    return atlas
+
+
+def cover_ascii(img, t, now, accent):
+    """The face, and only the face, rendered as characters."""
+    x1, y1, x2, y2 = t.rect(PROCW, PROCH, S["coversize"])
+    roi = img[y1:y2, x1:x2]
+    h, w = roi.shape[:2]
+    cw = max(3, S["blocksize"] // 2)
+    ch = max(4, int(cw * 1.8))
+    nc, nr = max(1, w // cw), max(1, h // ch)
+    small = cv2.resize(roi, (nc, nr), interpolation=cv2.INTER_AREA)
+    lum = (small[:, :, 0].astype(np.uint16) * 77 +
+           small[:, :, 1].astype(np.uint16) * 150 +
+           small[:, :, 2].astype(np.uint16) * 29) >> 8
+    idx = (lum * (len(_ASCII_RAMP) - 1) // 255).astype(np.uint8)
+    atlas = _ascii_atlas(cw, ch)
+    mask = atlas[idx]                                   # (nr, nc, ch, cw)
+    col = small.astype(np.uint16)
+    f = (mask[:, :, :, :, None].astype(np.uint16) *
+         col[:, :, None, None, :]) // 255
+    f = f.astype(np.uint8).transpose(0, 2, 1, 3, 4)
+    f = f.reshape(nr * ch, nc * cw, 3)
+    out = np.zeros((h, w, 3), np.uint8)
+    out[:f.shape[0], :f.shape[1]] = f[:h, :w]
+    _blend(img, x1, y1, x2, y2, out)
+
+
+# The background plate: a slowly-learned picture of the room with nobody in it.
+# Everywhere a face is tracked is deliberately excluded from the update, so the
+# plate keeps whatever was behind you before you walked into shot — which is
+# what makes pasting it back over your head read as your head not being there.
+_PLATE = None
+_PLATE_SEEN = None
+
+
+def update_plate(raw, tracks):
+    global _PLATE, _PLATE_SEEN
+    if _PLATE is None or _PLATE.shape != raw.shape:
+        _PLATE = raw.astype(np.float32)
+        _PLATE_SEEN = np.zeros((PROCH, PROCW), np.float32)
+        return
+    m = np.ones((PROCH, PROCW), np.float32)
+    for t in tracks:
+        x1, y1, x2, y2 = t.rect(PROCW, PROCH, max(1.5, S["coversize"] * 1.35))
+        m[y1:y2, x1:x2] = 0.0
+    a = m[:, :, None] * 0.08
+    _PLATE += (raw.astype(np.float32) - _PLATE) * a
+    # How much genuine background each pixel has seen, so the toy can say when
+    # it still has nothing but your head to work from.
+    _PLATE_SEEN += m * 0.08
+    np.clip(_PLATE_SEEN, 0.0, 1.0, out=_PLATE_SEEN)
+
+
+def plate_ready(t):
+    """Has the area behind this face actually been seen empty?"""
+    if _PLATE_SEEN is None:
+        return False
+    x1, y1, x2, y2 = t.rect(PROCW, PROCH, S["coversize"])
+    patch = _PLATE_SEEN[y1:y2, x1:x2]
+    return bool(patch.size) and float(patch.mean()) > 0.45
+
+
+def cover_vanish(img, t, now, accent):
+    """Paste the background back over the face — no head at all."""
+    if _PLATE is None:
+        return
+    x1, y1, x2, y2 = t.rect(PROCW, PROCH, S["coversize"] * 1.1)
+    plate = _PLATE[y1:y2, x1:x2]
+    if plate.size == 0:
+        return
+    h, w = plate.shape[:2]
+    # Feathered always, whatever covershape says: a hard edge here instantly
+    # gives away that something has been pasted on.
+    mask = np.zeros((h, w), np.uint8)
+    cv2.ellipse(mask, (w // 2, h // 2), (int(w * 0.52), int(h * 0.54)),
+                0, 0, 360, 255, -1)
+    mask = cv2.GaussianBlur(mask, (0, 0), max(1.5, w * 0.06))
+    m = (mask.astype(np.float32) / 255.0)[:, :, None]
+    roi = img[y1:y2, x1:x2]
+    img[y1:y2, x1:x2] = (roi * (1 - m) + plate * m).astype(np.uint8)
+
+
+# The covers block size actually does anything to.
+BLOCKY = ("mosaic", "blur", "ascii")
+
+COVERS = {"bar": cover_bar, "eyes": cover_eyes, "visor": cover_visor,
+          "vanish": cover_vanish,
+          "mosaic": cover_mosaic, "blur": cover_blur, "glitch": cover_glitch,
+          "static": cover_static, "ascii": cover_ascii}
+
+
+# ── the profiler ──────────────────────────────────────────────────────────────
+
+def _dim(c, f):
+    return (int(c[0] * f), int(c[1] * f), int(c[2] * f))
+
+
+def _scaled_rect(t, W, H, grow, eyes=False):
+    """A track's box mapped from working resolution onto some other image.
+
+    Overlays get drawn at two different sizes — full for output, small for the
+    terminal — and the tracks only ever live in working-resolution coordinates.
+    """
+    if eyes:
+        x1, y1, x2, y2 = t.eye_rect(PROCW, PROCH, grow)
+    else:
+        x1, y1, x2, y2 = t.rect(PROCW, PROCH, grow)
+    kx, ky = W / float(PROCW), H / float(PROCH)
+    return (int(x1 * kx), int(y1 * ky),
+            max(int(x1 * kx) + 2, int(x2 * kx)),
+            max(int(y1 * ky) + 2, int(y2 * ky)))
+
+
+def draw_profile(img, t, now, accent):
+    """Brackets, scan line and the dossier panel for one tracked face.
+
+    Sizes come from the image it is drawing on, not from the working frame, so
+    the same call produces readable text at 640px and at 300px.
+    """
+    H, W = img.shape[:2]
+    x1, y1, x2, y2 = _scaled_rect(t, W, H, S["coversize"] * 1.09)
+    d = t.decay(now)
+    if d < 1.0 and int(now * 18) % 2 == 0 and d < 0.55:
+        return                                   # flicker out as it loses you
+    col = _dim(accent, 0.35 + 0.65 * d)
+    w, h = x2 - x1, y2 - y1
+    th = max(1, int(W / 480))
+    arm = max(4, int(min(w, h) * 0.28))
+
+    for cx, cy, dx, dy in ((x1, y1, 1, 1), (x2, y1, -1, 1),
+                           (x1, y2, 1, -1), (x2, y2, -1, -1)):
+        cv2.line(img, (cx, cy), (cx + dx * arm, cy), col, th, cv2.LINE_AA)
+        cv2.line(img, (cx, cy), (cx, cy + dy * arm), col, th, cv2.LINE_AA)
+
+    sy = y1 + int((((now * 0.6) + t.seed) % 1.0) * h)
+    cv2.line(img, (x1 + 2, sy), (x2 - 2, sy), col, max(1, th), cv2.LINE_AA)
+
+    fs = max(0.3, W / 1500.0)
+    ft = max(1, int(W / 640))
+    cv2.putText(img, "TRK-%03d" % t.id, (x1, max(10, y1 - int(6 * ft))),
+                cv2.FONT_HERSHEY_SIMPLEX, fs, col, ft, cv2.LINE_AA)
+
+    if not S["showdossier"]:
+        return
+
+    threat = int(46 + 42 * abs(math.sin(now * 0.35 + t.seed * 6.28)))
+    fields = {
+        "subject": SUBJECT,
+        "geo": GEO,
+        "threat": "%02d" % threat,
+        "id": "TRK-%03d" % t.id,
+        "time": time.strftime("%H:%M:%S"),
+        "conf": "%02d" % int(min(99, t.hits * 7)),
+        # Reseeded a few times a second so it reads as live telemetry.
+        "hash": "%08X" % random.Random(int(now * 3) + t.id).getrandbits(32),
+    }
+    lines = []
+    for raw in DOSSIER.split("|"):
+        try:
+            lines.append(raw.format(**fields))
+        except (KeyError, IndexError, ValueError):
+            lines.append(raw)          # a typo'd token shows literally, not a crash
+    if not lines:
+        return
+
+    # Typed out rather than appearing whole — the reveal is the whole effect.
+    budget = int((now - t.born) * 42)
+    shown = []
+    for ln in lines:
+        if budget <= 0:
+            break
+        shown.append(ln[:budget])
+        budget -= len(ln)
+    if not shown:
+        return
+
+    lh = int(max(11, H * 0.038))
+    pw = 0
+    for ln in lines:
+        (tw, _), _ = cv2.getTextSize(ln, cv2.FONT_HERSHEY_SIMPLEX, fs, ft)
+        pw = max(pw, tw)
+    pw += int(14 * ft)
+    ph = lh * len(lines) + int(8 * ft)
+
+    px = x2 + int(18 * ft)
+    if px + pw > W:
+        px = x1 - int(18 * ft) - pw
+    px = max(2, min(max(2, W - pw - 2), px))
+    py = max(2, min(max(2, H - ph - 2), y1))
+
+    panel = img[py:py + ph, px:px + pw]
+    if panel.size:
+        panel[:] = (panel.astype(np.uint16) * 30 // 100).astype(np.uint8)
+    cv2.rectangle(img, (px, py), (px + pw, py + ph), col, th, cv2.LINE_AA)
+    cv2.line(img, (px, py), (px + int(pw * 0.3), py), col, th * 2, cv2.LINE_AA)
+    # Connector back to the face, so it's clear which panel belongs to whom.
+    anchor = (x2, y1 + h // 6) if px > x2 else (x1, y1 + h // 6)
+    cv2.line(img, anchor, (px if px > x2 else px + pw, py + lh // 2),
+             _dim(col, 0.6), th, cv2.LINE_AA)
+
+    for i, ln in enumerate(shown):
+        cv2.putText(img, ln, (px + int(7 * ft), py + int(6 * ft) + lh * (i + 1) - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs,
+                    (255, 255, 255) if i == 0 else col, ft, cv2.LINE_AA)
+
+
+def draw_trackbox(img, t, now, accent):
+    H, W = img.shape[:2]
+    x1, y1, x2, y2 = _scaled_rect(t, W, H, 1.0)
+    cv2.rectangle(img, (x1, y1), (x2, y2), (255, 255, 255), 1)
+    cv2.putText(img, "%d %.0f%% h%d" % (t.id, t.decay(now) * 100, t.hits),
+                (x1, min(H - 3, y2 + 12)), cv2.FONT_HERSHEY_PLAIN,
+                max(0.7, W / 900.0), (255, 255, 255), 1, cv2.LINE_AA)
+
+
+def draw_chrome(img, ntracks, now, accent):
+    """The frame-level HUD: it should read as a system, not as a caption."""
+    H, W = img.shape[:2]
+    ft = max(1, int(W / 640))
+    fs = max(0.3, W / 1500.0)
+    col = accent
+    pad = int(8 * ft)
+    cv2.putText(img, "BITE-OS // OPTIC", (pad, pad + int(11 * ft)),
+                cv2.FONT_HERSHEY_SIMPLEX, fs, col, ft, cv2.LINE_AA)
+    tag = "%d SUBJECT%s" % (ntracks, "" if ntracks == 1 else "S")
+    if ntracks == 0:
+        tag = "NO SUBJECT" if int(now * 2) % 2 == 0 else ""
+    if tag:
+        (tw, _), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, fs, ft)
+        cv2.putText(img, tag, (W - tw - pad, pad + int(11 * ft)),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs, col, ft, cv2.LINE_AA)
+    n = int(14 * ft)
+    for cx, cy, dx, dy in ((pad, pad, 1, 1), (W - pad, pad, -1, 1),
+                           (pad, H - pad, 1, -1), (W - pad, H - pad, -1, -1)):
+        cv2.line(img, (cx, cy), (cx + dx * n, cy), _dim(col, 0.7), ft)
+        cv2.line(img, (cx, cy), (cx, cy + dy * n), _dim(col, 0.7), ft)
+
+
+def draw_overlays(img, tracks, now, accent):
+    """Every overlay, sized for whatever image it is handed."""
+    if S["profiler"]:
+        draw_chrome(img, len(tracks), now, accent)
+        for t in tracks:
+            draw_profile(img, t, now, accent)
+    if S["trackbox"]:
+        for t in tracks:
+            draw_trackbox(img, t, now, accent)
+
+
+# ── the settings panel ────────────────────────────────────────────────────────
+#
+# Drawn onto a COPY of the frame that only the terminal sees, so nothing here
+# can ever leak into a recording or onto a call. One row per setting, arrows to
+# move and change — the same shape as the hub's CUSTOMIZE screen, so there is
+# only one thing to learn.
+
+class Param:
+    def __init__(self, key, label, kind, opts=None, lo=None, hi=None, step=None,
+                 fmt=None):
+        self.key, self.label, self.kind = key, label, kind
+        self.opts, self.lo, self.hi, self.step = opts, lo, hi, step
+        self.fmt = fmt or (lambda v: str(v))
+
+    def show(self):
+        v = S[self.key]
+        if self.kind == "bool":
+            return "on" if v else "off"
+        return self.fmt(v)
+
+    def nudge(self, d):
+        v = S[self.key]
+        if self.kind == "bool":
+            S[self.key] = not v
+        elif self.kind == "choice":
+            S[self.key] = self.opts[(self.opts.index(v) + d) % len(self.opts)]
+        elif self.kind == "int":
+            S[self.key] = max(self.lo, min(self.hi, v + d * self.step))
+        elif self.kind == "float":
+            S[self.key] = round(max(self.lo, min(self.hi, v + d * self.step)), 2)
+
+    def frac(self):
+        if self.kind in ("int", "float"):
+            return (S[self.key] - self.lo) / float(self.hi - self.lo)
+        return None
+
+
+PARAMS = [
+    Param("cover", "cover", "choice", COVER_ORDER),
+    Param("blocksize", "block size", "int", lo=4, hi=48, step=2),
+    Param("coversize", "cover size", "float", lo=0.7, hi=2.0, step=0.05,
+          fmt=lambda v: "%.2f" % v),
+    Param("covershape", "shape", "choice", SHAPE_ORDER),
+    Param("label", "label", "choice", LABEL_PRESETS),
+    Param("accent", "accent", "choice", ACCENT_ORDER),
+    Param("profiler", "profiler", "bool"),
+    Param("showdossier", "dossier", "bool"),
+    Param("sensitivity", "sensitivity", "choice", SENS_ORDER),
+    Param("multiface", "all faces", "bool"),
+    Param("mirror", "mirror", "bool"),
+    Param("trackbox", "tracking box", "bool"),
+    Param("preview", "preview", "choice", PREVIEW_ORDER),
+    Param("termpreview", "terminal view", "bool"),
+]
+# label may have been set to something not in the preset list from config
+if S["label"] not in LABEL_PRESETS:
+    LABEL_PRESETS.insert(0, S["label"])
+
+
+def draw_panel(img, sel, now, accent, saved_msg):
+    """Sized from the image it lands on, so it stays readable in the terminal."""
+    H, W = img.shape[:2]
+    ft = max(1, int(W / 640))
+    fs = max(0.32, W / 1400.0)
+    lh = int(max(13, H * 0.052))
+    pad = int(9 * ft)
+    rows = len(PARAMS)
+    pw = int(W * 0.52)
+    ph = lh * (rows + 2) + pad * 2
+    px, py = pad * 2, max(pad, (H - ph) // 2)
+    px2, py2 = min(W - 2, px + pw), min(H - 2, py + ph)
+
+    panel = img[py:py2, px:px2]
+    if panel.size:
+        panel[:] = (panel.astype(np.uint16) * 22 // 100).astype(np.uint8)
+    cv2.rectangle(img, (px, py), (px2, py2), accent, ft, cv2.LINE_AA)
+    cv2.rectangle(img, (px, py), (px + int(pw * 0.42), py + lh), accent, -1)
+    cv2.putText(img, "BITE-OS//MASK", (px + pad, py + lh - int(5 * ft)),
+                cv2.FONT_HERSHEY_SIMPLEX, fs, (0, 0, 0), ft, cv2.LINE_AA)
+
+    for i, prm in enumerate(PARAMS):
+        y = py + lh * (i + 2) - int(4 * ft)
+        if y > py2 - lh:
+            break
+        on_row = (i == sel)
+        if on_row:
+            cv2.rectangle(img, (px + int(3 * ft), y - lh + int(5 * ft)),
+                          (px2 - int(3 * ft), y + int(4 * ft)),
+                          _dim(accent, 0.28), -1)
+            cv2.putText(img, ">", (px + pad - int(4 * ft), y),
+                        cv2.FONT_HERSHEY_SIMPLEX, fs, accent, ft, cv2.LINE_AA)
+        cv2.putText(img, prm.label, (px + pad + int(10 * ft), y),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs,
+                    (255, 255, 255) if on_row else (190, 190, 190),
+                    ft, cv2.LINE_AA)
+        vx = px + int(pw * 0.52)
+        frac = prm.frac()
+        if frac is None:
+            cv2.putText(img, prm.show(), (vx, y), cv2.FONT_HERSHEY_SIMPLEX, fs,
+                        accent if on_row else _dim(accent, 0.75), ft, cv2.LINE_AA)
+        else:
+            # numbers get a bar as well as a value — easier to aim at speed
+            bw = int(pw * 0.26)
+            by = y - int(5 * ft)
+            cv2.rectangle(img, (vx, by - int(5 * ft)), (vx + bw, by + int(3 * ft)),
+                          _dim(accent, 0.35), 1)
+            fill = int(bw * max(0.0, min(1.0, frac)))
+            if fill > 0:
+                cv2.rectangle(img, (vx, by - int(5 * ft)),
+                              (vx + fill, by + int(3 * ft)),
+                              accent if on_row else _dim(accent, 0.6), -1)
+            cv2.putText(img, prm.show(), (vx + bw + int(8 * ft), y),
+                        cv2.FONT_HERSHEY_SIMPLEX, fs,
+                        accent if on_row else _dim(accent, 0.75), ft, cv2.LINE_AA)
+
+    foot = saved_msg or "up/dn pick   left/right change   w save   TAB close"
+    cv2.putText(img, foot, (px + pad, py2 - int(7 * ft)),
+                cv2.FONT_HERSHEY_SIMPLEX, fs * 0.92,
+                (255, 255, 255) if saved_msg else _dim(accent, 0.8),
+                ft, cv2.LINE_AA)
+
+
+def save_config():
+    """Write the live settings back to the hub's config for this toy."""
+    keys = ["cover", "blocksize", "coversize", "covershape", "label", "accent",
+            "profiler", "showdossier", "sensitivity", "multiface", "mirror",
+            "trackbox", "preview", "stats"]
+    os.makedirs(os.path.dirname(CONF_PATH), exist_ok=True)
+    existing = {}
+    order = []
+    if os.path.exists(CONF_PATH):
+        with open(CONF_PATH, encoding="utf-8") as fh:
+            for line in fh:
+                if "=" in line and not line.lstrip().startswith("#"):
+                    k = line.split("=", 1)[0].strip()
+                    existing[k] = line.rstrip("\n")
+                    order.append(k)
+    for k in keys:
+        v = S[k]
+        v = ("on" if v else "off") if isinstance(v, bool) else v
+        existing[k] = "%s=%s" % (k, v)
+        if k not in order:
+            order.append(k)
+    tmp = CONF_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        for k in order:
+            fh.write(existing[k] + "\n")
+    os.replace(tmp, CONF_PATH)
+    return CONF_PATH
+
+
+# ── terminal preview ──────────────────────────────────────────────────────────
+#
+# Quadrant glyphs carry a 2x2 grid of subpixels per cell, so a cell can show
+# four pixels using one foreground and one background colour. That is twice the
+# horizontal resolution of the half-block '▀' at the same cost per cell, and
+# JetBrains Mono has the glyphs (it has no sextants or braille, which is why
+# those sharper schemes are not on offer).
+
+QUAD_GLYPHS = [
+    " ", "\u2598", "\u259d", "\u2580", "\u2596", "\u258c", "\u259e", "\u259b",
+    "\u2597", "\u259a", "\u2590", "\u259c", "\u2584", "\u2599", "\u259f",
+    "\u2588",
+]
+
+
+def preview_px(cols, rows):
+    """Pixel size of the preview grid, given the glyph scheme in use."""
+    return (cols * 2, rows * 2) if S["preview"] == "quad" else (cols, rows * 2)
+
+
+def _quad_cells(img, cols, rows):
+    """Per-cell foreground, background and glyph index for a pre-sized image."""
+    f = img.astype(np.int16).reshape(rows, 2, cols, 2, 3).transpose(0, 2, 1, 3, 4)
+    cell = f.reshape(rows, cols, 4, 3)                 # TL, TR, BL, BR
+    lum = (cell[:, :, :, 0] * 77 + cell[:, :, :, 1] * 150 +
+           cell[:, :, :, 2] * 29) >> 8
+    thr = lum.mean(axis=2, keepdims=True)
+    hi = lum >= thr                                    # which subpixels are "ink"
+    nhi = hi.sum(axis=2)
+    # An all-equal cell would give an empty foreground; force one side.
+    flat = (nhi == 0) | (nhi == 4)
+    hi = np.where(flat[:, :, None], np.array([True, True, True, True]), hi)
+    nhi = hi.sum(axis=2)
+    hif = hi[:, :, :, None]
+    fg = (cell * hif).sum(axis=2) // np.maximum(1, nhi)[:, :, None]
+    nlo = 4 - nhi
+    bg = (cell * (~hif)).sum(axis=2) // np.maximum(1, nlo)[:, :, None]
+    bg = np.where((nlo == 0)[:, :, None], fg, bg)
+    idx = (hi[:, :, 0].astype(np.uint8) | (hi[:, :, 1] << 1) |
+           (hi[:, :, 2] << 2) | (hi[:, :, 3] << 3))
+    return ((fg & 0xF8).astype(np.uint8), (bg & 0xF8).astype(np.uint8),
+            idx.astype(np.uint8))
+
+
+def _half_cells(img, cols, rows):
+    q = (img & 0xF8).astype(np.uint8)
+    fg = q[0::2]
+    bg = q[1::2]
+    idx = np.full((rows, cols), 3, np.uint8)           # index 3 == upper half
+    return fg, bg, idx
+
+
+class Preview:
+    """Turns frames into terminal bytes, redrawing only what changed.
+
+    A truecolour cell costs up to ~40 bytes of escape, so a full repaint of a
+    large grid is megabytes per frame — enough that writing to the terminal
+    becomes the slowest thing in the loop and the picture visibly stalls. Most
+    cells do not change between frames, so only the runs that did are sent.
+    """
+
+    GLYPH_HALF = "\u2580"
+
+    def __init__(self):
+        self.prev = None
+        self.shape = None
+
+    def invalidate(self):
+        self.prev = None
+
+    def render(self, img, cols, rows):
+        mode = S["preview"]
+        if mode == "quad":
+            fg, bg, idx = _quad_cells(img, cols, rows)
+        else:
+            fg, bg, idx = _half_cells(img, cols, rows)
+
+        shape = (mode, cols, rows)
+        full = self.prev is None or self.shape != shape
+        if not full:
+            pfg, pbg, pidx = self.prev
+            changed = ((fg != pfg).any(axis=2) | (bg != pbg).any(axis=2) |
+                       (idx != pidx))
+            # Past a certain churn a plain repaint beats thousands of jumps.
+            if changed.mean() > 0.55:
+                full = True
+        self.shape = shape
+        self.prev = (fg, bg, idx)
+
+        glyphs = QUAD_GLYPHS if mode == "quad" else None
+        fgl, bgl, idl = fg.tolist(), bg.tolist(), idx.tolist()
+
+        if full:
+            parts = [b"\x1b[H"]
+            for y in range(rows):
+                fr, br, ir = fgl[y], bgl[y], idl[y]
+                line = []
+                pf = pb = None
+                for x in range(cols):
+                    a, b = fr[x], br[x]
+                    if a != pf:
+                        line.append("\x1b[38;2;%d;%d;%dm" % (a[0], a[1], a[2]))
+                        pf = a
+                    if b != pb:
+                        line.append("\x1b[48;2;%d;%d;%dm" % (b[0], b[1], b[2]))
+                        pb = b
+                    line.append(glyphs[ir[x]] if glyphs else self.GLYPH_HALF)
+                parts.append("".join(line).encode())
+                parts.append(b"\x1b[0m\x1b[K\n")
+            return b"".join(parts)
+
+        parts = []
+        rows_changed = np.flatnonzero(changed.any(axis=1)).tolist()
+        for y in rows_changed:
+            xs = np.flatnonzero(changed[y])
+            # group the changed columns of this row into contiguous runs
+            splits = np.flatnonzero(np.diff(xs) > 1) + 1
+            fr, br, ir = fgl[y], bgl[y], idl[y]
+            for run in np.split(xs, splits):
+                if not len(run):
+                    continue
+                x0 = int(run[0])
+                line = ["\x1b[%d;%dH" % (y + 1, x0 + 1)]
+                pf = pb = None
+                for x in range(x0, int(run[-1]) + 1):
+                    a, b = fr[x], br[x]
+                    if a != pf:
+                        line.append("\x1b[38;2;%d;%d;%dm" % (a[0], a[1], a[2]))
+                        pf = a
+                    if b != pb:
+                        line.append("\x1b[48;2;%d;%d;%dm" % (b[0], b[1], b[2]))
+                        pb = b
+                    line.append(glyphs[ir[x]] if glyphs else self.GLYPH_HALF)
+                line.append("\x1b[0m")
+                parts.append("".join(line).encode())
+        return b"".join(parts)
+
+
+# ── recording ─────────────────────────────────────────────────────────────────
+
+class Recorder:
+    def __init__(self, fps):
+        os.makedirs(RECDIR, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        ext = RECFMT if RECFMT in ("mp4", "mkv") else "mp4"
+        self.final = os.path.join(RECDIR, "bitemask-%s.%s" % (stamp, ext))
+        self.frames = 0
+        self.started = time.time()
+
+        vf = []
+        if RECSHAPE == "vertical":
+            # Centre-crop to 9:16 then scale — comes out ready to post rather
+            # than letterboxed inside a landscape frame.
+            # bilinear, not lanczos: measured 52 fps sustained against 29.5,
+            # and 29.5 is below the capture rate, so the encoder fell behind and
+            # dragged the whole loop down with it.
+            vf.append("crop=trunc(ih*9/16/2)*2:ih")
+            vf.append("scale=1080:1920:flags=bilinear")
+            vf.append("setsar=1")
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+               "-f", "rawvideo", "-pix_fmt", "rgb24",
+               "-s", "%dx%d" % (PROCW, PROCH), "-r", str(fps), "-i", "-"]
+        if vf:
+            cmd += ["-vf", ",".join(vf)]
+        # ultrafast + zerolatency measured 194 fps at source shape against 122
+        # for veryfast; the headroom is what stops a hiccup becoming a stall.
+        cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+                "-crf", "23", "-pix_fmt", "yuv420p", self.final]
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.PIPE)
+
+    def add(self, img):
+        if self.proc.poll() is not None:
+            return False
+        try:
+            self.proc.stdin.write(img.tobytes())
+        except (BrokenPipeError, ValueError):
+            return False
+        self.frames += 1
+        return True
+
+    def stop(self):
+        try:
+            self.proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self.proc.wait(timeout=15)
+        except Exception:
+            self.proc.kill()
+        if self.proc.returncode not in (0, None):
+            err = self.proc.stderr.read().decode("utf-8", "replace").strip()
+            return None, (err.splitlines()[-1] if err else "encoding failed")
+        return self.final, None
+
+
+# ── keeping slow consumers off the main loop ──────────────────────────────────
+
+class AsyncSink:
+    """Feeds frames to something that might be slower than the camera.
+
+    Writing to an encoder or a v4l2 device straight from the capture loop means
+    any hiccup in that consumer stalls the picture — which is what made
+    recording feel like it slowed everything down. Frames go onto a bounded
+    queue here and a thread does the blocking write; if the consumer falls
+    behind, frames are dropped rather than the loop being held up.
+    """
+
+    def __init__(self, target, depth=8, drop=True):
+        self.target = target
+        self.drop = drop
+        self.dropped = 0
+        self.alive = True
+        self.error = None
+        self.q = queue.Queue(depth)
+        self.thread = threading.Thread(target=self._pump, daemon=True)
+        self.thread.start()
+
+    def add(self, img):
+        if not self.alive:
+            return False
+        try:
+            self.q.put_nowait(img)
+        except queue.Full:
+            if not self.drop:
+                try:
+                    self.q.put(img, timeout=0.25)
+                except queue.Full:
+                    self.dropped += 1
+                return self.alive
+            # Throw away the oldest, not the newest: being live matters more
+            # than being complete for a camera feed.
+            try:
+                self.q.get_nowait()
+                self.q.put_nowait(img)
+            except (queue.Empty, queue.Full):
+                pass
+            self.dropped += 1
+        return True
+
+    def _pump(self):
+        while True:
+            img = self.q.get()
+            if img is None:
+                return
+            try:
+                if not self.target.add(img):
+                    self.alive = False
+                    return
+            except Exception as e:                 # never take the toy down
+                self.error = str(e)
+                self.alive = False
+                return
+
+    def stop(self):
+        try:
+            self.q.put(None, timeout=1)
+        except queue.Full:
+            pass
+        self.thread.join(timeout=5)
+        return self.target.stop()
+
+    @property
+    def frames(self):
+        return getattr(self.target, "frames", 0)
+
+    @property
+    def started(self):
+        return getattr(self.target, "started", time.time())
+
+
+class WindowPreview:
+    """A real window at the working resolution, via ffplay.
+
+    The terminal preview is limited to one glyph per character cell, which is
+    why it looks coarse however big the window gets. This has no such ceiling —
+    it is the same picture the recorder and the webcam receive.
+    """
+
+    def __init__(self, fps):
+        if not shutil.which("ffplay"):
+            raise RuntimeError("ffplay is missing — it ships with ffmpeg")
+        cmd = ["ffplay", "-hide_banner", "-loglevel", "error",
+               "-fflags", "nobuffer", "-flags", "low_delay",
+               "-f", "rawvideo", "-pixel_format", "rgb24",
+               "-video_size", "%dx%d" % (PROCW, PROCH),
+               "-framerate", str(fps), "-i", "-",
+               "-window_title", "BITE-OS // OPTIC", "-autoexit"]
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+        self.frames = 0
+        self.started = time.time()
+
+    def add(self, img):
+        if self.proc.poll() is not None:
+            return False
+        try:
+            self.proc.stdin.write(img.tobytes())
+        except (BrokenPipeError, ValueError):
+            return False
+        self.frames += 1
+        return True
+
+    def stop(self):
+        try:
+            self.proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self.proc.wait(timeout=3)
+        except Exception:
+            self.proc.kill()
+        return None, None
+
+
+# ── virtual camera ────────────────────────────────────────────────────────────
+#
+# v4l2loopback creates a kernel video device that other programs see as an
+# ordinary webcam. Feeding it the covered frames makes Zoom, Discord, Meet or
+# anything else able to pick "BITE-OS Camera" and get your face already
+# censored, with no filter or plugin at their end.
+
+VCAM_LABEL = "BITE-OS Camera"
+VCAM_NR = 9
+MODPROBE_CONF = "/etc/modprobe.d/bite-os-camera.conf"
+LOAD_CONF = "/etc/modules-load.d/bite-os-camera.conf"
+
+
+def loopback_devices():
+    """Every /dev/video* backed by v4l2loopback, not a real capture device."""
+    found = []
+    for name in sorted(os.listdir("/dev")):
+        if not name.startswith("video"):
+            continue
+        label = ""
+        try:
+            with open("/sys/class/video4linux/%s/name" % name) as fh:
+                label = fh.read().strip()
+        except OSError:
+            pass
+        try:
+            out = subprocess.run(["v4l2-ctl", "-d", "/dev/" + name, "--info"],
+                                 capture_output=True, text=True,
+                                 timeout=3).stdout
+        except Exception:
+            out = ""
+        if "loopback" in out.lower() or "loopback" in label.lower():
+            found.append(("/dev/" + name, label))
+    return found
+
+
+def module_available():
+    try:
+        return subprocess.run(["modinfo", "v4l2loopback"], capture_output=True,
+                              timeout=5).returncode == 0
+    except Exception:
+        return False
+
+
+def setup_camera():
+    """Install and configure the loopback module. Asks before touching anything.
+
+    Deliberately identical to bitecam's setup, writing the same files with the
+    same contents: the two toys share one virtual camera, so running either
+    setup is enough and running both changes nothing the second time.
+    """
+    print()
+    print("  %sBITE-OS virtual camera setup%s" % ("\033[1m", "\033[0m"))
+    print()
+    print("  This makes your covered face appear as a normal webcam called")
+    print("  \"%s\" in Zoom, Discord, Meet and browsers." % VCAM_LABEL)
+    print()
+    print("  It needs three things, all with sudo:")
+    print("    1. install v4l2loopback-dkms (builds a small kernel module)")
+    print("    2. write %s" % MODPROBE_CONF)
+    print("    3. load the module now, and on every boot")
+    print()
+    if not sys.stdin.isatty():
+        print("  Run this in a terminal: bitemask --setup-camera")
+        return 1
+    try:
+        ans = input("  Go ahead? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return 1
+    if ans not in ("y", "yes"):
+        print("\n  nothing was changed\n")
+        return 1
+
+    if not module_available():
+        print("\n  installing v4l2loopback-dkms — sudo will ask for your password\n")
+        if subprocess.run(["sudo", "pacman", "-S", "--needed",
+                           "v4l2loopback-dkms"]).returncode != 0:
+            print("\n  install failed — nothing else was changed\n")
+            return 1
+
+    conf = ('options v4l2loopback devices=1 video_nr=%d '
+            'card_label="%s" exclusive_caps=1\n' % (VCAM_NR, VCAM_LABEL))
+    # exclusive_caps=1 matters: without it Chrome and Zoom refuse to list the
+    # device at all, because it advertises both capture and output.
+    print("\n  writing %s\n" % MODPROBE_CONF)
+    if subprocess.run(["sudo", "tee", MODPROBE_CONF], input=conf, text=True,
+                      stdout=subprocess.DEVNULL).returncode != 0:
+        print("  could not write the module options\n")
+        return 1
+    subprocess.run(["sudo", "tee", LOAD_CONF], input="v4l2loopback\n",
+                   text=True, stdout=subprocess.DEVNULL)
+
+    print("  loading the module\n")
+    subprocess.run(["sudo", "modprobe", "-r", "v4l2loopback"],
+                   stderr=subprocess.DEVNULL)
+    if subprocess.run(["sudo", "modprobe", "v4l2loopback"]).returncode != 0:
+        print("\n  the module would not load — a reboot may be needed after a\n"
+              "  dkms build against a freshly updated kernel\n")
+        return 1
+
+    devs = loopback_devices()
+    print()
+    if devs:
+        for d, label in devs:
+            print("  \033[32m✓\033[0m %s  →  %s" % (d, label or "(unnamed)"))
+        print("\n  Run bitemask and press \033[36mv\033[0m to go live.\n")
+        return 0
+    print("  the module loaded but no loopback device appeared\n")
+    return 1
+
+
+class VirtualCam:
+    def __init__(self, fps, device=None):
+        devs = loopback_devices()
+        if device and device != "auto":
+            self.device = device
+        elif devs:
+            self.device = devs[0][0]
+        else:
+            raise RuntimeError(
+                "no virtual camera device — run: bitemask --setup-camera")
+        self.frames = 0
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
+               "-f", "rawvideo", "-pix_fmt", "rgb24",
+               "-s", "%dx%d" % (PROCW, PROCH), "-r", str(fps), "-i", "-",
+               "-f", "v4l2", "-pix_fmt", "yuv420p", self.device]
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.PIPE)
+
+    def add(self, img):
+        if self.proc.poll() is not None:
+            return False
+        try:
+            self.proc.stdin.write(img.tobytes())
+        except (BrokenPipeError, ValueError):
+            return False
+        self.frames += 1
+        return True
+
+    def stop(self):
+        try:
+            self.proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self.proc.wait(timeout=3)
+        except Exception:
+            self.proc.kill()
+
+
+if WANT_SETUP:
+    sys.exit(setup_camera())
+
+
+# ── input ─────────────────────────────────────────────────────────────────────
+
+def read_key(fd):
+    """One keypress, with arrows and TAB decoded.
+
+    Arrows arrive as a three-byte escape sequence; reading them a byte at a
+    time would otherwise look like Esc followed by junk characters.
+    """
+    ch = os.read(fd, 1)
+    if not ch:
+        return None
+    if ch != b"\x1b":
+        if ch == b"\t":
+            return "tab"
+        return ch.decode("utf-8", "replace")
+    # Escape: peek for the rest of a CSI sequence without blocking.
+    if not select.select([fd], [], [], 0.02)[0]:
+        return "esc"
+    seq = os.read(fd, 2)
+    return {b"[A": "up", b"[B": "down", b"[C": "right",
+            b"[D": "left"}.get(seq, "esc")
+
+
+# ── the key list, on demand ───────────────────────────────────────────────────
+# Mirrors `keys=` in toy.meta, kept here too so the toy still explains itself
+# when run straight from a shell without the hub.
+HELP_KEYS = [
+    ("TAB", "settings panel — change anything"),
+    ("f", "open a sharp window (no terminal limits)"),
+    ("b", "cycle how your face is covered"),
+    ("[ ]", "smaller / bigger blocks"),
+    ("- =", "smaller / bigger cover"),
+    ("p", "the surveillance profiler"),
+    ("v", "publish as a real webcam"),
+    ("r", "start / stop recording"),
+    ("c", "accent colour"),
+    ("m", "flip the mirror"),
+    ("w", "save these settings"),
+    ("?", "show / hide this list"),
+    ("q", "quit"),
+]
+
+
+def help_overlay(cols, rows):
+    w = 42
+    x = max(1, (cols - w) // 2)
+    y = max(1, (rows - (len(HELP_KEYS) + 3)) // 2)
+    parts = ["\x1b[%d;%dH\x1b[7m%s\x1b[0m" % (y, x, " bitemask keys".ljust(w))]
+    for i, (k, d) in enumerate(HELP_KEYS):
+        parts.append("\x1b[%d;%dH\x1b[7m %-6s %-*s\x1b[0m"
+                     % (y + 1 + i, x, k, w - 9, d))
+    parts.append("\x1b[%d;%dH\x1b[7m%s\x1b[0m"
+                 % (y + 1 + len(HELP_KEYS), x, " ? closes this".ljust(w)))
+    return "".join(parts)
+
+
+out = sys.stdout.buffer
+fd = sys.stdin.fileno()
+saved_tty = None
+proc = None
+resized = False
+rec = None
+rec_msg = ""
+vcam = None
+window = None
+detector = None
+preview = None
+HELP = True   # shown on first run so the keys are never a secret
+
+
+def cleanup():
+    # Finalise an in-progress take first — quitting mid-recording should still
+    # leave a playable file, not a truncated one.
+    global rec, vcam, window, detector
+    for name in ("vcam", "window"):
+        sink = globals()[name]
+        if sink is not None:
+            try:
+                sink.stop()
+            except Exception:
+                pass
+            globals()[name] = None
+    if rec is not None:
+        try:
+            path, err = rec.stop()
+            sys.stderr.write("\n  bitemask: saved %s\n\n" % (path or err))
+        except Exception as e:
+            sys.stderr.write("\n  bitemask: recording failed: %s\n\n" % e)
+        rec = None
+    if detector is not None:
+        detector.stop()
+        detector = None
+    if proc and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=1)
+        except Exception:
+            proc.kill()
+    if saved_tty is not None:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved_tty)
+    out.write(b"\x1b[0m\x1b[?25h\x1b[?1049l")
+    out.flush()
+
+
+def on_winch(_sig, _frm):
+    global resized
+    resized = True
+
+
+def restart_capture():
+    """Rebuild the capture pipeline — after a filter change, or a stall.
+
+    The frame size never changes here, so a recording or live feed in progress
+    carries straight on across it.
+    """
+    global proc
+    old = proc
+    proc = start_ffmpeg()
+    if old is not None:
+        try:
+            old.terminate()
+            old.wait(timeout=1)
+        except Exception:
+            try:
+                old.kill()
+            except Exception:
+                pass
+
+
+def read_frame(pipe, n, timeout=4.0):
+    """A whole frame, or 'stalled', or None if the camera closed.
+
+    A plain blocking read is how this used to hang forever: if the capture
+    wedges — a USB glitch, the device grabbed by something else — nothing ever
+    arrives and the toy just sits there looking frozen. Waiting with a deadline
+    turns that into something recoverable.
+    """
+    buf = bytearray()
+    deadline = time.time() + timeout
+    while len(buf) < n:
+        left = deadline - time.time()
+        if left <= 0:
+            return "stalled"
+        if not select.select([pipe], [], [], min(0.5, left))[0]:
+            continue
+        try:
+            chunk = pipe.read(n - len(buf))
+        except (OSError, ValueError):
+            return None
+        if not chunk:
+            return None
+        buf += chunk
+        deadline = time.time() + timeout      # progress resets the clock
+    return bytes(buf)
+
+
+def _avail(fd):
+    """Bytes sitting in the pipe right now, without reading any of them."""
+    b = array.array("i", [0])
+    try:
+        fcntl.ioctl(fd, termios.FIONREAD, b, True)
+        return b[0]
+    except Exception:
+        return 0
+
+
+def read_latest(pipe, n, timeout=4.0):
+    """The newest frame, throwing away any that queued up behind it.
+
+    ffmpeg produces at a fixed rate whether or not we keep up, and this is the
+    heavy toy — detection, cover, overlays, then quadrant rendering. Every frame
+    we were late for used to stay in the pipe, so the picture drifted further
+    behind reality the longer it ran. Only whole buffered frames are skipped, so
+    this never waits for one to arrive.
+    """
+    frame = read_frame(pipe, n, timeout)
+    if not isinstance(frame, bytes):
+        return frame                      # "stalled" or None, pass straight on
+    fd = pipe.fileno()
+    dropped = 0
+    while _avail(fd) >= n and dropped < 30:
+        nxt = read_frame(pipe, n, 0.5)
+        if not isinstance(nxt, bytes):
+            break
+        frame = nxt
+        dropped += 1
+    return frame
+
+
+def main():
+    global saved_tty, proc, resized, rec, rec_msg, vcam, window, detector
+    global preview, HELP
+
+    if not sys.stdout.isatty():
+        die("bitemask needs a terminal")
+
+    saved_tty = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+    signal.signal(signal.SIGWINCH, on_winch)
+    out.write(b"\x1b[?1049h\x1b[?25l\x1b[2J")
+    out.flush()
+
+    term = shutil.get_terminal_size()
+    cols, rows = grid_for(term.columns, term.lines, S["preview"])
+    proc = start_ffmpeg()
+    frame_bytes = PROCW * PROCH * 3
+
+    detector = Detector()
+    detector.start()
+    tracker = Tracker()
+    preview = Preview()
+
+    fps_t, fps_n, fps_show = time.time(), 0, 0.0
+    frame_no = 0
+    panel_open = False
+    panel_in_window = False
+    sel = 0
+    saved_msg = ""
+    saved_until = 0.0
+    prev_mode = S["preview"]
+    prev_term = S["termpreview"]
+    stalls = 0
+    errors = 0
+
+    while True:
+        try:
+            if resized or S["preview"] != prev_mode or S["termpreview"] != prev_term:
+                resized = False
+                prev_mode = S["preview"]
+                prev_term = S["termpreview"]
+                term = shutil.get_terminal_size()
+                cols, rows = grid_for(term.columns, term.lines, S["preview"])
+                preview.invalidate()
+                out.write(b"\x1b[2J")
+                # Note what is NOT here: the capture pipeline, the recorder, the
+                # window and the virtual camera all run at PROCW x PROCH whatever
+                # the terminal does, so resizing cannot interrupt a take or drop
+                # you off a call.
+
+            frame = read_latest(proc.stdout, frame_bytes)
+            if frame == "stalled":
+                stalls += 1
+                if stalls > 3:
+                    cleanup()
+                    die("the camera keeps stalling",
+                        "another program may be fighting for %s" % DEVICE)
+                rec_msg = "camera stalled — restarting capture"
+                restart_capture()
+                preview.invalidate()
+                continue
+            if frame is None:
+                err = b""
+                try:
+                    err = proc.stderr.read() or b""
+                except Exception:
+                    pass
+                err = err.decode("utf-8", "replace").strip()
+                cleanup()
+                if "Device or resource busy" in err:
+                    die("the camera is already in use by another program")
+                die("the camera stopped sending frames",
+                    err.splitlines()[-1] if err else "")
+            stalls = 0
+
+            img = np.frombuffer(frame, np.uint8).reshape(PROCH, PROCW, 3).copy()
+            now = time.time()
+            frame_no += 1
+
+            if frame_no % DETEVERY == 0:
+                small = cv2.resize(img, (DETW, DETH), interpolation=cv2.INTER_AREA)
+                gray = cv2.equalizeHist(cv2.cvtColor(small, cv2.COLOR_RGB2GRAY))
+                detector.submit(gray)
+
+            boxes, stamp = detector.result()
+            tracks = tracker.update(boxes, stamp, now)
+            accent = ACCENTS[S["accent"]]
+
+            update_plate(img, tracks)
+
+            cover = S["cover"]
+            if cover != "off":
+                fn = COVERS[cover]
+                for t in tracks:
+                    fn(img, t, now, accent)
+
+            # Anything that leaves the machine gets overlays at full size.
+            need_out = rec is not None or vcam is not None or window is not None
+            if need_out:
+                full = img.copy()
+                draw_overlays(full, tracks, now, accent)
+                for nm in ("vcam", "rec"):
+                    sink = globals()[nm]
+                    if sink is None:
+                        continue
+                    sink.add(full)
+                    if not sink.alive:
+                        if nm == "rec":
+                            path, err = sink.stop()
+                            rec_msg = "recording stopped: %s" % (err or path)
+                        else:
+                            sink.stop()
+                            rec_msg = "%s stopped: %s" % (nm, sink.error or "")
+                        globals()[nm] = None
+                if window is not None:
+                    # The panel goes to the window and ONLY the window — it is
+                    # the sharp surface, and it must never land in a recording
+                    # or on a call.
+                    wimg = full
+                    if panel_open:
+                        if saved_msg and now > saved_until:
+                            saved_msg = ""
+                        wimg = full.copy()
+                        draw_panel(wimg, sel, now, accent, saved_msg)
+                    window.add(wimg)
+                    if not window.alive:
+                        window.stop()
+                        window = None
+                        panel_in_window = False
+                        rec_msg = "window closed"
+
+            if S["termpreview"]:
+                pw, ph = preview_px(cols, rows)
+                # Overlays are drawn again at the terminal's own size. Drawing
+                # once at 640 and shrinking turned 10px dossier text into mush.
+                shown = cv2.resize(img, (pw, ph), interpolation=cv2.INTER_AREA)
+                draw_overlays(shown, tracks, now, accent)
+                if panel_open and not panel_in_window:
+                    # Only drawn here as a fallback. At terminal resolution the
+                    # panel text is barely legible, which is exactly why TAB
+                    # opens the window and puts it there instead.
+                    if saved_msg and now > saved_until:
+                        saved_msg = ""
+                    draw_panel(shown, sel, now, accent, saved_msg)
+                out.write(preview.render(shown, cols, rows))
+
+            fps_n += 1
+            if now - fps_t >= 0.5:
+                fps_show = fps_n / (now - fps_t)
+                fps_t, fps_n = now, 0
+            if S["stats"]:
+                out.write(b"\x1b[%d;1H" % rows)
+                if rec is not None:
+                    el = int(time.time() - rec.started)
+                    drops = rec.dropped
+                    left = ("\x1b[41m\x1b[1m REC %02d:%02d \x1b[0m\x1b[7m "
+                            "%dx%d  %.0f fps%s " %
+                            (el // 60, el % 60, PROCW, PROCH, fps_show,
+                             ("  %d dropped" % drops) if drops else ""))
+                    keys = " r stop . q quit "
+                else:
+                    left = "\x1b[7m %dx%d  %.0f fps  %s  %d face%s%s%s " % (
+                        PROCW, PROCH, fps_show, cover, len(tracks),
+                        "" if len(tracks) == 1 else "s",
+                        "  \x1b[42m\x1b[30m LIVE \x1b[0m\x1b[7m" if vcam else "",
+                        "  WINDOW" if window else "")
+                    keys = (" TAB settings . f window . b cover . r REC . "
+                            "v webcam . ? keys . q quit ")
+                out.write((left + keys + "\x1b[0m\x1b[K").encode())
+                if rec_msg:
+                    out.write(("\x1b[0m\n  " + rec_msg + "\x1b[K").encode())
+            if HELP and not panel_open and S["termpreview"]:
+                out.write(help_overlay(cols, rows).encode())
+            if not S["termpreview"]:
+                out.write(b"\x1b[H\x1b[2J\x1b[3;3H  terminal view is off"
+                          b" -- the window has the sharp picture\x1b[K")
+                preview.invalidate()
+            out.flush()
+
+        except Exception as e:                    # a bad frame is not fatal
+            errors += 1
+            if errors > 40:
+                cleanup()
+                die("too many errors in a row", str(e))
+            rec_msg = "recovered from: %s" % e
+            preview.invalidate()
+            time.sleep(0.05)
+            continue
+        else:
+            errors = 0
+
+        # Non-blocking key check — never stall the video waiting on input.
+        if not select.select([fd], [], [], 0)[0]:
+            continue
+        k = read_key(fd)
+        if k is None:
+            continue
+
+        if k in ("q", "Q", "\x03"):
+            break
+        if k == "tab":
+            panel_open = not panel_open
+            HELP = False
+            preview.invalidate()
+            if panel_open:
+                # The settings are unreadable at terminal resolution, so put
+                # them where they can actually be read.
+                if window is None:
+                    try:
+                        window = AsyncSink(WindowPreview(FPS), depth=4)
+                        rec_msg = "settings opened in the window"
+                    except Exception as e:
+                        rec_msg = "no window (%s) — settings shown here" % e
+                panel_in_window = window is not None
+            continue
+        if panel_open:
+            if k == "esc":
+                panel_open = False
+                preview.invalidate()
+            elif k == "up":
+                sel = (sel - 1) % len(PARAMS)
+            elif k == "down":
+                sel = (sel + 1) % len(PARAMS)
+            elif k in ("left", "right"):
+                prm = PARAMS[sel]
+                was_mirror = S["mirror"]
+                prm.nudge(1 if k == "right" else -1)
+                if prm.key == "mirror" and S["mirror"] != was_mirror:
+                    restart_capture()
+            elif k in ("w", "W"):
+                try:
+                    saved_msg = "saved to %s" % save_config()
+                except Exception as e:
+                    saved_msg = "could not save: %s" % e
+                saved_until = time.time() + 3
+            continue
+
+        # Quick keys, panel closed
+        if k == "b":
+            S["cover"] = COVER_ORDER[(COVER_ORDER.index(S["cover"]) + 1)
+                                     % len(COVER_ORDER)]
+            rec_msg = "cover: %s" % S["cover"]
+            if S["cover"] == "vanish":
+                rec_msg += "  (step out of shot for a second so it learns the room)"
+        elif k == "B":
+            S["cover"] = COVER_ORDER[(COVER_ORDER.index(S["cover"]) - 1)
+                                     % len(COVER_ORDER)]
+            rec_msg = "cover: %s" % S["cover"]
+        elif k in ("[", "]"):
+            S["blocksize"] = max(4, min(48, S["blocksize"] + (2 if k == "]" else -2)))
+            rec_msg = "block size: %d%s" % (
+                S["blocksize"],
+                "" if S["cover"] in BLOCKY else
+                "  (only changes mosaic / blur / ascii — you are on %s)" % S["cover"])
+        elif k in ("-", "=", "+"):
+            S["coversize"] = round(max(0.7, min(
+                2.0, S["coversize"] + (0.05 if k in ("=", "+") else -0.05))), 2)
+            rec_msg = "cover size: %.2f" % S["coversize"]
+        elif k == "p":
+            S["profiler"] = not S["profiler"]
+        elif k == "d":
+            S["showdossier"] = not S["showdossier"]
+        elif k == "t":
+            S["trackbox"] = not S["trackbox"]
+        elif k == "s":
+            S["stats"] = not S["stats"]
+            preview.invalidate()
+        elif k == "c":
+            S["accent"] = ACCENT_ORDER[(ACCENT_ORDER.index(S["accent"]) + 1)
+                                       % len(ACCENT_ORDER)]
+        elif k == "o":
+            S["covershape"] = SHAPE_ORDER[(SHAPE_ORDER.index(S["covershape"]) + 1)
+                                          % len(SHAPE_ORDER)]
+            rec_msg = "shape: %s" % S["covershape"]
+        elif k in ("w", "W"):
+            try:
+                rec_msg = "saved to %s" % save_config()
+            except Exception as e:
+                rec_msg = "could not save: %s" % e
+        elif k == "?":
+            HELP = not HELP
+            preview.invalidate()
+        elif k == "m":
+            S["mirror"] = not S["mirror"]
+            restart_capture()
+        elif k == "f":
+            if window is None:
+                try:
+                    window = AsyncSink(WindowPreview(FPS), depth=4)
+                    panel_in_window = panel_open
+                    rec_msg = "window open at %dx%d" % (PROCW, PROCH)
+                except Exception as e:
+                    rec_msg = str(e)
+            else:
+                window.stop()
+                window = None
+                panel_in_window = False
+                rec_msg = "window closed"
+        elif k == "v":
+            if vcam is None:
+                try:
+                    vcam = AsyncSink(VirtualCam(FPS, VCAMDEV), depth=4)
+                    rec_msg = "live on %s as a webcam" % vcam.target.device
+                except Exception as e:
+                    rec_msg = str(e)
+            else:
+                vcam.stop()
+                vcam = None
+                rec_msg = "virtual camera off"
+        elif k in ("r", "R"):
+            if rec is None:
+                rec_msg = ""
+                try:
+                    # A recording should not lose frames if it can help it, so
+                    # this one waits briefly rather than dropping on sight.
+                    rec = AsyncSink(Recorder(FPS), depth=48, drop=False)
+                except Exception as e:
+                    rec_msg = "couldn't start recording: %s" % e
+            else:
+                n, secs = rec.frames, time.time() - rec.started
+                drops = rec.dropped
+                path, err = rec.stop()
+                rec = None
+                rec_msg = ("saved %s  (%d frames, %.1fs%s)" %
+                           (path, n, secs, ", %d dropped" % drops if drops else "")
+                           if not err else "recording failed: %s" % err)
+
+
+def template_frame(w, h):
+    """A deterministic stand-in scene, so a preview never opens the camera.
+
+    A preview is for judging SETTINGS — which cover, how big, what accent — and
+    for that a repeatable scene beats a live one. Grabbing the real device cost
+    seconds, fought a bitemask that was already running for /dev/video0, and
+    made two settings impossible to compare because your head had moved.
+    """
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    cx, cy = w * 0.5, h * 0.46
+    rx, ry = w * 0.15, h * 0.30
+
+    img = np.zeros((h, w, 3), np.float32)
+    bg = 26.0 + 46.0 * (xx / max(w - 1, 1)) + 30.0 * (1.0 - yy / max(h - 1, 1))
+    img[..., 0] = bg * 0.55
+    img[..., 1] = bg * 0.95
+    img[..., 2] = bg * 0.75
+
+    d = ((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2
+    shade = 232.0 - 110.0 * np.clip((xx - (cx - rx)) / (2.0 * rx), 0.0, 1.0)
+    for c, k in enumerate((1.00, 0.92, 0.80)):
+        img[..., c] = np.where(d <= 1.0, shade * k, img[..., c])
+
+    sh = ((xx - cx) / (w * 0.40)) ** 2 + ((yy - (h * 1.30)) / (h * 0.66)) ** 2
+    for c, k in enumerate((0.44, 0.42, 0.40)):
+        img[..., c] = np.where((sh <= 1.0) & (d > 1.0), 185.0 * k, img[..., c])
+
+    for ex in (cx - rx * 0.40, cx + rx * 0.40):
+        e = ((xx - ex) / max(rx * 0.19, 0.7)) ** 2 + \
+            ((yy - (cy - ry * 0.20)) / max(ry * 0.13, 0.7)) ** 2
+        img[e <= 1.0] = 20.0
+    m = ((xx - cx) / max(rx * 0.44, 0.7)) ** 2 + \
+        ((yy - (cy + ry * 0.44)) / max(ry * 0.10, 0.7)) ** 2
+    img[m <= 1.0] = 52.0
+
+    return np.clip(img, 0, 255).astype(np.uint8), (cx - rx, cy - ry, 2.0 * rx, 2.0 * ry)
+
+
+def preview_mode():
+    """A still thumbnail for the hub's preview pane — no terminal takeover.
+
+    Renders template_frame() with the current settings applied. The face box is
+    known because we drew it, so no cascade has to find it — which also means
+    the preview works identically on a machine with no camera and no OpenCV
+    data files.
+    """
+    cols, rows = 62, 17
+    pw, ph = cols, rows * 2
+
+    img, box = template_frame(PROCW, PROCH)
+    if S["mirror"]:
+        img = img[:, ::-1].copy()
+        box = (PROCW - box[0] - box[2], box[1], box[2], box[3])
+
+    now = time.time()
+    t = Track(box, now - 4)
+    t.last_seen = now
+    t.hits = 12
+    tracks = [t]
+
+    accent = ACCENTS[S["accent"]]
+    if S["cover"] == "vanish":
+        # vanish paints the learned background back over the head. There is no
+        # history in a one-shot preview, so stand in the scene without the head
+        # — which is exactly what it converges on live.
+        global _PLATE, _PLATE_SEEN
+        plate, _ = template_frame(PROCW, PROCH)
+        if S["mirror"]:
+            plate = plate[:, ::-1].copy()
+        x1, y1 = int(box[0]), int(box[1])
+        x2, y2 = int(box[0] + box[2]), int(box[1] + box[3])
+        x1, y1 = max(x1, 0), max(y1, 0)
+        x2, y2 = min(x2, PROCW), min(y2, PROCH)
+        if x2 > x1 and y2 > y1:
+            edge = plate[y1:y2, max(x1 - 4, 0):x1 + 1].mean(axis=(0, 1)) \
+                if x1 > 4 else np.array([40.0, 70.0, 55.0])
+            plate[y1:y2, x1:x2] = edge.astype(np.uint8)
+        _PLATE = plate.astype(np.float32)
+        _PLATE_SEEN = np.ones((PROCH, PROCW), np.float32)
+        cover_vanish(img, t, now, accent)
+    elif S["cover"] != "off":
+        COVERS[S["cover"]](img, t, now, accent)
+
+    shown = cv2.resize(img, (pw, ph), interpolation=cv2.INTER_AREA)
+    draw_overlays(shown, tracks, now, accent)
+
+    q = (shown & 0xF8).tolist()
+    for y in range(rows):
+        top, bot = q[2 * y], q[2 * y + 1]
+        line = []
+        pf = pb = None
+        for x in range(cols):
+            t_, b_ = top[x], bot[x]
+            if t_ != pf:
+                line.append("\x1b[38;2;%d;%d;%dm" % (t_[0], t_[1], t_[2]))
+                pf = t_
+            if b_ != pb:
+                line.append("\x1b[48;2;%d;%d;%dm" % (b_[0], b_[1], b_[2]))
+                pb = b_
+            line.append("\u2580")
+        sys.stdout.write("".join(line) + "\x1b[0m\n")
+    sys.stdout.write("  %s \u00b7 %s \u00b7 blocks %d \u00b7 size %.2f\n" % (
+        S["cover"], S["accent"], S["blocksize"], S["coversize"]))
+    sys.stdout.write("  \x1b[2msample scene \u2014 your camera is not opened for this\x1b[0m\n")
+    sys.stdout.flush()
+    return 0
+
+
+if WANT_PREVIEW:
+    sys.exit(preview_mode())
+
+
+try:
+    main()
+finally:
+    cleanup()

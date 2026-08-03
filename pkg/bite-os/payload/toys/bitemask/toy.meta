@@ -1,0 +1,11 @@
+name=bitemask
+version=1.5
+desc=Covers your face live, and profiles it like you're being tracked
+category=visual
+author=GLITCH-BITE-404
+exec=run
+preview=--preview
+deps=ffmpeg py:cv2:python-opencv opencv_version:opencv py:numpy:python-numpy
+usage=bitemask   ·   TAB settings, f sharp window, b cover, r records, q quits
+keys=TAB:settings panel — change anything live|f:open a sharp window, no terminal limits|b:cycle how your face is covered|[ ]:smaller or bigger blocks|- =:smaller or bigger cover|o:box or oval cover|p:the surveillance profiler|d:the dossier panel|v:publish as a real webcam|r:start/stop recording|c:accent colour|m:flip the mirror|t:show the raw tracking box|w:save these settings|?:show or hide the key list|q:quit
+about=Finds your face in the webcam feed and refuses to show it. Press b to cycle how it's covered — a black REDACTED bar, an eyes-only anonymity strip, a glowing visor, vanish, mosaic, blur, a torn RGB-split glitch, a hole of static, or the face redrawn as characters — and it follows your head as you move. vanish is the strange one: it quietly learns what the room behind you looks like and paints that back over your head, so you don't get censored so much as edited out. Give it a second or two of empty frame to learn the background first. When tracking drops it decays with a stutter instead of snapping off, so losing you reads as the system failing rather than the toy breaking. Press TAB for a settings panel you can change everything from without leaving the toy, w to keep those settings, and p for the profiler: brackets, a sweeping scan line and a dossier that types itself out beside your head. The terminal preview is coarse by nature — a terminal only gets one glyph per character cell — so press f for a real window at the full working resolution. It's all real video, not ASCII, so v puts your censored face into Discord, Zoom or Meet as an ordinary webcam, and r records to mp4 — set recshape=vertical and it comes out 1080x1920, ready to post.

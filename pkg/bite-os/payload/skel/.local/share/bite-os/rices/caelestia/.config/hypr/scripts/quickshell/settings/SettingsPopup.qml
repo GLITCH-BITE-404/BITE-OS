@@ -3815,11 +3815,11 @@ Item {
                 ListElement {
                     key: "caelestia"; title: "CAELESTIA"
                     tag: "default rice · home base"
-                    desc: "The stock BITE-OS desktop — Quickshell bar, glitch theming, the rice GLITCH-BITE404 built from the ground up. This is the safe shell the watchdog always falls back to."
+                    desc: "The stock BITE-OS desktop — Quickshell bar, glitch theming, the rice GLITCH-BITE-404 built from the ground up. This is the safe shell the watchdog always falls back to."
                 }
                 ListElement {
                     key: "ilyamiro"; title: "ILYAMIRO"
-                    tag: "heavily modified by GLITCH-BITE404"
+                    tag: "heavily modified by GLITCH-BITE-404"
                     desc: "ilyamiro's imperative-dots — torn down and rebuilt for BITE-OS: keyless Open-Meteo weather, glitch gradient borders, the live keybinds editor in this very panel, and BITE-OS credit baked in. Swapping here arms the 30s watchdog."
                 }
             }
@@ -4079,7 +4079,7 @@ Item {
                         Layout.topMargin: root.s(2)
                         Layout.bottomMargin: root.s(8)
                         horizontalAlignment: Text.AlignHCenter
-                        text: "// both desktops heavily modified & riced for BITE-OS by GLITCH-BITE404"
+                        text: "// both desktops heavily modified & riced for BITE-OS by GLITCH-BITE-404"
                         wrapMode: Text.WordWrap
                         font.family: "JetBrains Mono"; font.pixelSize: root.s(9)
                         color: root.overlay0

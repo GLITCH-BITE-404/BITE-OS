@@ -1,0 +1,11 @@
+name=bitebeat
+version=1.1
+desc=Whatever you're playing, with synced lyrics, karaoke style
+category=media
+author=GLITCH-BITE-404
+exec=run
+preview=--preview
+deps=playerctl cava py:numpy:python-numpy py:PIL:python-pillow
+usage=bitebeat   ·   space play/pause, ←→ seek, [ ] fix sync, q quits
+keys=space:play or pause|←/→:seek 5 seconds|,/.:nudge sync by a second|[/]:nudge sync by 0.2s|0:reset the sync offset|n/p:next or previous track|w:toggle the audio reaction|?:hide or show the key bar|q:quit
+about=Reads whatever is playing over MPRIS — mpv, Spotify, VLC, a browser tab — and shows the track with its lyrics sweeping in time, big, karaoke style. Looks for an .lrc next to the audio file first, then your lyrics folder, then lrclib.net if online lookup is on. Big text is rasterised at runtime, so it renders Hebrew and any other script just as happily as English.

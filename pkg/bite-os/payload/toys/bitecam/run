@@ -1,0 +1,1104 @@
+#!/usr/bin/env python3
+"""bitecam — your webcam, live, as ASCII in the terminal.
+
+ffmpeg does the capture, scaling and mirroring in C; numpy does the pixel →
+character mapping vectorised. Python only ever touches per-frame work that is
+already reduced to one value per terminal cell, which is what keeps this smooth
+at full-screen sizes.
+
+Settings arrive from the hub as TOY_* env vars (see config.def). Defaults are
+repeated here so the toy still runs standalone, outside the hub.
+"""
+
+import array
+import fcntl
+import os
+import queue
+import re
+import select
+import shutil
+import signal
+import subprocess
+import sys
+import termios
+import threading
+import time
+import tty
+
+# ── character ramps, darkest → brightest ──────────────────────────────────────
+RAMPS = {
+    "ascii":   " .:-=+*#%@",
+    "dense":   " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@",
+    "blocks":  " ░▒▓█",
+    "minimal": " .*#",
+    "solid":   "██",
+}
+RAMP_ORDER = ["ascii", "blocks", "dense", "minimal", "solid"]
+
+
+def setting(key, default):
+    v = os.environ.get("TOY_" + key.upper(), "")
+    return v if v != "" else default
+
+
+def on(v):
+    return str(v).lower() in ("on", "yes", "true", "1")
+
+
+DEVICE  = setting("device", "/dev/video0")
+COLOR   = on(setting("color", "on"))
+CHARSET = setting("charset", "ascii")
+FPS     = int(setting("fps", "15") or 15)
+MIRROR  = on(setting("mirror", "on"))
+INVERT  = on(setting("invert", "off"))
+STATS   = on(setting("stats", "on"))
+RECFMT  = setting("recformat", "mp4")
+RECCELL = max(4, int(setting("reccell", "10") or 10))
+VCAMDEV = setting("vcamdevice", "auto")
+
+
+def xdg_dir(key):
+    """A real XDG folder, whatever language it's named in.
+
+    Hardcoding ~/Videos is wrong on any localised install — here it's ~/וידאו.
+    xdg-user-dir is the authority; the env var and user-dirs.dirs are fallbacks
+    for when it isn't installed.
+    """
+    try:
+        p = subprocess.run(["xdg-user-dir", key], capture_output=True,
+                           text=True, timeout=3).stdout.strip()
+        if p and os.path.isdir(p):
+            return p
+    except Exception:
+        pass
+    p = os.environ.get("XDG_%s_DIR" % key, "")
+    if p and os.path.isdir(os.path.expandvars(p)):
+        return os.path.expandvars(p)
+    try:
+        with open(os.path.expanduser("~/.config/user-dirs.dirs"),
+                  encoding="utf-8") as fh:
+            m = re.search(r'^XDG_%s_DIR="(.*)"' % key, fh.read(), re.M)
+        if m:
+            p = os.path.expandvars(
+                m.group(1).replace("$HOME", os.path.expanduser("~")))
+            if os.path.isdir(p):
+                return p
+    except Exception:
+        pass
+    return os.path.expanduser("~")
+
+
+# Friendly names the hub can cycle through with ← →. Anything that isn't one of
+# these is treated as a literal path, so typing one still works.
+RECDIR_PRESETS = {
+    "auto": "VIDEOS", "videos": "VIDEOS", "desktop": "DESKTOP",
+    "downloads": "DOWNLOAD", "pictures": "PICTURES", "documents": "DOCUMENTS",
+}
+
+_recdir = setting("recdir", "auto").strip()
+if _recdir in ("", "~/Videos/bitecam"):     # the old hardcoded default
+    _recdir = "auto"
+if _recdir in RECDIR_PRESETS:
+    RECDIR = os.path.join(xdg_dir(RECDIR_PRESETS[_recdir]), "bitecam")
+elif _recdir == "home":
+    RECDIR = os.path.join(os.path.expanduser("~"), "bitecam")
+else:
+    RECDIR = os.path.expanduser(os.path.expandvars(_recdir))
+
+if CHARSET not in RAMPS:
+    CHARSET = "ascii"
+
+
+def die(msg, hint=""):
+    sys.stderr.write("\n  bitecam: %s\n" % msg)
+    if hint:
+        sys.stderr.write("  %s\n" % hint)
+    sys.stderr.write("\n")
+    sys.exit(1)
+
+
+try:
+    import numpy as np
+except ImportError:
+    die("numpy is not installed", "sudo pacman -S python-numpy")
+
+if not shutil.which("ffmpeg"):
+    die("ffmpeg is not installed", "sudo pacman -S ffmpeg")
+
+# Setup runs without a camera attached, so note the request here and act on it
+# further down, once setup_camera() actually exists.
+WANT_SETUP = "--setup-camera" in sys.argv or "--setup-cam" in sys.argv
+# A preview draws a synthetic scene and never opens the camera, so it must not
+# require one to exist either — the hub previews toys on machines with no webcam.
+WANT_PREVIEW = "--preview" in sys.argv
+
+if not WANT_SETUP and not WANT_PREVIEW and not os.path.exists(DEVICE):
+    found = sorted(p for p in os.listdir("/dev") if p.startswith("video"))
+    die("no camera at %s" % DEVICE,
+        ("try one of: " + ", ".join("/dev/" + f for f in found)) if found
+        else "no /dev/video* devices exist — is a camera plugged in?")
+
+
+def source_aspect():
+    """Native camera aspect, so faces don't come out stretched.
+
+    ffprobe writes the answer to stdout but also reports a harmless QBUF error
+    on teardown, so failure here is non-fatal — 16:9 covers most webcams.
+    """
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-f", "v4l2", "-i", DEVICE,
+             "-show_entries", "stream=width,height", "-of", "csv=p=0"],
+            capture_output=True, text=True, timeout=5).stdout
+        m = re.search(r"(\d+),(\d+)", out)
+        if m:
+            w, h = int(m.group(1)), int(m.group(2))
+            if w > 0 and h > 0:
+                return w / h
+    except Exception:
+        pass
+    return 16 / 9
+
+
+ASPECT = 16 / 9 if (WANT_SETUP or WANT_PREVIEW) else source_aspect()
+# Terminal cells are about twice as tall as they are wide.
+CELL = 2.0
+
+
+def grid_for(term_cols, term_rows):
+    """Largest cols×rows preserving the camera's aspect inside the terminal."""
+    avail_rows = max(term_rows - 1, 1)
+    cols = max(term_cols, 8)
+    rows = int(cols / ASPECT / CELL)
+    if rows > avail_rows:
+        rows = avail_rows
+        cols = int(rows * ASPECT * CELL)
+    return max(cols, 8), max(rows, 4)
+
+
+def start_ffmpeg(cols, rows):
+    vf = []
+    if MIRROR:
+        vf.append("hflip")
+    vf.append("fps=%d" % FPS)
+    vf.append("scale=%d:%d:flags=fast_bilinear" % (cols, rows))
+    vf.append("format=rgb24")
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
+           "-f", "v4l2", "-i", DEVICE,
+           "-vf", ",".join(vf),
+           "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, bufsize=0)
+
+
+def _avail(fd):
+    """Bytes sitting in the pipe right now, without reading any of them."""
+    b = array.array("i", [0])
+    try:
+        fcntl.ioctl(fd, termios.FIONREAD, b, True)
+        return b[0]
+    except Exception:
+        return 0
+
+
+def read_exact(pipe, n, timeout=4.0):
+    """Raw frames arrive in arbitrary chunks; a partial read is not EOF.
+
+    The deadline matters: a camera that wedges used to block this read forever,
+    and the toy just stopped repainting with no way out but Ctrl-C.
+    """
+    buf = bytearray()
+    fd = pipe.fileno()
+    deadline = time.time() + timeout
+    while len(buf) < n:
+        remain = deadline - time.time()
+        if remain <= 0:
+            return None
+        if not select.select([fd], [], [], remain)[0]:
+            continue
+        try:
+            chunk = os.read(fd, n - len(buf))
+        except OSError:
+            return None
+        if not chunk:
+            return None
+        buf += chunk
+    return bytes(buf)
+
+
+def read_latest(pipe, n, timeout=4.0):
+    """The newest frame, throwing away any that queued up behind it.
+
+    ffmpeg produces at a fixed rate whether or not we can keep up. Reading the
+    pipe strictly in order means every frame we were late for stays in the
+    queue, so the picture drifts further behind reality the longer it runs —
+    seconds of lag after a minute, which is what "high latency" looks like.
+    Only whole buffered frames are skipped, so this never waits for one.
+    """
+    frame = read_exact(pipe, n, timeout)
+    if frame is None:
+        return None
+    fd = pipe.fileno()
+    dropped = 0
+    while _avail(fd) >= n and dropped < 30:
+        nxt = read_exact(pipe, n, 0.5)
+        if nxt is None:
+            break
+        frame = nxt
+        dropped += 1
+    return frame
+
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _vis_len(s):
+    return len(ANSI_RE.sub("", s))
+
+
+def _clamp(segs, width):
+    """Join (ansi, text) segments so the VISIBLE length never exceeds width.
+
+    Clamping only the tail was not enough: on a very narrow window even the
+    size/fps block outgrows the terminal on its own, and the bar wrapped anyway.
+    """
+    out, used = [], 0
+    for ansi, text in segs:
+        if used >= width:
+            break
+        room = width - used
+        if len(text) > room:
+            text = (text[:room - 1] + "\u2026") if room >= 2 else " " * room
+        out.append(ansi + text)
+        used += len(text)
+    return "".join(out), used
+
+
+def status_bar(cols, rows, fps_show, rec, vcam, charset, color):
+    """The bottom bar, pinned to a row and clamped to the width.
+
+    It used to be emitted wherever the cursor happened to land after the frame,
+    at whatever length the text came out. On a narrow window that wrapped, which
+    pushed the picture up a line and left fragments of the bar behind it — the
+    bar appeared to shred itself. Position and width are both fixed now.
+    """
+    rev = "\x1b[7m"
+    if rec is not None:
+        el = int(time.time() - rec.started)
+        segs = [("\x1b[41m\x1b[1m", " ● REC %02d:%02d " % (el // 60, el % 60)),
+                (rev, " %dx%d  %.0f fps " % (cols, rows, fps_show)),
+                (rev, " r stop · q quit ")]
+    else:
+        segs = [(rev, " %dx%d  %.0f fps  %s%s " % (
+                    cols, rows, fps_show, charset, "" if color else " mono"))]
+        if vcam is not None:
+            segs.append(("\x1b[42m\x1b[30m", " LIVE "))
+        segs.append((rev, " r REC · v webcam · c colour · n charset · "
+                          "m mirror · i invert · ? keys · q quit "))
+
+    body, used = _clamp(segs, cols)
+    pad = " " * max(0, cols - used)
+    return "\x1b[%d;1H%s%s%s\x1b[0m\x1b[K" % (rows + 1, body, rev, pad)
+
+
+def template_frame(w, h):
+    """A deterministic stand-in scene, so a preview never opens the camera.
+
+    The preview exists to judge SETTINGS — charset, colour, invert, cell size —
+    and for that it needs predictable tonal range, not your actual face.
+    Grabbing the real device made the preview slow, made it fight the running
+    toy for the camera (which is what froze it), and made two runs impossible
+    to compare because the picture had moved underneath you.
+    """
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    cx, cy = w * 0.5, h * 0.48
+    rx, ry = w * 0.16, h * 0.33
+
+    img = np.zeros((h, w, 3), np.float32)
+    bg = 30.0 + 55.0 * (xx / max(w - 1, 1)) + 35.0 * (1.0 - yy / max(h - 1, 1))
+    img[..., 0] = bg * 0.50
+    img[..., 1] = bg * 1.00
+    img[..., 2] = bg * 0.70
+
+    d = ((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2
+    shade = 235.0 - 120.0 * np.clip((xx - (cx - rx)) / (2.0 * rx), 0.0, 1.0)
+    for c, k in enumerate((1.00, 0.93, 0.82)):
+        img[..., c] = np.where(d <= 1.0, shade * k, img[..., c])
+
+    sh = ((xx - cx) / (w * 0.42)) ** 2 + ((yy - (h * 1.28)) / (h * 0.62)) ** 2
+    for c, k in enumerate((0.42, 0.40, 0.38)):
+        img[..., c] = np.where((sh <= 1.0) & (d > 1.0), 190.0 * k, img[..., c])
+
+    for ex in (cx - rx * 0.40, cx + rx * 0.40):
+        e = ((xx - ex) / max(rx * 0.20, 0.7)) ** 2 + \
+            ((yy - (cy - ry * 0.20)) / max(ry * 0.14, 0.7)) ** 2
+        img[e <= 1.0] = 22.0
+    m = ((xx - cx) / max(rx * 0.46, 0.7)) ** 2 + \
+        ((yy - (cy + ry * 0.44)) / max(ry * 0.11, 0.7)) ** 2
+    img[m <= 1.0] = 55.0
+
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+# ── recording ─────────────────────────────────────────────────────────────────
+#
+# Frames are composed from a pre-rendered glyph atlas: every character in the
+# ramp is rasterised once into a (cell_h, cell_w) mask, then a whole frame is
+# built by indexing that atlas with the character grid and multiplying by the
+# per-cell colour. It is all numpy, so recording costs one array op per frame
+# instead of thousands of per-glyph draw calls, and the video keeps up live.
+
+class CastRecorder:
+    """asciinema v2 .cast — the exact terminal bytes, as JSON lines.
+
+    Needs no pillow and no encoder, and replays as real selectable text with
+    `asciinema play`. Note it is not the small option: every frame stores a
+    full truecolour screen, so a take runs several times larger than the mp4
+    of the same clip. Pick it for fidelity or as a fallback, not for size.
+    """
+
+    def __init__(self, cols, rows, ramp, fps):
+        import json
+        self._json = json
+        os.makedirs(RECDIR, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        self.path = self.final = os.path.join(RECDIR, "bitecam-%s.cast" % stamp)
+        self.started = time.time()
+        self.frames = 0
+        self.fh = open(self.path, "w", encoding="utf-8")
+        self.fh.write(json.dumps({
+            "version": 2, "width": cols, "height": rows + 1,
+            "timestamp": int(self.started),
+            "env": {"TERM": os.environ.get("TERM", "xterm-256color"),
+                    "SHELL": os.environ.get("SHELL", "/bin/sh")},
+        }) + "\n")
+
+    def add(self, buf, idx, rgb, color, ramp=None):
+        try:
+            self.fh.write(self._json.dumps(
+                [round(time.time() - self.started, 6), "o",
+                 buf.decode("utf-8", "replace")]) + "\n")
+        except Exception:
+            return False
+        self.frames += 1
+        return True
+
+    def stop(self):
+        try:
+            self.fh.close()
+        except Exception:
+            pass
+        return self.final, None
+
+
+class Rasteriser:
+    """Character grid -> RGB pixels, via a glyph atlas rendered once.
+
+    Shared by the recorder and the virtual camera: both need the same ASCII
+    turned into real pixels, and doing it as one numpy indexing op rather than
+    thousands of per-glyph draw calls is what lets either keep up live.
+    """
+
+    def __init__(self, cols, rows, ramp, cell):
+        self.cw = cell
+        self.ch = cell * 2            # match the terminal's ~2:1 cell shape
+        # h264 and most capture consumers want even dimensions.
+        self.w = (cols * self.cw) // 2 * 2
+        self.h = (rows * self.ch) // 2 * 2
+        self.cols, self.rows = cols, rows
+        self.ramp = None
+        self._font_obj = None
+        self.ensure(ramp)
+
+    def ensure(self, ramp):
+        """Point the atlas at `ramp`, rebuilding it only when it actually moved.
+
+        The frame size depends on the grid and the cell size alone — never on
+        which characters are in the ramp — so swapping ramps mid-take is just a
+        new atlas, and nothing downstream sees the dimensions change.
+
+        Callers must run this on the same thread that calls frame(), and in the
+        same order as the frames: a cell index computed against a 70-character
+        ramp is meaningless against a 4-character one, and reading the atlas
+        with it is an out-of-bounds index, not a wrong-looking picture.
+        """
+        if ramp == self.ramp:
+            return
+        from PIL import Image, ImageDraw, ImageFont
+        if self._font_obj is None:
+            self._font_obj = self._font(ImageFont)
+        font = self._font_obj
+        atlas = np.zeros((len(ramp), self.ch, self.cw), dtype=np.uint8)
+        for i, chx in enumerate(ramp):
+            img = Image.new("L", (self.cw, self.ch), 0)
+            d = ImageDraw.Draw(img)
+            try:
+                bb = d.textbbox((0, 0), chx, font=font)
+                d.text(((self.cw - (bb[2] - bb[0])) / 2 - bb[0],
+                        (self.ch - (bb[3] - bb[1])) / 2 - bb[1]), chx, 255, font=font)
+            except Exception:
+                d.text((0, 0), chx, 255, font=font)
+            atlas[i] = np.asarray(img, dtype=np.uint8)
+        self.atlas = atlas
+        self.ramp = ramp
+
+    def _font(self, ImageFont):
+        want = int(self.ch * 0.8)
+        try:
+            path = subprocess.run(["fc-match", "-f", "%{file}", "monospace"],
+                                  capture_output=True, text=True,
+                                  timeout=3).stdout.strip()
+            if path:
+                return ImageFont.truetype(path, want)
+        except Exception:
+            pass
+        for p in ("/usr/share/fonts/TTF/JetBrainsMonoNLNerdFontMono-Regular.ttf",
+                  "/usr/share/fonts/TTF/DejaVuSansMono.ttf"):
+            if os.path.exists(p):
+                return ImageFont.truetype(p, want)
+        return ImageFont.load_default()
+
+    def frame(self, idx, rgb, color):
+        mask = self.atlas[idx]                                  # (r, c, ch, cw)
+        if color:
+            col = rgb.astype(np.uint16)
+        else:
+            col = np.full((self.rows, self.cols, 3), 200, dtype=np.uint16)
+        f = (mask[:, :, :, :, None].astype(np.uint16) *
+             col[:, :, None, None, :]) // 255
+        f = f.astype(np.uint8).transpose(0, 2, 1, 3, 4)
+        f = f.reshape(self.rows * self.ch, self.cols * self.cw, 3)
+        return f[:self.h, :self.w].tobytes()
+
+
+class Recorder:
+    def __init__(self, cols, rows, ramp, fps):
+        self.r = Rasteriser(cols, rows, ramp, RECCELL)
+        self.w, self.h = self.r.w, self.r.h
+        self.frames = 0
+        self.started = time.time()
+
+        os.makedirs(RECDIR, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        ext = "mp4" if RECFMT == "gif" else RECFMT      # gif is converted after
+        self.path = os.path.join(RECDIR, "bitecam-%s.%s" % (stamp, ext))
+        self.final = os.path.join(RECDIR, "bitecam-%s.%s" % (stamp, RECFMT))
+
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+               "-f", "rawvideo", "-pix_fmt", "rgb24",
+               "-s", "%dx%d" % (self.w, self.h), "-r", str(fps), "-i", "-",
+               # ultrafast + zerolatency measured 194 fps against 122 for
+               # veryfast; the headroom is what stops a hiccup becoming a stall.
+               "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+               "-crf", "23", "-pix_fmt", "yuv420p", self.path]
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.PIPE)
+
+    def add(self, buf, idx, rgb, color, ramp=None):
+        if self.proc.poll() is not None:
+            return False
+        try:
+            if ramp is not None:
+                self.r.ensure(ramp)
+            self.proc.stdin.write(self.r.frame(idx, rgb, color))
+        except (BrokenPipeError, ValueError):
+            return False
+        self.frames += 1
+        return True
+
+    def stop(self):
+        try:
+            self.proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self.proc.wait(timeout=15)
+        except Exception:
+            self.proc.kill()
+        if self.proc.returncode not in (0, None):
+            err = self.proc.stderr.read().decode("utf-8", "replace").strip()
+            return None, (err.splitlines()[-1] if err else "encoding failed")
+        if RECFMT == "gif":
+            # Two-pass palette gives a gif that doesn't look like 1998.
+            pal = self.path + ".png"
+            try:
+                subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                                "-i", self.path, "-vf", "palettegen", pal],
+                               check=True, timeout=120)
+                subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                                "-i", self.path, "-i", pal,
+                                "-lavfi", "paletteuse", self.final],
+                               check=True, timeout=300)
+                os.remove(pal)
+                os.remove(self.path)
+            except Exception as e:
+                return self.path, "gif conversion failed (%s) — kept the mp4" % e
+        return self.final, None
+
+
+
+# ── keeping slow consumers off the main loop ──────────────────────────────────
+
+class AsyncSink:
+    """Feeds frames to something that might be slower than the camera.
+
+    Writing to an encoder or a v4l2 device straight from the capture loop means
+    any hiccup there stalls the picture. Frames go onto a bounded queue and a
+    thread does the blocking write instead.
+    """
+
+    def __init__(self, target, depth=8, drop=True):
+        self.target = target
+        self.drop = drop
+        self.dropped = 0
+        self.alive = True
+        self.error = None
+        self.q = queue.Queue(depth)
+        self.thread = threading.Thread(target=self._pump, daemon=True)
+        self.thread.start()
+
+    def add(self, *args):
+        if not self.alive:
+            return False
+        try:
+            self.q.put_nowait(args)
+        except queue.Full:
+            if not self.drop:
+                try:
+                    self.q.put(args, timeout=0.25)
+                except queue.Full:
+                    self.dropped += 1
+                return self.alive
+            try:
+                self.q.get_nowait()
+                self.q.put_nowait(args)
+            except (queue.Empty, queue.Full):
+                pass
+            self.dropped += 1
+        return True
+
+    def _pump(self):
+        while True:
+            args = self.q.get()
+            if args is None:
+                return
+            try:
+                if not self.target.add(*args):
+                    self.alive = False
+                    return
+            except Exception as e:
+                self.error = str(e)
+                self.alive = False
+                return
+
+    def stop(self):
+        try:
+            self.q.put(None, timeout=1)
+        except queue.Full:
+            pass
+        self.thread.join(timeout=5)
+        return self.target.stop()
+
+    def __getattr__(self, name):
+        return getattr(self.target, name)
+
+
+# ── virtual camera ────────────────────────────────────────────────────────────
+#
+# v4l2loopback creates a kernel video device that other programs see as an
+# ordinary webcam. Feeding it the rasterised ASCII makes Zoom, Discord, Meet or
+# anything else able to pick "BITE-OS Camera" from its camera list.
+
+VCAM_LABEL = "BITE-OS Camera"
+VCAM_NR = 9
+MODPROBE_CONF = "/etc/modprobe.d/bite-os-camera.conf"
+LOAD_CONF = "/etc/modules-load.d/bite-os-camera.conf"
+
+
+def loopback_devices():
+    """Every /dev/video* backed by v4l2loopback, not a real capture device."""
+    found = []
+    for name in sorted(os.listdir("/dev")):
+        if not name.startswith("video"):
+            continue
+        sysname = "/sys/class/video4linux/%s/name" % name
+        drv = "/sys/class/video4linux/%s/device/modalias" % name
+        label = ""
+        try:
+            with open(sysname) as fh:
+                label = fh.read().strip()
+        except OSError:
+            pass
+        try:
+            out = subprocess.run(["v4l2-ctl", "-d", "/dev/" + name, "--info"],
+                                 capture_output=True, text=True, timeout=3).stdout
+        except Exception:
+            out = ""
+        if "loopback" in out.lower() or "loopback" in label.lower():
+            found.append(("/dev/" + name, label))
+    return found
+
+
+def module_available():
+    try:
+        return subprocess.run(["modinfo", "v4l2loopback"], capture_output=True,
+                              timeout=5).returncode == 0
+    except Exception:
+        return False
+
+
+def setup_camera():
+    """Install and configure the loopback module. Asks before touching anything."""
+    print()
+    print("  %sBITE-OS virtual camera setup%s" % ("\033[1m", "\033[0m"))
+    print()
+    print("  This makes your ASCII feed appear as a normal webcam called")
+    print("  \"%s\" in Zoom, Discord, Meet and browsers." % VCAM_LABEL)
+    print()
+    print("  It needs three things, all with sudo:")
+    print("    1. install v4l2loopback-dkms (builds a small kernel module)")
+    print("    2. write %s" % MODPROBE_CONF)
+    print("    3. load the module now, and on every boot")
+    print()
+    if not sys.stdin.isatty():
+        print("  Run this in a terminal: bitecam --setup-camera")
+        return 1
+    try:
+        ans = input("  Go ahead? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print(); return 1
+    if ans not in ("y", "yes"):
+        print("\n  nothing was changed\n")
+        return 1
+
+    if not module_available():
+        print("\n  installing v4l2loopback-dkms — sudo will ask for your password\n")
+        if subprocess.run(["sudo", "pacman", "-S", "--needed",
+                           "v4l2loopback-dkms"]).returncode != 0:
+            print("\n  install failed — nothing else was changed\n")
+            return 1
+
+    conf = ('options v4l2loopback devices=1 video_nr=%d '
+            'card_label="%s" exclusive_caps=1\n' % (VCAM_NR, VCAM_LABEL))
+    # exclusive_caps=1 matters: without it Chrome and Zoom refuse to list the
+    # device at all, because it advertises both capture and output.
+    print("\n  writing %s\n" % MODPROBE_CONF)
+    if subprocess.run(["sudo", "tee", MODPROBE_CONF],
+                      input=conf, text=True,
+                      stdout=subprocess.DEVNULL).returncode != 0:
+        print("  could not write the module options\n"); return 1
+    subprocess.run(["sudo", "tee", LOAD_CONF], input="v4l2loopback\n",
+                   text=True, stdout=subprocess.DEVNULL)
+
+    print("  loading the module\n")
+    subprocess.run(["sudo", "modprobe", "-r", "v4l2loopback"],
+                   stderr=subprocess.DEVNULL)
+    if subprocess.run(["sudo", "modprobe", "v4l2loopback"]).returncode != 0:
+        print("\n  the module would not load — a reboot may be needed after a\n"
+              "  dkms build against a freshly updated kernel\n")
+        return 1
+
+    devs = loopback_devices()
+    print()
+    if devs:
+        for d, label in devs:
+            print("  \033[32m✓\033[0m %s  →  %s" % (d, label or "(unnamed)"))
+        print("\n  Run bitecam and press \033[36mv\033[0m to go live.\n")
+        return 0
+    print("  the module loaded but no loopback device appeared\n")
+    return 1
+
+
+class VirtualCam:
+    def __init__(self, cols, rows, ramp, fps, device=None):
+        self.r = Rasteriser(cols, rows, ramp, RECCELL)
+        devs = loopback_devices()
+        if device and device != "auto":
+            self.device = device
+        elif devs:
+            self.device = devs[0][0]
+        else:
+            raise RuntimeError("no virtual camera device — run: bitecam --setup-camera")
+        self.frames = 0
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
+               "-f", "rawvideo", "-pix_fmt", "rgb24",
+               "-s", "%dx%d" % (self.r.w, self.r.h), "-r", str(fps), "-i", "-",
+               "-f", "v4l2", "-pix_fmt", "yuv420p", self.device]
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.PIPE)
+
+    def add(self, idx, rgb, color, ramp=None):
+        if self.proc.poll() is not None:
+            return False
+        try:
+            if ramp is not None:
+                self.r.ensure(ramp)
+            self.proc.stdin.write(self.r.frame(idx, rgb, color))
+        except (BrokenPipeError, ValueError):
+            return False
+        self.frames += 1
+        return True
+
+    def stop(self):
+        try:
+            self.proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self.proc.wait(timeout=3)
+        except Exception:
+            self.proc.kill()
+
+
+if WANT_SETUP:
+    sys.exit(setup_camera())
+
+
+
+# ── the key list, on demand ───────────────────────────────────────────────────
+# Mirrors `keys=` in toy.meta, kept here too so the toy still explains itself
+# when run straight from a shell without the hub.
+HELP_KEYS = [
+    ("v", "publish as a real webcam"),
+    ("r", "start / stop recording"),
+    ("c", "colour or mono"),
+    ("n", "cycle the character ramp"),
+    ("i", "invert light and dark"),
+    ("m", "flip the mirror"),
+    ("s", "show / hide the status bar"),
+    ("?", "show / hide this list"),
+    ("q", "quit"),
+]
+
+
+def help_overlay(cols, rows):
+    w = 40
+    x = max(1, (cols - w) // 2)
+    y = max(1, (rows - (len(HELP_KEYS) + 3)) // 2)
+    parts = ["\x1b[%d;%dH\x1b[7m%s\x1b[0m" % (y, x, " bitecam keys".ljust(w))]
+    for i, (k, d) in enumerate(HELP_KEYS):
+        parts.append("\x1b[%d;%dH\x1b[7m %-6s %-*s\x1b[0m"
+                     % (y + 1 + i, x, k, w - 9, d))
+    parts.append("\x1b[%d;%dH\x1b[7m%s\x1b[0m"
+                 % (y + 1 + len(HELP_KEYS), x, " ? closes this".ljust(w)))
+    return "".join(parts)
+
+
+out = sys.stdout.buffer
+fd = sys.stdin.fileno()
+saved_tty = None
+proc = None
+resized = False
+rec = None
+rec_msg = ""
+vcam = None
+HELP = True   # shown on first run so the keys are never a secret
+
+
+def cleanup():
+    # Finalise an in-progress take first — quitting mid-recording should still
+    # leave a playable file, not a truncated one.
+    global rec, vcam
+    if vcam is not None:
+        vcam.stop()
+        vcam = None
+    if rec is not None:
+        path, err = rec.stop()
+        rec = None
+        sys.stderr.write("\n  bitecam: saved %s\n\n" % (path or err))
+    if proc and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=1)
+        except Exception:
+            proc.kill()
+    if saved_tty is not None:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved_tty)
+    out.write(b"\x1b[0m\x1b[?25h\x1b[?1049l")
+    out.flush()
+
+
+def on_winch(_sig, _frm):
+    global resized
+    resized = True
+
+
+_PREV_ROWS = None
+
+
+def invalidate_rows():
+    global _PREV_ROWS
+    _PREV_ROWS = None
+
+
+def delta(lines, cols, rows):
+    """Only the rows that changed, positioned individually.
+
+    A full truecolour repaint of a large grid is hundreds of KB per frame, and
+    writing that to a terminal which cannot keep up is what makes the picture
+    stall. Most rows are identical between frames.
+    """
+    global _PREV_ROWS
+    if _PREV_ROWS is None or len(_PREV_ROWS) != len(lines):
+        _PREV_ROWS = list(lines)
+        return b"\x1b[H" + b"".join(l + b"\x1b[K\n" for l in lines)
+    parts = []
+    changed = 0
+    for y, ln in enumerate(lines):
+        if ln != _PREV_ROWS[y]:
+            changed += 1
+            parts.append(b"\x1b[%d;1H" % (y + 1) + ln + b"\x1b[K")
+    _PREV_ROWS = list(lines)
+    if changed > len(lines) * 0.75:      # past that a plain repaint is cheaper
+        return b"\x1b[H" + b"".join(l + b"\x1b[K\n" for l in lines)
+    return b"".join(parts)
+
+
+def render(frame, cols, rows, ramp, color):
+    """Returns (bytes to write, char-index grid, rgb grid).
+
+    The grids come back out so the recorder can reuse exactly what was drawn —
+    the video is then guaranteed to match the screen rather than re-deriving it.
+    """
+    arr = np.frombuffer(frame, np.uint8).reshape(rows, cols, 3)
+    # Rec.601 luma in integer math — a shade faster than float and plenty here.
+    lum = (arr[:, :, 0].astype(np.uint16) * 77 +
+           arr[:, :, 1].astype(np.uint16) * 150 +
+           arr[:, :, 2].astype(np.uint16) * 29) >> 8
+    n = len(ramp)
+    idx = (lum * (n - 1) // 255).astype(np.uint8)
+    if INVERT:
+        idx = (n - 1) - idx
+
+    if not color:
+        lines = ["".join(ramp[i] for i in idx[y]).encode() for y in range(rows)]
+        return delta(lines, cols, rows), idx, arr
+
+    # Quantising to 8 levels per channel makes long runs of identical colour,
+    # so most cells reuse the previous escape instead of emitting a new one.
+    q = arr & 0xF8
+    changed = np.ones((rows, cols), dtype=bool)
+    changed[:, 1:] = (q[:, 1:] != q[:, :-1]).any(axis=2)
+
+    lines = []
+    for y in range(rows):
+        line = []
+        qy, iy, cy = q[y], idx[y], changed[y]
+        for x in range(cols):
+            if cy[x]:
+                line.append("\x1b[38;2;%d;%d;%dm" % (qy[x][0], qy[x][1], qy[x][2]))
+            line.append(ramp[iy[x]])
+        lines.append("".join(line).encode())
+    return delta(lines, cols, rows), idx, arr
+
+
+def main():
+    global saved_tty, proc, resized, COLOR, CHARSET, MIRROR, INVERT, STATS
+    global rec, rec_msg, vcam, HELP
+
+    if not sys.stdout.isatty():
+        die("bitecam needs a terminal")
+
+    saved_tty = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+    signal.signal(signal.SIGWINCH, on_winch)
+    out.write(b"\x1b[?1049h\x1b[?25l\x1b[2J")
+    out.flush()
+
+    term = shutil.get_terminal_size()
+    cols, rows = grid_for(term.columns, term.lines)
+    proc = start_ffmpeg(cols, rows)
+    frame_bytes = cols * rows * 3
+
+    fps_t, fps_n, fps_show = time.time(), 0, 0.0
+    ramp = RAMPS[CHARSET]
+
+    while True:
+      # One bad frame — a transient render error, a resize landing mid-draw —
+      # used to take the whole toy down. bitemask already guards its loop; this
+      # one did not, which is the crash.
+      try:
+        if resized:
+            resized = False
+            term = shutil.get_terminal_size()
+            was = (cols, rows)
+            new = grid_for(term.columns, term.lines)
+            # A take is locked to the dimensions it started with, so a real size
+            # change has to close it out rather than silently corrupt it. The
+            # mirror and colour keys come through here too and leave the grid
+            # exactly where it was — those must not cost you the recording.
+            if rec is not None and new != was:
+                path, err = rec.stop()
+                rec_msg = ("window resized — saved %s" % path if not err
+                           else "window resized — recording failed: %s" % err)
+                rec = None
+            proc.terminate()
+            try:
+                proc.wait(timeout=1)
+            except Exception:
+                proc.kill()
+            cols, rows = new
+            frame_bytes = cols * rows * 3
+            proc = start_ffmpeg(cols, rows)
+            out.write(b"\x1b[2J")
+            invalidate_rows()
+            # The virtual camera holds a Rasteriser built for the OLD grid. Its
+            # frame() reshapes by that stale cols/rows, so feeding it the new
+            # grid raises ValueError — which add() swallows, silently dropping
+            # you off the call. Rebuild it on a real size change.
+            # c/n/i/m also land here (they set resized to reuse this path) but
+            # leave the grid alone, so don't churn the device for those.
+            if vcam is not None and (cols, rows) != was:
+                vcam.stop()
+                try:
+                    vcam = AsyncSink(VirtualCam(cols, rows, ramp, FPS, VCAMDEV),
+                                     depth=4)
+                    rec_msg = "window resized — virtual camera restarted"
+                except Exception as e:
+                    vcam = None
+                    rec_msg = "window resized — virtual camera stopped: %s" % e
+
+        frame = read_latest(proc.stdout, frame_bytes)
+        if frame is None:
+            err = proc.stderr.read().decode("utf-8", "replace").strip()
+            cleanup()
+            if "Device or resource busy" in err:
+                die("the camera is already in use by another program")
+            die("the camera stopped sending frames", err.splitlines()[-1] if err else "")
+
+        buf, idx, rgb = render(frame, cols, rows, ramp, COLOR)
+        out.write(buf)
+
+        if vcam is not None and not vcam.add(idx, rgb, COLOR, ramp):
+            vcam.stop(); vcam = None
+            rec_msg = "virtual camera stopped"
+
+        if rec is not None and not rec.add(buf, idx, rgb, COLOR, ramp):
+            path, err = rec.stop()
+            rec = None
+            rec_msg = "recording stopped: %s" % (err or path)
+
+        fps_n += 1
+        now = time.time()
+        if now - fps_t >= 0.5:
+            fps_show = fps_n / (now - fps_t)
+            fps_t, fps_n = now, 0
+        if STATS:
+            out.write(status_bar(cols, rows, fps_show, rec, vcam,
+                                 CHARSET, COLOR).encode())
+            if rec_msg:
+                out.write(("\x1b[0m\n  " + rec_msg[:cols - 2] + "\x1b[K").encode())
+        else:
+            # The bar has to be actively erased when it is switched off. Simply
+            # not drawing it leaves the previous frame's text sitting there, so
+            # `s` looked like it did nothing at all.
+            out.write(b"\x1b[0m\x1b[K")
+            if rec_msg:
+                out.write(("\n  " + rec_msg + "\x1b[K").encode())
+        if HELP:
+            out.write(help_overlay(cols, rows).encode())
+        out.flush()
+
+        # Non-blocking key check — never stall the video waiting on input.
+        if select.select([fd], [], [], 0)[0]:
+            k = os.read(fd, 1).decode("utf-8", "replace")
+            if k in ("q", "Q", "\x03"):
+                break
+            elif k == "c":
+                COLOR = not COLOR
+            elif k == "i":
+                INVERT = not INVERT
+            elif k == "s":
+                STATS = not STATS
+                invalidate_rows()
+            elif k == "n":
+                # The ramp now travels with each frame and the atlas is rebuilt
+                # by whoever consumes it, in queue order — so this is free to
+                # change mid-take. It used to be refused while recording, and
+                # silently killed a live virtual camera when it wasn't: cell
+                # indexes computed against a 70-character ramp were read out of
+                # an atlas built for a 4-character one.
+                CHARSET = RAMP_ORDER[(RAMP_ORDER.index(CHARSET) + 1) % len(RAMP_ORDER)]
+                ramp = RAMPS[CHARSET]
+            elif k == "m":
+                # Safe mid-take now: the restart path only closes a recording
+                # out when the grid actually moved, and flipping the filter
+                # leaves it alone. The take gets a few dropped frames while
+                # ffmpeg comes back, which is a far better trade than losing it.
+                MIRROR = not MIRROR
+                resized = True  # reuse the restart path; the filter changed
+            elif k == "?":
+                HELP = not HELP
+                invalidate_rows()
+            elif k == "v":
+                if vcam is None:
+                    try:
+                        vcam = AsyncSink(VirtualCam(cols, rows, ramp, FPS, VCAMDEV),
+                                         depth=4)
+                        rec_msg = "live on %s as a webcam" % vcam.device
+                    except Exception as e:
+                        rec_msg = str(e)
+                else:
+                    vcam.stop(); vcam = None
+                    rec_msg = "virtual camera off"
+            elif k in ("r", "R"):
+                if rec is None:
+                    rec_msg = ""
+                    try:
+                        cls = CastRecorder if RECFMT == "cast" else Recorder
+                        # A take should stay complete, so this one waits rather
+                        # than dropping when the encoder is briefly behind.
+                        rec = AsyncSink(cls(cols, rows, ramp, FPS), depth=48,
+                                        drop=False)
+                    except ImportError:
+                        rec_msg = "recording needs pillow — sudo pacman -S python-pillow"
+                    except Exception as e:
+                        rec_msg = "couldn't start recording: %s" % e
+                else:
+                    path, err = rec.stop()
+                    n, secs = rec.frames, time.time() - rec.started
+                    rec = None
+                    rec_msg = ("saved %s  (%d frames, %.1fs)" % (path, n, secs)
+                               if not err else "recording failed: %s" % err)
+      except KeyboardInterrupt:
+        break
+      except Exception as e:
+        # Report it in the bar and carry on rather than dropping the user back
+        # to a shell with a traceback over their terminal.
+        rec_msg = "hiccup: %s" % str(e)[:60]
+        invalidate_rows()
+
+
+def preview_mode():
+    """A still thumbnail for the hub's preview pane — no terminal takeover.
+
+    Renders template_frame(), never the camera: instant, repeatable, and it
+    cannot collide with a bitecam that is already running.
+    """
+    cols, rows = 62, 17
+    img = template_frame(cols, rows)
+    if MIRROR:
+        img = img[:, ::-1].copy()
+    ramp = RAMPS[CHARSET]
+    buf, _, _ = render(img.tobytes(), cols, rows, ramp, COLOR)
+    invalidate_rows()                       # the cache is meaningless here
+    sys.stdout.write(buf.decode("utf-8", "replace"))
+    sys.stdout.write("\x1b[0m  %s\u00b7%s%s%s\n" % (
+        CHARSET, " colour" if COLOR else " mono",
+        " \u00b7 inverted" if INVERT else "",
+        " \u00b7 mirrored" if MIRROR else ""))
+    sys.stdout.write("  \x1b[2msample scene \u2014 your camera is not opened for this\x1b[0m\n")
+    sys.stdout.flush()
+    return 0
+
+
+if WANT_PREVIEW:
+    sys.exit(preview_mode())
+
+
+try:
+    main()
+finally:
+    cleanup()

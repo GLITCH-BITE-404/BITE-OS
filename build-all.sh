@@ -93,9 +93,12 @@ bash repo/build-repo.sh
 
 # repo must contain the freshly-bumped bite-os pkg + vscodium-bin
 [ -f repo/x86_64/bite-os.db.tar.gz ] || { echo "${c_r}repo db not built — see build-repo.sh output above${c_0}" >&2; exit 1; }
-ls repo/x86_64/bite-os-1.1-13-*.pkg.tar.* >/dev/null 2>&1 \
-    && ok "bite-os 1.1-13 in repo" \
-    || echo "${c_y}  ! warning: bite-os 1.1-13 not found in repo — check the makepkg output${c_0}"
+# Read the version from the PKGBUILD rather than hardcoding it — this check was
+# pinned to 1.1-14 and silently went stale the moment pkgrel was bumped.
+BITE_VER="$(awk -F= '/^pkgver=/{v=$2} /^pkgrel=/{r=$2} END{print v"-"r}' pkg/bite-os/PKGBUILD)"
+ls repo/x86_64/bite-os-"$BITE_VER"-*.pkg.tar.* >/dev/null 2>&1 \
+    && ok "bite-os $BITE_VER in repo" \
+    || echo "${c_y}  ! warning: bite-os $BITE_VER not found in repo — check the makepkg output${c_0}"
 ls repo/x86_64/vscodium-bin-*.pkg.tar.* >/dev/null 2>&1 \
     && ok "vscodium-bin in repo" \
     || echo "${c_y}  ! warning: vscodium-bin not in repo — Super+C editor won't be installed${c_0}"

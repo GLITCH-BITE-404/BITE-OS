@@ -1,0 +1,39 @@
+# Which camera to use
+device=/dev/video0
+
+# Characters used, darkest to brightest
+# @choices ascii,blocks,dense,minimal,solid
+charset=ascii
+
+# Truecolour, or classic mono ASCII
+color=on
+
+# Frames per second — drop this if it feels heavy
+# @range 1-60
+fps=15
+
+# Flip it like a selfie camera
+mirror=on
+
+# Swap light and dark
+invert=off
+
+# Show the size / fps / keys bar along the bottom
+stats=on
+
+# What `r` saves: mp4 to post, gif to share, cast for a text-only replay
+# @choices mp4,gif,cast
+recformat=mp4
+
+# Where recordings go. Cycle the common spots with the arrows, or press
+# Enter to type any folder you like.
+# @choices auto,desktop,downloads,pictures,documents,home
+recdir=auto
+
+# Pixels per character in the recording — bigger = sharper, heavier file
+# @range 4-24
+reccell=10
+
+# Which virtual camera device to publish on — 'auto' finds the
+# v4l2loopback one. Set it up first with: bitecam --setup-camera
+vcamdevice=auto

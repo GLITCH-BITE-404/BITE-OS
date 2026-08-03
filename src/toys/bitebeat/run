@@ -1,0 +1,853 @@
+#!/usr/bin/env python3
+"""bitebeat — whatever you're playing, with synced lyrics, karaoke style.
+
+Track state comes from MPRIS via playerctl, so it works with anything that
+publishes it: mpv, Spotify, VLC, a browser tab.
+
+Lyrics are looked up in this order, first hit wins:
+  1. an .lrc sitting next to the audio file
+  2. <lrcdir>/<artist> - <title>.lrc
+  3. lrclib.net, if `online` is on (results are cached locally)
+
+Nothing is bundled with this toy — it only ever displays a file you already
+have or one the lyrics service returns for the track you're playing.
+
+The big text is rasterised with Pillow and mapped onto half-block characters
+rather than a hand-written block font, so it renders any script — Hebrew,
+Cyrillic, CJK — at whatever size the window allows.
+"""
+
+import json
+import os
+import re
+import select
+import shutil
+import subprocess
+import sys
+import termios
+import time
+import tty
+import urllib.parse
+import urllib.request
+
+CACHE = os.path.expanduser("~/.cache/bite-os/lyrics")
+
+
+def setting(key, default):
+    v = os.environ.get("TOY_" + key.upper(), "")
+    return v if v != "" else default
+
+
+def on(v):
+    return str(v).lower() in ("on", "yes", "true", "1")
+
+
+PLAYER  = setting("player", "auto")
+LRCDIR  = os.path.expanduser(setting("lrcdir", "~/.local/share/bite-os/lyrics"))
+ONLINE  = on(setting("online", "on"))
+OFFSET  = float(setting("offset", "0") or 0)
+BIGSIZE = max(2, int(setting("bigsize", "7") or 7))
+CONTEXT = max(0, int(setting("context", "2") or 2))
+ACCENT  = setting("accent", "green")
+FPS     = max(5, min(60, int(setting("fps", "20") or 20)))
+REACT   = on(setting("react", "on"))
+REACTAMT= max(0, min(10, int(setting("reactamount", "4") or 4)))
+BARS    = max(8, min(64, int(setting("bars", "24") or 24)))
+TRANS   = max(0.0, min(1.5, float(setting("transition", "0.25") or 0.25)))
+
+ACCENTS = {
+    "green":   (0, 255, 128), "cyan":  (0, 220, 255), "magenta": (255, 0, 200),
+    "red":     (255, 60, 60), "amber": (255, 180, 0), "white":   (235, 235, 235),
+}
+FG = ACCENTS.get(ACCENT, ACCENTS["green"])
+DIM = (90, 90, 95)
+
+
+OFFSETS = os.path.expanduser("~/.local/share/bite-os/bitebeat-offsets.json")
+
+
+def load_offset(ident, default):
+    """Remember a per-track sync nudge, so you only fix a song once."""
+    try:
+        with open(OFFSETS, encoding="utf-8") as fh:
+            return float(json.load(fh).get(" - ".join(ident), default))
+    except Exception:
+        return default
+
+
+def save_offset(ident, value):
+    if not ident:
+        return
+    try:
+        data = {}
+        if os.path.exists(OFFSETS):
+            with open(OFFSETS, encoding="utf-8") as fh:
+                data = json.load(fh)
+        data[" - ".join(ident)] = round(value, 2)
+        os.makedirs(os.path.dirname(OFFSETS), exist_ok=True)
+        with open(OFFSETS, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+
+
+def die(msg, hint=""):
+    sys.stderr.write("\n  bitebeat: %s\n" % msg)
+    if hint:
+        sys.stderr.write("  %s\n" % hint)
+    sys.stderr.write("\n")
+    sys.exit(1)
+
+
+if not shutil.which("playerctl"):
+    die("playerctl is not installed", "sudo pacman -S playerctl")
+
+
+# ── player state ──────────────────────────────────────────────────────────────
+
+def pctl(*args):
+    cmd = ["playerctl"]
+    if PLAYER != "auto":
+        cmd += ["-p", PLAYER]
+    cmd += list(args)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+FORMAT = ("{{status}}\x1f{{xesam:artist}}\x1f{{xesam:title}}\x1f"
+          "{{xesam:album}}\x1f{{mpris:length}}\x1f{{position}}\x1f{{xesam:url}}")
+
+
+def poll():
+    """Everything in ONE dbus round trip, position included.
+
+    Position used to be a second `playerctl` call, which meant it was sampled
+    tens of milliseconds after the status it was paired with and drifted. It
+    also returns the position as of mid-call, so the timestamp recorded for it
+    is the midpoint of the call rather than the moment we got round to reading
+    the result.
+    """
+    t0 = time.monotonic()
+    raw = pctl("metadata", "--format", FORMAT)
+    t1 = time.monotonic()
+    if not raw:
+        return None, 0.0
+    p = raw.split("\x1f")
+    while len(p) < 7:
+        p.append("")
+
+    def num(s, scale=1.0):
+        try:
+            return float(s) / scale
+        except ValueError:
+            return 0.0
+
+    return {"status": p[0], "artist": p[1], "title": p[2], "album": p[3],
+            "length": num(p[4], 1e6), "position": num(p[5], 1e6),
+            "url": p[6]}, (t0 + t1) / 2
+
+
+# ── .lrc parsing ──────────────────────────────────────────────────────────────
+
+TAG = re.compile(r"\[(\d+):(\d+(?:[.:]\d+)?)\]")
+WORD = re.compile(r"<(\d+):(\d+(?:[.:]\d+)?)>")
+
+
+def _secs(m, s):
+    return int(m) * 60 + float(s.replace(":", "."))
+
+
+def parse_lrc(text):
+    """-> [(start, text, [(word_start, word_text), ...])], sorted.
+
+    Handles plain [mm:ss.xx] lines and enhanced <mm:ss.xx> word timings; a line
+    may carry several timestamps when a refrain repeats.
+    """
+    out = []
+    for raw in text.splitlines():
+        stamps = TAG.findall(raw)
+        if not stamps:
+            continue
+        body = TAG.sub("", raw).strip()
+        words = []
+        if WORD.search(body):
+            parts = WORD.split(body)
+            # split() gives [pre, m, s, text, m, s, text, ...]
+            lead = parts[0].strip()
+            if lead:
+                words.append((None, lead))
+            for i in range(1, len(parts) - 2, 3):
+                words.append((_secs(parts[i], parts[i + 1]), parts[i + 2]))
+            body = WORD.sub("", body).strip()
+        for m, s in stamps:
+            out.append([_secs(m, s), body, words])
+    out.sort(key=lambda r: r[0])
+    return [r for r in out if r[1]]
+
+
+# ── lyrics lookup ─────────────────────────────────────────────────────────────
+
+def safe(s):
+    return re.sub(r'[/\\:*?"<>|]', "_", s).strip()
+
+
+# Browsers report a YouTube video title verbatim — "Artist - Song (Official
+# Video) (4K Remaster)" with no artist field — and a lyrics service will not
+# match that. Strip the decorations and recover the artist from the title.
+JUNK = re.compile(
+    r"\((?:[^()]*\b(?:official|video|audio|lyric|lyrics|visuali[sz]er|remaster"
+    r"|remastered|hd|hq|4k|8k|mv|explicit|clean|extended|full|colou?r)\b[^()]*)\)"
+    r"|\[[^\]]*\]", re.I)
+
+
+def clean_title(t):
+    t = JUNK.sub(" ", t)
+    t = re.sub(r"\s*[|·]\s*.*$", "", t)        # trailing "| Label"
+    t = re.sub(r"\s+", " ", t)
+    return t.strip(" -–—·")
+
+
+def candidates(meta):
+    """Ordered (artist, title) guesses, most specific first."""
+    artist = (meta.get("artist") or "").strip()
+    title = (meta.get("title") or "").strip()
+    ct = clean_title(title)
+    out = []
+    if artist and ct:
+        out.append((artist, ct))
+    for sep in (" - ", " – ", " — "):
+        if sep in ct:
+            a, t = ct.split(sep, 1)
+            if a.strip() and t.strip():
+                out.append((a.strip(), t.strip()))
+            break
+    if artist and ct != title:
+        out.append((artist, title))
+    if ct:
+        out.append(("", ct))
+    seen, res = set(), []
+    for c in out:
+        if c not in seen:
+            seen.add(c)
+            res.append(c)
+    return res
+
+
+def _api(path, params):
+    try:
+        req = urllib.request.Request(
+            "https://lrclib.net/api/%s?%s" % (path, urllib.parse.urlencode(params)),
+            headers={"User-Agent": "bitebeat (BITE-OS toy)"})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+
+def lrclib(meta):
+    """Try each candidate against /get, then fall back to fuzzy /search."""
+    dur = int(meta.get("length", 0) or 0)
+    for artist, title in candidates(meta):
+        p = {"artist_name": artist, "track_name": title,
+             "album_name": meta.get("album", "")}
+        if dur:
+            p["duration"] = dur
+        d = _api("get", p)
+        if isinstance(d, dict) and (d.get("syncedLyrics") or "").strip():
+            return d["syncedLyrics"]
+        # Same names but without the duration constraint, which often over-filters.
+        d = _api("get", {"artist_name": artist, "track_name": title})
+        if isinstance(d, dict) and (d.get("syncedLyrics") or "").strip():
+            return d["syncedLyrics"]
+
+    for artist, title in candidates(meta)[:2]:
+        q = ("%s %s" % (artist, title)).strip()
+        d = _api("search", {"q": q})
+        if isinstance(d, list):
+            for hit in d[:5]:
+                s = (hit.get("syncedLyrics") or "").strip()
+                if s:
+                    return s
+    return None
+
+
+def find_lyrics(meta):
+    """Local .lrc first, then the cache, then the network."""
+    url = meta.get("url", "")
+    if url.startswith("file://"):
+        path = urllib.parse.unquote(urllib.parse.urlparse(url).path)
+        cand = os.path.splitext(path)[0] + ".lrc"
+        if os.path.isfile(cand):
+            return open(cand, encoding="utf-8", errors="replace").read(), "file"
+
+    name = "%s - %s.lrc" % (safe(meta.get("artist", "")), safe(meta.get("title", "")))
+    for d in (LRCDIR, CACHE):
+        cand = os.path.join(d, name)
+        if os.path.isfile(cand):
+            return open(cand, encoding="utf-8", errors="replace").read(), \
+                   ("lrcdir" if d == LRCDIR else "cached")
+
+    if not ONLINE or not meta.get("title"):
+        return None, None
+    text = lrclib(meta)
+    if text:
+        try:
+            os.makedirs(CACHE, exist_ok=True)
+            with open(os.path.join(CACHE, name), "w", encoding="utf-8") as fh:
+                fh.write(text)
+        except OSError:
+            pass
+        return text, "lrclib"
+    return None, None
+
+
+# ── live audio levels ─────────────────────────────────────────────────────────
+
+class Spectrum:
+    """Reads cava's raw output so the visuals follow the actual sound.
+
+    cava already handles capturing the system's audio monitor and the FFT, so
+    this only has to parse its bar values. Missing cava is not fatal — the
+    reactive layer simply goes flat.
+    """
+
+    def __init__(self, bars, np):
+        self.np = np
+        self.bars = bars
+        self.levels = np.zeros(bars)
+        self.proc = None
+        self.buf = b""
+        if not shutil.which("cava"):
+            return
+        cfg = os.path.join(os.path.expanduser("~/.cache/bite-os"), "bitebeat-cava.conf")
+        os.makedirs(os.path.dirname(cfg), exist_ok=True)
+        with open(cfg, "w") as fh:
+            fh.write("[general]\nbars = %d\nframerate = 60\n"
+                     "[output]\nmethod = raw\nraw_target = /dev/stdout\n"
+                     "data_format = ascii\nascii_max_range = 100\nchannels = mono\n"
+                     % bars)
+        try:
+            self.proc = subprocess.Popen(["cava", "-p", cfg],
+                                         stdout=subprocess.PIPE,
+                                         stderr=subprocess.DEVNULL)
+            os.set_blocking(self.proc.stdout.fileno(), False)
+        except Exception:
+            self.proc = None
+
+    def read(self):
+        """Latest frame only — stale spectrum frames are worthless."""
+        if self.proc is None or self.proc.poll() is not None:
+            return self.levels
+        try:
+            chunk = self.proc.stdout.read(65536)
+        except Exception:
+            chunk = None
+        if chunk:
+            self.buf += chunk
+            lines = self.buf.split(b"\n")
+            self.buf = lines[-1][-4096:]
+            for ln in reversed(lines[:-1]):
+                parts = [p for p in ln.split(b";") if p.strip()]
+                if len(parts) >= self.bars:
+                    try:
+                        self.levels = self.np.array(
+                            [int(p) for p in parts[:self.bars]], dtype=float) / 100.0
+                        break
+                    except ValueError:
+                        continue
+        return self.levels
+
+    def stop(self):
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=1)
+            except Exception:
+                self.proc.kill()
+
+
+def wave_row(levels, width, np, chars=" ▁▂▃▄▅▆▇█"):
+    """One row of spectrum, stretched to the full width."""
+    if len(levels) == 0:
+        return ""
+    xs = np.linspace(0, len(levels) - 1, max(1, width))
+    lv = np.interp(xs, np.arange(len(levels)), levels)
+    idx = np.clip((lv * (len(chars) - 1)).astype(int), 0, len(chars) - 1)
+    return "".join(chars[i] for i in idx)
+
+
+# ── big text ──────────────────────────────────────────────────────────────────
+
+class BigText:
+    """Rasterise a string, then draw it with ▀ so each cell holds two pixels."""
+
+    def __init__(self, rows):
+        from PIL import Image, ImageDraw, ImageFont
+        import numpy as np
+        self.Image, self.ImageDraw, self.np = Image, ImageDraw, np
+        self.px = rows * 2                      # two pixel rows per text row
+        self.rows = rows
+        self.font = self._font(ImageFont, self.px)
+        self._cache = {}
+
+    def _font(self, ImageFont, px):
+        try:
+            p = subprocess.run(["fc-match", "-f", "%{file}", "sans-serif:bold"],
+                               capture_output=True, text=True, timeout=3).stdout.strip()
+            if p:
+                return ImageFont.truetype(p, px)
+        except Exception:
+            pass
+        for p in ("/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+                  "/usr/share/fonts/TTF/DejaVuSans.ttf"):
+            if os.path.exists(p):
+                return ImageFont.truetype(p, px)
+        return ImageFont.load_default()
+
+    def bitmap(self, text):
+        if text in self._cache:
+            return self._cache[text]
+        img = self.Image.new("L", (max(8, int(self.px * len(text) * 0.75)) + 8,
+                                   self.px + 8), 0)
+        d = self.ImageDraw.Draw(img)
+        d.text((2, 0), text, 255, font=self.font)
+        arr = self.np.asarray(img) > 110
+        cols = self.np.where(arr.any(axis=0))[0]
+        rows = self.np.where(arr.any(axis=1))[0]
+        if len(cols) == 0 or len(rows) == 0:
+            arr = self.np.zeros((self.px, 1), dtype=bool)
+        else:
+            arr = arr[rows[0]:rows[-1] + 1, cols[0]:cols[-1] + 1]
+        # Pad to an even number of pixel rows so every cell has a top and bottom.
+        if arr.shape[0] % 2:
+            arr = self.np.vstack([arr, self.np.zeros((1, arr.shape[1]), bool)])
+        if len(self._cache) > 64:
+            self._cache.clear()
+        self._cache[text] = arr
+        return arr
+
+
+def rgb(c):
+    return "\x1b[38;2;%d;%d;%dm" % c
+
+
+def bgrgb(c):
+    return "\x1b[48;2;%d;%d;%dm" % c
+
+
+def warp(arr, levels, amount, np):
+    """Push each column of the bitmap up by its own band's loudness.
+
+    Done as one fancy-index instead of a per-column roll, so the whole line
+    distorts in a single array op and the animation stays smooth.
+    """
+    if amount <= 0 or levels is None or len(levels) == 0:
+        return arr
+    h, w = arr.shape
+    pad = int(amount) * 2 + 2
+    arr = np.vstack([np.zeros((pad, w), bool), arr, np.zeros((pad, w), bool)])
+    h = arr.shape[0]
+    xs = np.linspace(0, len(levels) - 1, w)
+    lv = np.interp(xs, np.arange(len(levels)), levels)
+    disp = (lv * amount * 2).astype(int)
+    rr = np.clip(np.arange(h)[:, None] + disp[None, :], 0, h - 1)
+    return arr[rr, np.arange(w)[None, :]]
+
+
+def shade(c, f):
+    return tuple(max(0, min(255, int(v * f))) for v in c)
+
+
+def draw_big(arr, width, fill_frac, np, fade=1.0):
+    """Render the bitmap centred in `width` cells, colour-split at fill_frac."""
+    h, w = arr.shape
+    rows = h // 2
+    cut = int(w * max(0.0, min(1.0, fill_frac)))
+    # Scroll to keep the sung position visible when the line overflows.
+    if w > width:
+        left = max(0, min(w - width, cut - width // 2))
+        view = slice(left, left + width)
+        pad = 0
+    else:
+        view = slice(0, w)
+        pad = (width - w) // 2
+
+    lines = []
+    for r in range(rows):
+        top, bot = arr[2 * r][view], arr[2 * r + 1][view]
+        line = [" " * pad]
+        prev = None
+        for x in range(len(top)):
+            gx = x + (view.start or 0)
+            col = shade(FG if gx < cut else DIM, fade)
+            t, b = bool(top[x]), bool(bot[x])
+            if not t and not b:
+                if prev is not None:
+                    line.append("\x1b[0m")
+                    prev = None
+                line.append(" ")
+                continue
+            if prev != col:
+                line.append(rgb(col))
+                prev = col
+            if t and b:
+                line.append("█")
+            elif t:
+                line.append("▀")
+            else:
+                line.append("▄")
+        line.append("\x1b[0m")
+        lines.append("".join(line))
+    return lines
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+
+# ── the key list, on demand ───────────────────────────────────────────────────
+# Mirrors `keys=` in toy.meta, kept here too so the toy explains itself when run
+# straight from a shell without the hub.
+# The key list lives along the BOTTOM, not in a window over the song. A centred
+# overlay covered the lyrics — the one thing you are actually looking at — so
+# `?` hides and shows this bar instead of opening a panel on top of it.
+def key_bar(offset, source, react_on):
+    return ("\x1b[2m q quit \u00b7 space play \u00b7 \u2190\u2192 seek \u00b7 n p track \u00b7 "
+            "[ ] , . sync %+0.1fs \u00b7 0 reset \u00b7 w wave%s \u00b7 ? hide \u00b7 %s\x1b[0m\x1b[K"
+            % (offset, "" if react_on else " (off)", source or "no lyrics"))
+
+
+def preview_mode():
+    """A still frame for the hub's preview pane — no player, no terminal takeover.
+
+    Shows a stand-in track caught part-way through a word, so every setting that
+    affects the look — accent, bigsize, context, bars, react — is visible and
+    comparable between two runs. Following the real player would mean the
+    picture changed underneath you between settings, and would show nothing at
+    all when nothing happens to be playing.
+    """
+    import numpy as np
+    cols = 62
+    title, artist = "MIDNIGHT PROTOCOL", "GLITCH-BITE-404"
+    lines = ["the city hums in binary",
+             "every window is a screen",
+             "NOBODY IS WATCHING",
+             "but the lights stay on",
+             "and the system bit you"]
+    cur = 2                       # the line being sung
+    fill = 0.82                   # part-way through the last word
+
+    out = []
+    out.append("  \x1b[1m%s\x1b[0m  \x1b[2m%s\x1b[0m" % (title, artist))
+    out.append("")
+
+    # context above
+    for i in range(max(0, cur - CONTEXT), cur):
+        out.append("  " + rgb(shade(DIM, 0.75)) + lines[i].center(cols - 2) + "\x1b[0m")
+
+    # the sung line, big
+    try:
+        big = BigText(BIGSIZE)
+        arr = big.bitmap(lines[cur])
+        if REACT and REACTAMT > 0:
+            levels = np.array([0.35 + 0.45 * abs(np.sin(x * 0.7))
+                               for x in range(arr.shape[1])], dtype=float)
+            arr = warp(arr, levels, REACTAMT, np)
+        biglines = draw_big(arr, cols - 2, fill, np)
+        # warp() displaces rows vertically, which leaves blank rows padding the
+        # bitmap top and bottom. They are invisible but they still eat the
+        # hub's pane, so drop the ones with no glyph in them at all.
+        def _blank(l):
+            return not any(ch in l for ch in "\u2588\u2580\u2584")
+        while biglines and _blank(biglines[0]):
+            biglines.pop(0)
+        while biglines and _blank(biglines[-1]):
+            biglines.pop()
+        out.extend("  " + l for l in biglines)
+    except Exception as e:
+        out.append("  " + rgb(FG) + lines[cur].center(cols - 2) + "\x1b[0m")
+        out.append("  \x1b[2m(big text needs pillow: %s)\x1b[0m" % e)
+
+    # context below
+    for i in range(cur + 1, min(len(lines), cur + 1 + CONTEXT)):
+        out.append("  " + rgb(shade(DIM, 0.75)) + lines[i].center(cols - 2) + "\x1b[0m")
+
+    out.append("")
+    # progress bar
+    done = int((cols - 12) * 0.41)
+    out.append("  " + rgb(FG) + "\u2501" * done + "\x1b[0m" +
+               rgb(shade(DIM, 0.6)) + "\u2501" * (cols - 12 - done) + "\x1b[0m" +
+               "  \x1b[2m1:47\x1b[0m")
+
+    if REACT:
+        levels = [0.25 + 0.7 * abs(np.sin(i * 0.55)) for i in range(BARS)]
+        out.append("  " + rgb(shade(FG, 0.8)) +
+                   wave_row(levels, cols - 2, np) + "\x1b[0m")
+
+    out.append("  \x1b[2m%s \u00b7 big %d \u00b7 context %d%s\x1b[0m" % (
+        ACCENT, BIGSIZE, CONTEXT, " \u00b7 react %d" % REACTAMT if REACT else ""))
+    out.append("  \x1b[2msample track \u2014 your player is not touched for this\x1b[0m")
+
+    sys.stdout.write("\n".join(out) + "\n")
+    sys.stdout.flush()
+    return 0
+
+
+
+def main():
+    global OFFSET, BIGSIZE
+    bar_on = True
+
+    if not sys.stdout.isatty():
+        die("bitebeat needs a terminal")
+
+    try:
+        import numpy as np
+    except ImportError:
+        die("numpy is not installed", "sudo pacman -S python-numpy")
+
+    big = None
+    try:
+        big = BigText(BIGSIZE)
+    except ImportError:
+        pass          # no pillow — fall back to plain text lines
+
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+    out = sys.stdout.buffer
+    out.write(b"\x1b[?1049h\x1b[?25l")
+    out.flush()
+
+    spec = Spectrum(BARS, np) if REACT else None
+    state = {"line": None, "since": 0.0, "trans": TRANS, "amt": REACTAMT}
+
+    meta = None
+    lyrics = []
+    source = None
+    key_track = None
+    last_poll = 0.0
+    pos = 0.0
+    pos_at = time.monotonic()
+    playing = False
+    msg = ""
+
+    try:
+        while True:
+            now = time.monotonic()
+
+            if now - last_poll > 0.2:
+                last_poll = now
+                m, sampled_at = poll()
+                if m is None:
+                    meta, lyrics, key_track = None, [], None
+                else:
+                    ident = (m["artist"], m["title"], m["album"])
+                    if ident != key_track:
+                        key_track = ident
+                        meta = m
+                        msg = "looking for lyrics…"
+                        text, source = find_lyrics(m)
+                        lyrics = parse_lrc(text) if text else []
+                        OFFSET = load_offset(ident, OFFSET)
+                        state["line"] = None
+                        msg = ""
+                    else:
+                        meta = m
+                    playing = m["status"].lower() == "playing"
+                    pos, pos_at = m["position"], sampled_at
+
+            # Interpolate between polls so the karaoke sweep stays smooth.
+            t = pos + (now - pos_at if playing else 0.0) + OFFSET
+
+            cols = shutil.get_terminal_size().columns
+            rows_t = shutil.get_terminal_size().lines
+            buf = ["\x1b[H"]
+
+            if meta is None:
+                buf.append("\x1b[2J\x1b[%d;1H" % (rows_t // 2))
+                buf.append("  \x1b[2mnothing is playing — start something and it'll show up\x1b[0m\x1b[K")
+                out.write("".join(buf).encode())
+                out.flush()
+                if wait_key(fd, 0.3) == "q":
+                    break
+                continue
+
+            head = "  %s%s\x1b[0m  \x1b[2m%s\x1b[0m" % (
+                rgb(FG), meta["title"] or "(unknown)", meta["artist"])
+            buf.append(head + "\x1b[K\n")
+            if meta["length"]:
+                frac = max(0.0, min(1.0, (t - OFFSET) / meta["length"]))
+                w = max(10, cols - 20)
+                done = int(w * frac)
+                buf.append("  %s%s\x1b[0m\x1b[2m%s\x1b[0m  %s / %s\x1b[K\n" % (
+                    rgb(FG), "━" * done, "━" * (w - done),
+                    clock(t - OFFSET), clock(meta["length"])))
+            else:
+                buf.append("\x1b[K\n")
+            buf.append("\x1b[K\n")
+
+            levels = spec.read() if spec else None
+
+            body_rows = rows_t - 6
+            if lyrics:
+                buf += lyric_view(lyrics, t, cols, body_rows, big, np,
+                                  levels, state)
+            else:
+                buf.append("  \x1b[2m%s\x1b[0m\x1b[K\n" %
+                           (msg or "no synced lyrics found for this track"))
+                if big:
+                    buf.append("\x1b[K\n")
+                    for l in draw_big(big.bitmap(meta["title"][:40] or "?"),
+                                      cols - 2, 1.0 if playing else 0.0, np):
+                        buf.append(" " + l + "\x1b[K\n")
+
+            buf.append("\x1b[%d;1H" % rows_t)
+            if bar_on:
+                buf.append(key_bar(OFFSET, source, REACT))
+            else:
+                buf.append("\x1b[2m ? keys\x1b[0m\x1b[K")
+            out.write("".join(buf).encode())
+            out.flush()
+
+            k = wait_key(fd, 1.0 / FPS)
+            if k == "q":
+                break
+            elif k == " ":
+                pctl("play-pause"); last_poll = 0
+            elif k == "RIGHT":
+                pctl("position", "5+"); last_poll = 0
+            elif k == "LEFT":
+                pctl("position", "5-"); last_poll = 0
+            elif k == "]":
+                OFFSET += 0.2
+                save_offset(key_track, OFFSET)
+            elif k == "[":
+                OFFSET -= 0.2
+                save_offset(key_track, OFFSET)
+            elif k == ".":                      # coarse: whole seconds
+                OFFSET += 1.0
+                save_offset(key_track, OFFSET)
+            elif k == ",":
+                OFFSET -= 1.0
+                save_offset(key_track, OFFSET)
+            elif k == "0":                      # back to no correction
+                OFFSET = 0.0
+                save_offset(key_track, OFFSET)
+            elif k == "?":
+                bar_on = not bar_on
+            elif k == "w":
+                state["amt"] = 0 if state["amt"] else REACTAMT or 4
+            elif k == "n":
+                pctl("next"); last_poll = 0
+            elif k == "p":
+                pctl("previous"); last_poll = 0
+    finally:
+        if spec:
+            spec.stop()
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        out.write(b"\x1b[0m\x1b[?25h\x1b[?1049l")
+        out.flush()
+
+
+def clock(s):
+    s = max(0, int(s))
+    return "%d:%02d" % (s // 60, s % 60)
+
+
+def wait_key(fd, timeout):
+    if not select.select([fd], [], [], timeout)[0]:
+        return None
+    ch = os.read(fd, 1).decode("utf-8", "replace")
+    if ch == "\x1b":
+        if select.select([fd], [], [], 0.02)[0]:
+            rest = os.read(fd, 2).decode("utf-8", "replace")
+            return {"[C": "RIGHT", "[D": "LEFT", "[A": "UP", "[B": "DOWN"}.get(rest)
+        return "ESC"
+    return ch
+
+
+def lyric_view(lyrics, t, cols, body_rows, big, np, levels=None, state=None):
+    """Current line big with a karaoke wipe, neighbours dimmed around it."""
+    cur = -1
+    for i, row in enumerate(lyrics):
+        if row[0] <= t:
+            cur = i
+        else:
+            break
+
+    out = []
+    if cur < 0:
+        # Countdown into the first line, so the intro isn't a dead screen.
+        nxt = lyrics[0][0] if lyrics else 0
+        if levels is not None and len(levels):
+            out.append("  " + rgb(FG) + wave_row(levels, cols - 4, np) + "\x1b[0m\x1b[K\n")
+        out.append("  \x1b[2m♪ %s\x1b[0m\x1b[K\n"
+                   % ("%.0fs" % max(0, nxt - t) if nxt - t > 1 else "…"))
+        return out
+
+    # Line change kicks off a short slide-and-brighten.
+    if state is not None:
+        if state.get("line") != cur:
+            state["line"] = cur
+            state["since"] = time.monotonic()
+        age = time.monotonic() - state.get("since", 0)
+        trans = state.get("trans", 0.25)
+        p = 1.0 if trans <= 0 else max(0.0, min(1.0, age / trans))
+    else:
+        p = 1.0
+
+    start, text, words = lyrics[cur]
+    end = lyrics[cur + 1][0] if cur + 1 < len(lyrics) else start + 4.0
+
+    # Word timings give a true per-syllable wipe; otherwise sweep the line
+    # linearly across its duration.
+    if words and text:
+        sung = 0
+        for w_start, w_text in words:
+            if w_start is None or w_start <= t:
+                sung += len(w_text)
+            else:
+                break
+        frac = sung / max(1, len(text))
+    else:
+        frac = (t - start) / max(0.35, end - start)
+    frac = max(0.0, min(1.0, frac))
+
+    for i in range(max(0, cur - CONTEXT), cur):
+        out.append("  \x1b[2m%s\x1b[0m\x1b[K\n" % lyrics[i][1][:cols - 4])
+    out.append("\x1b[K\n")
+
+    if big:
+        bmp = big.bitmap(text)
+        if levels is not None and state and state.get("amt", 0) > 0:
+            bmp = warp(bmp, levels, state["amt"], np)
+        lines = draw_big(bmp, cols - 2, frac, np, fade=0.35 + 0.65 * p)
+        # Slide in: hold back the top rows until the transition completes.
+        hide = int(round((1.0 - p) * min(3, len(lines))))
+        for _ in range(hide):
+            out.append("\x1b[K\n")
+        for l in lines[hide:]:
+            out.append(" " + l + "\x1b[K\n")
+    else:
+        cut = int(len(text) * frac)
+        out.append("  %s%s\x1b[0m\x1b[2m%s\x1b[0m\x1b[K\n"
+                   % (rgb(shade(FG, 0.35 + 0.65 * p)), text[:cut], text[cut:]))
+
+    if levels is not None and len(levels):
+        out.append("  " + rgb(shade(FG, 0.55)) +
+                   wave_row(levels, cols - 4, np) + "\x1b[0m\x1b[K\n")
+    else:
+        out.append("\x1b[K\n")
+    for i in range(cur + 1, min(len(lyrics), cur + 1 + CONTEXT)):
+        out.append("  \x1b[2m%s\x1b[0m\x1b[K\n" % lyrics[i][1][:cols - 4])
+    return out
+
+
+# A preview must not touch playerctl, cava or the terminal — dispatch before main.
+if "--preview" in sys.argv:
+    sys.exit(preview_mode())
+
+main()
