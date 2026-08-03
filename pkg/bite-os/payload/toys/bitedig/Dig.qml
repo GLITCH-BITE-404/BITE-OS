@@ -358,8 +358,10 @@ ApplicationWindow {
                 readonly property real laneTop: 12
                 readonly property real laneBot: Math.max(laneTop,
                                                 space.height - d - labelRoom)
-                property real lane: laneTop + (laneBot - laneTop) *
-                                    (index / Math.max(1, win.planets.length - 1))
+                // Evenly-spaced lanes read as a list, not a sky. A fixed jitter
+                // per planet breaks the ruling without making it jump about.
+                readonly property var laneMix: [0.06, 0.42, 0.20, 0.72, 0.33, 0.88, 0.56]
+                property real lane: laneTop + (laneBot - laneTop) * laneMix[index % 7]
 
                 states: [
                     State {
@@ -387,12 +389,23 @@ ApplicationWindow {
                     }
                 }
 
-                SequentialAnimation on x {
-                    running: win.phase === "idle"; loops: Animation.Infinite
-                    NumberAnimation {
-                        from: -pl.d * 1.4; to: space.width + pl.d * 1.4
-                        duration: 34000 + index * 6000
-                    }
+                // Drift is driven off a 0..1 clock with a RANDOM per-planet offset.
+                // Animating x directly meant every planet started at the same
+                // edge at the same moment, so they queued up in one column down
+                // the left and their labels landed on each other.
+                property real driftT: 0
+                readonly property real phaseOff: Math.random()
+                readonly property real driftDur: 26000 + Math.random() * 34000
+                NumberAnimation on driftT {
+                    running: win.phase === "idle"
+                    loops: Animation.Infinite
+                    from: 0; to: 1; duration: pl.driftDur
+                }
+                Binding {
+                    target: pl; property: "x"
+                    when: win.phase === "idle"
+                    value: ((pl.driftT + pl.phaseOff) % 1.0)
+                           * (space.width + pl.d * 2.2) - pl.d * 1.1
                 }
                 Binding { target: pl; property: "y"; value: pl.lane; when: win.phase === "idle" }
 
@@ -400,7 +413,7 @@ ApplicationWindow {
                     id: globe
                     anchors.centerIn: parent
                     width: pl.d; height: pl.d
-                    opacity: pl.ready ? 1 : 0.26
+                    opacity: pl.ready ? 1 : 0.42
                     Behavior on opacity { NumberAnimation { duration: 300 } }
 
                     Rectangle {                          // keyboard focus ring
@@ -424,8 +437,10 @@ ApplicationWindow {
                     Rectangle {                          // atmosphere
                         anchors.centerIn: parent
                         width: parent.width * 1.42; height: width; radius: width / 2
-                        color: pl.p.hue
-                        opacity: pl.isSel ? 0.16 : (hov.containsMouse ? 0.12 : 0.06)
+                        color: pl.ready ? pl.p.hue : "#4a565e"
+                        opacity: pl.ready ? (pl.isSel ? 0.16
+                                            : (hov.containsMouse ? 0.12 : 0.06))
+                                          : 0.03
                         Behavior on opacity { NumberAnimation { duration: 260 } }
                     }
 
@@ -434,39 +449,52 @@ ApplicationWindow {
                         anchors.fill: parent
                         radius: width / 2
                         clip: true
-                        color: "#04070b"
-                        border.color: pl.p.hue
+                        color: pl.ready ? Qt.darker(pl.p.hue, 6.0) : "#0b1116"
+                        border.color: pl.ready ? pl.p.hue : "#46545c"
                         border.width: pl.isSel ? 2 : 1
 
-                        Item {                           // rotating bands = spin
+                        // Bands used to be hard stripes at 0.26 opacity, which
+                        // read as a barcode rather than a surface. Soft, low and
+                        // few, drifting rather than spinning hard.
+                        Item {
                             anchors.fill: parent
                             NumberAnimation on rotation {
                                 running: true; loops: Animation.Infinite
                                 from: 0; to: 360
-                                duration: 14000 + index * 3600
+                                duration: 22000 + index * 5200
                             }
                             Repeater {
-                                model: 9
+                                model: 4
                                 delegate: Rectangle {
-                                    width: sphere.width * 1.7
-                                    height: sphere.height / 11
-                                    x: -sphere.width * 0.35
-                                    y: index * (sphere.height / 9)
-                                    color: pl.p.hue
-                                    opacity: index % 3 === 0 ? 0.26
-                                           : (index % 2 === 0 ? 0.14 : 0.07)
+                                    width: sphere.width * 1.8
+                                    height: sphere.height * (0.07 + (index % 2) * 0.05)
+                                    x: -sphere.width * 0.4
+                                    y: sphere.height * (0.20 + index * 0.19)
+                                    color: pl.ready ? pl.p.hue : "#6e7c84"
+                                    opacity: index % 2 === 0 ? 0.13 : 0.07
                                 }
                             }
                         }
 
-                        Rectangle {                      // terminator
+                        // Round it: a soft lit limb top-left, deep shadow lower
+                        // right. The old version put a white wash across the
+                        // whole left edge, which bleached the colour to yellow.
+                        Rectangle {
+                            anchors.fill: parent; radius: width / 2
+                            gradient: Gradient {
+                                orientation: Gradient.Vertical
+                                GradientStop { position: 0.00; color: "#ffffff10" }
+                                GradientStop { position: 0.30; color: "#00000000" }
+                                GradientStop { position: 1.00; color: "#00000070" }
+                            }
+                        }
+                        Rectangle {
                             anchors.fill: parent; radius: width / 2
                             gradient: Gradient {
                                 orientation: Gradient.Horizontal
-                                GradientStop { position: 0.00; color: "#ffffff14" }
-                                GradientStop { position: 0.38; color: "#00000000" }
-                                GradientStop { position: 0.72; color: "#00000066" }
-                                GradientStop { position: 1.00; color: "#000000d8" }
+                                GradientStop { position: 0.00; color: "#00000000" }
+                                GradientStop { position: 0.52; color: "#00000000" }
+                                GradientStop { position: 1.00; color: "#000000b0" }
                             }
                         }
                     }
@@ -477,8 +505,9 @@ ApplicationWindow {
                         width: parent.width * 1.9; height: parent.height * 0.30
                         radius: height / 2
                         color: "transparent"
-                        border.color: pl.p.hue; border.width: 1
-                        opacity: 0.45
+                        border.color: pl.ready ? pl.p.hue : "#46545c"
+                        border.width: 1
+                        opacity: pl.ready ? 0.45 : 0.22
                         rotation: pl.p.tilt
                     }
 
