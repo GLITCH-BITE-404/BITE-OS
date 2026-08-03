@@ -775,10 +775,12 @@ ApplicationWindow {
                         // few, drifting rather than spinning hard.
                         Item {
                             anchors.fill: parent
+                            // 22-48s per turn was invisible. A planet should
+                            // read as turning at a glance, not on inspection.
                             NumberAnimation on rotation {
                                 running: true; loops: Animation.Infinite
                                 from: 0; to: 360
-                                duration: 22000 + index * 5200
+                                duration: 6500 + index * 1400
                             }
                             Repeater {
                                 model: 4
@@ -788,7 +790,7 @@ ApplicationWindow {
                                     x: -sphere.width * 0.4
                                     y: sphere.height * (0.20 + index * 0.19)
                                     color: pl.ready ? pl.p.hue : "#6e7c84"
-                                    opacity: index % 2 === 0 ? 0.13 : 0.07
+                                    opacity: index % 2 === 0 ? 0.26 : 0.15
                                 }
                             }
                         }
@@ -1274,7 +1276,14 @@ ApplicationWindow {
         function abort() { reel.stop(); flood.stop(); win.phase = "detail" }
         Keys.onPressed: function (e) { matrix.abort(); e.accepted = true }
 
-        Rectangle { anchors.fill: parent; color: "#000000" }
+        // Up to the fall, this is the darkness. From then on the shards are,
+        // and behind them there must be nothing — otherwise the pieces drop
+        // away only to uncover more black.
+        Rectangle {
+            anchors.fill: parent
+            color: "#000000"
+            visible: matrix.stage < 2
+        }
 
         // ── the terminal ──
         ListModel { id: feed }
@@ -1312,7 +1321,10 @@ ApplicationWindow {
             anchors { left: parent.left; right: parent.right; top: parent.top
                       margins: 40 }
             spacing: 1
+            z: 5                                  // above the falling pieces
             visible: matrix.stage >= 1
+            opacity: matrix.stage === 2 ? 0 : 1
+            Behavior on opacity { NumberAnimation { duration: 900 } }
             Repeater {
                 model: feed
                 delegate: Row {
@@ -1343,46 +1355,66 @@ ApplicationWindow {
             }
         }
 
-        // ── the tear: the black rips down the middle and pulls apart ──
-        // Torn, not dissolved: each slice keeps a ragged edge and the two halves
-        // slide away from a seam, so it reads as the dark being pulled open
-        // rather than pixels politely fading out.
+        // ── the black falls away in pieces ──────────────────────────────────
+        // The screen stays black under SUCCESS, then chunks of it let go one by
+        // one and drop out of frame, uncovering what is behind. Each piece has
+        // its own moment, its own tumble and its own weight, so it comes apart
+        // like something failing rather than an effect playing.
         Item {
+            id: shards
             anchors.fill: parent
             visible: matrix.stage === 2
+            readonly property int cols: Math.max(6, Math.floor(win.width / 96))
+            readonly property int rws:  Math.max(4, Math.floor(win.height / 96))
 
-            Repeater {                                  // left half, in slices
-                model: 26
+            Repeater {
+                model: shards.cols * shards.rws
                 delegate: Rectangle {
-                    readonly property real jag: (Math.random() - 0.5) * 46
-                    width: win.width / 2 + jag
-                    height: win.height / 26 + 2
-                    y: index * (win.height / 26)
-                    x: -matrix.dissolve * (win.width / 2 + 80)
+                    id: shard
+                    readonly property int cxi: index % shards.cols
+                    readonly property int cyi: Math.floor(index / shards.cols)
+                    readonly property real w0: win.width / shards.cols
+                    readonly property real h0: win.height / shards.rws
+                    // pieces near the bottom go first, with scatter on top
+                    readonly property int wait: Math.round(
+                        (1 - cyi / shards.rws) * 520 + Math.random() * 620)
+                    readonly property real tumble: (Math.random() - 0.5) * 120
+
+                    x: cxi * w0
+                    width: w0 + 1
+                    height: h0 + 1
                     color: "#000000"
-                    Rectangle {                          // hot edge along the tear
-                        anchors { right: parent.right; top: parent.top; bottom: parent.bottom }
-                        width: 2
-                        color: "#00e676"
-                        opacity: 0.7 * (1 - matrix.dissolve)
+                    property bool dropped: false
+
+                    y: cyi * h0
+                    Behavior on y {
+                        NumberAnimation { duration: 1150; easing.type: Easing.InQuad }
                     }
-                }
-            }
-            Repeater {                                  // right half
-                model: 26
-                delegate: Rectangle {
-                    readonly property real jag: (Math.random() - 0.5) * 46
-                    width: win.width / 2 + jag
-                    height: win.height / 26 + 2
-                    y: index * (win.height / 26)
-                    x: win.width / 2 - jag / 2
-                       + matrix.dissolve * (win.width / 2 + 80)
-                    color: "#000000"
+                    Behavior on rotation {
+                        NumberAnimation { duration: 1150; easing.type: Easing.InQuad }
+                    }
+                    Behavior on opacity {
+                        NumberAnimation { duration: 900 }
+                    }
+
+                    Timer {
+                        running: matrix.stage === 2 && !shard.dropped
+                        interval: shard.wait
+                        onTriggered: {
+                            shard.dropped = true
+                            shard.y = win.height + shard.h0 * 2
+                            shard.rotation = shard.tumble
+                            shard.opacity = 0
+                        }
+                    }
+
+                    // the edge glows as the piece breaks loose
                     Rectangle {
-                        anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
-                        width: 2
+                        anchors { left: parent.left; right: parent.right; top: parent.top }
+                        height: 1
                         color: "#00e676"
-                        opacity: 0.7 * (1 - matrix.dissolve)
+                        opacity: shard.dropped ? 0 : 0.22
+                        Behavior on opacity { NumberAnimation { duration: 400 } }
                     }
                 }
             }
@@ -1415,12 +1447,12 @@ ApplicationWindow {
             }
             PauseAnimation { duration: 900 }
             ScriptAction { script: matrix.stage = 2 }
-            NumberAnimation { target: matrix; property: "dissolve"
-                              from: 0; to: 1.08; duration: 1250
-                              easing.type: Easing.InOutCubic }
+            // The page is asked for as the first pieces let go, so it is already
+            // arriving by the time the last of the black is gone.
+            PauseAnimation { duration: 500 }
             ScriptAction { script: win.send({ action: "open", target: matrix.target,
                                               tor: matrix.viaTor }) }
-            PauseAnimation { duration: 260 }
+            PauseAnimation { duration: 1500 }
             ScriptAction { script: { matrix.stage = 0; win.phase = "detail" } }
         }
     }
