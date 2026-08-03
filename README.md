@@ -183,6 +183,13 @@ The system maps directly to these custom core inputs for elite navigation:
 
 ## ◈ Download
 
+> ### ⬛ Latest build — `202608`
+> This is the **current** ISO and supersedes every earlier upload. It's the same
+> BITE-OS plus **`bite-toys`**, the toy hub, with `bitecam`, `bitemask`,
+> `bitebeat` and `bitemuseum` preinstalled and ready as commands on first login.
+> If you're running an older build, you don't need to reinstall — `SUPER+U`
+> pulls it in.
+
 > The ISO (~5.4 GiB) is hosted off-GitHub due to file-size limits.
 
 **➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_202608/bite-os-1.0-x86_64.iso)**

@@ -213,7 +213,7 @@ def read_exact(pipe, n, timeout=4.0):
     while len(buf) < n:
         remain = deadline - time.time()
         if remain <= 0:
-            return None
+            return "stalled"          # still alive, just quiet — NOT dead
         if not select.select([fd], [], [], remain)[0]:
             continue
         try:
@@ -226,6 +226,27 @@ def read_exact(pipe, n, timeout=4.0):
     return bytes(buf)
 
 
+def drain_stderr(proc, limit=8192):
+    """Whatever ffmpeg has said so far, without blocking.
+
+    proc.stderr.read() blocks until EOF. Calling it while ffmpeg is still
+    running therefore hangs forever — and a camera that has merely gone quiet
+    leaves ffmpeg very much alive. That is a freeze with no way out but Ctrl-C.
+    """
+    out = b""
+    try:
+        fd = proc.stderr.fileno()
+        os.set_blocking(fd, False)
+        while len(out) < limit:
+            chunk = os.read(fd, 4096)
+            if not chunk:
+                break
+            out += chunk
+    except Exception:
+        pass
+    return out.decode("utf-8", "replace").strip()
+
+
 def read_latest(pipe, n, timeout=4.0):
     """The newest frame, throwing away any that queued up behind it.
 
@@ -236,13 +257,13 @@ def read_latest(pipe, n, timeout=4.0):
     Only whole buffered frames are skipped, so this never waits for one.
     """
     frame = read_exact(pipe, n, timeout)
-    if frame is None:
-        return None
+    if not isinstance(frame, bytes):
+        return frame                  # None (closed) or "stalled", unchanged
     fd = pipe.fileno()
     dropped = 0
     while _avail(fd) >= n and dropped < 30:
         nxt = read_exact(pipe, n, 0.5)
-        if nxt is None:
+        if not isinstance(nxt, bytes):
             break
         frame = nxt
         dropped += 1
@@ -794,6 +815,7 @@ resized = False
 rec = None
 rec_msg = ""
 vcam = None
+stalls = 0        # consecutive capture stalls; a good frame resets it
 HELP = True   # shown on first run so the keys are never a secret
 
 
@@ -895,7 +917,7 @@ def render(frame, cols, rows, ramp, color):
 
 
 def main():
-    global saved_tty, proc, resized, COLOR, CHARSET, MIRROR, INVERT, STATS
+    global saved_tty, proc, resized, COLOR, CHARSET, MIRROR, INVERT, STATS, stalls
     global rec, rec_msg, vcam, HELP
 
     if not sys.stdout.isatty():
@@ -961,12 +983,36 @@ def main():
                     rec_msg = "window resized — virtual camera stopped: %s" % e
 
         frame = read_latest(proc.stdout, frame_bytes)
+
+        if frame == "stalled":
+            # Quiet, not dead: a USB hiccup, the laptop waking, or another
+            # program grabbing the device for a moment. Restart the capture
+            # rather than ending the session over it.
+            stalls += 1
+            err = drain_stderr(proc)
+            try:
+                proc.terminate(); proc.wait(timeout=1)
+            except Exception:
+                try: proc.kill()
+                except Exception: pass
+            if stalls > 5:
+                cleanup()
+                if "Device or resource busy" in err:
+                    die("the camera is already in use by another program")
+                die("the camera keeps stalling", err.splitlines()[-1] if err else "")
+            proc = start_ffmpeg(cols, rows)
+            rec_msg = "camera stalled — restarted (%d/5)" % stalls
+            invalidate_rows()
+            continue
+
         if frame is None:
-            err = proc.stderr.read().decode("utf-8", "replace").strip()
+            err = drain_stderr(proc)
             cleanup()
             if "Device or resource busy" in err:
                 die("the camera is already in use by another program")
             die("the camera stopped sending frames", err.splitlines()[-1] if err else "")
+
+        stalls = 0                    # a good frame clears the streak
 
         buf, idx, rgb = render(frame, cols, rows, ramp, COLOR)
         out.write(buf)
