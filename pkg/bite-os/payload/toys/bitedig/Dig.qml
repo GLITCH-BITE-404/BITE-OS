@@ -895,7 +895,7 @@ ApplicationWindow {
         property var allHits: p ? win.hitsFor(p) : []
         readonly property int shown: 5
         readonly property int cw: 430
-        readonly property int ch: 250
+        readonly property int ch: 300
 
         width: cw; height: ch
         x: Math.max(16, Math.min(win.width - cw - 16, space.x + space.selCX - cw / 2))
@@ -971,14 +971,23 @@ ApplicationWindow {
             }
 
             // ── a few results, fixed-height rows so nothing can overlap ──
+            // Anchored top AND bottom: the row list gets exactly the space that
+            // is left between the rule and the footer, and clips. Sizing it
+            // from its contents instead is what let it grow over the button.
+            Item {
+                id: rowArea
+                anchors { left: parent.left; right: parent.right
+                          top: rule.bottom; topMargin: 7
+                          bottom: moreTxt.top; bottomMargin: 4 }
+                clip: true
             Column {
                 id: rows
-                anchors { left: parent.left; right: parent.right; top: rule.bottom; topMargin: 7 }
+                anchors { left: parent.left; right: parent.right; top: parent.top }
                 spacing: 2
                 Repeater {
                     model: Math.min(detail.shown, detail.allHits.length)
                     delegate: Rectangle {
-                        width: rows.width
+                        width: rowArea.width
                         height: 24                       // fixed — never grows
                         radius: 3
                         color: win.resIdx === index ? "#0d1c24" : "transparent"
@@ -1005,15 +1014,21 @@ ApplicationWindow {
                     }
                 }
             }
+            }
+
             Text {
-                anchors { left: parent.left; top: rows.bottom; topMargin: 4 }
-                visible: detail.allHits.length > detail.shown
-                text: "+ " + (detail.allHits.length - detail.shown) + " more"
+                id: moreTxt
+                anchors { left: parent.left; bottom: enterBtn.top; bottomMargin: 6 }
+                height: 12
+                text: detail.allHits.length > detail.shown
+                      ? "+ " + (detail.allHits.length - detail.shown) + " more"
+                      : ""
                 color: win.inkFar
                 font.family: "monospace"; font.pixelSize: 9
             }
 
             Rectangle {
+                id: enterBtn
                 anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
                 height: 30; radius: 15
                 color: "transparent"
