@@ -75,7 +75,7 @@ ApplicationWindow {
     ]
 
     // Each planet keeps its own track and its own year, so nothing ever lines up.
-    readonly property var orbitR:   [0.30, 0.46, 0.62, 0.78, 0.92, 1.06, 1.20]
+    readonly property var orbitR:   [0.34, 0.52, 0.70, 0.86, 1.02, 1.16, 1.30]
     readonly property var orbitDur: [38000, 52000, 67000, 84000, 99000, 118000, 136000]
     readonly property var orbitPh:  [0.00, 0.37, 0.62, 0.15, 0.83, 0.48, 0.71]
 
@@ -376,7 +376,14 @@ ApplicationWindow {
 
         property real cx: width / 2
         property real cy: height / 2 - 10
-        property real unit: Math.min(width * 0.30, height * 0.40)
+        // The system was cramped into a third of the screen, so every planet
+        // piled onto the sun and the labels landed on each other.
+        property real unit: Math.min(width * 0.34, height * 0.52)
+        // How squashed the ellipses are. Derived, not fixed: on a short screen
+        // a 0.52 flattening pushed the outermost planet's label past the
+        // bottom edge. This keeps the whole system inside whatever room it has.
+        property real flat: Math.max(0.26, Math.min(0.52,
+                            (height / 2 + 10 - 130) / Math.max(1, unit * 1.30)))
 
         // orbits freeze while you are reading a card, so the popup does not
         // wander off the planet it belongs to
@@ -387,6 +394,8 @@ ApplicationWindow {
         // ── the sun ──
         Item {
             id: sun
+            opacity: win.phase === "idle" ? 0 : 1
+            Behavior on opacity { NumberAnimation { duration: 700 } }
             x: space.cx - width / 2
             y: space.cy - height / 2
             width: 92; height: 92
@@ -445,9 +454,12 @@ ApplicationWindow {
                 property real r: 78 + index * 17
                 property real t: 0
                 NumberAnimation on t {
-                    running: !space.frozen; loops: Animation.Infinite
+                    running: !space.frozen && win.phase !== "idle"
+                    loops: Animation.Infinite
                     from: 0; to: 1; duration: 7000 + index * 2600
                 }
+                opacity: win.phase === "idle" ? 0 : 1
+                Behavior on opacity { NumberAnimation { duration: 700 } }
                 property real a: (t + index * 0.2) * 2 * Math.PI
                 x: space.cx + Math.cos(a) * r - 3
                 y: space.cy + Math.sin(a) * r * 0.42 - 3
@@ -464,14 +476,15 @@ ApplicationWindow {
             model: win.planets
             delegate: Rectangle {
                 property real rr: space.unit * win.orbitR[index]
-                x: space.cx - rr; y: space.cy - rr * 0.42
-                width: rr * 2; height: rr * 0.84
+                x: space.cx - rr; y: space.cy - rr * space.flat
+                width: rr * 2; height: rr * space.flat * 2
                 radius: width / 2
                 color: "transparent"
                 border.width: 1
                 border.color: win.planetReady(modelData) ? modelData.hue : "#46545c"
-                opacity: win.selected === index ? 0.30
-                       : (win.planetReady(modelData) ? 0.11 : 0.05)
+                opacity: win.phase === "idle" ? 0
+                       : (win.selected === index ? 0.30
+                       : (win.planetReady(modelData) ? 0.13 : 0.06))
                 Behavior on opacity { NumberAnimation { duration: 400 } }
                 z: 1
             }
@@ -497,8 +510,36 @@ ApplicationWindow {
                     from: 0; to: 1; duration: win.orbitDur[index]
                 }
                 property real ang: (t + win.orbitPh[index]) * 2 * Math.PI
-                x: space.cx + Math.cos(ang) * rr - d / 2
-                y: space.cy + Math.sin(ang) * rr * 0.42 - d / 2
+                property real orbX: space.cx + Math.cos(ang) * rr - d / 2
+                property real orbY: space.cy + Math.sin(ang) * rr * space.flat - d / 2
+
+                // Idle: they fly past, each on its own lane at its own speed.
+                // Search: they fold into the system. That transition is the
+                // best moment in the whole thing, so it gets its own easing.
+                property real driftT: 0
+                readonly property real phaseOff: Math.random()
+                NumberAnimation on driftT {
+                    running: win.phase === "idle"
+                    loops: Animation.Infinite
+                    from: 0; to: 1; duration: 26000 + Math.random() * 32000
+                }
+                readonly property var laneMix: [0.10, 0.46, 0.24, 0.70, 0.34, 0.86, 0.58]
+                property real driftX: ((driftT + phaseOff) % 1.0)
+                                      * (space.width + d * 2.2) - d * 1.1
+                property real driftY: 16 + (space.height - d - 92) * laneMix[index % 7]
+
+                x: win.phase === "idle" ? driftX : orbX
+                y: win.phase === "idle" ? driftY : orbY
+                Behavior on x {
+                    enabled: win.phase !== "idle"
+                    NumberAnimation { duration: 1150; easing.type: Easing.OutBack
+                                      easing.overshoot: 0.5 }
+                }
+                Behavior on y {
+                    enabled: win.phase !== "idle"
+                    NumberAnimation { duration: 1150; easing.type: Easing.OutBack
+                                      easing.overshoot: 0.5 }
+                }
 
                 // the card needs to know where its planet actually is
                 Binding { target: space; property: "selCX"
@@ -639,7 +680,17 @@ ApplicationWindow {
                     }
                 }
 
+                Rectangle {                         // keeps a label readable when
+                    anchors.fill: labelCol             // it drifts over a neighbour
+                    anchors.margins: -6
+                    radius: 5
+                    color: "#03060cd0"
+                    opacity: win.phase === "idle" ? 0 : 0.85
+                    visible: win.phase !== "entering" || pl.isSel
+                    z: -1
+                }
                 Column {
+                    id: labelCol
                     anchors { top: globe.bottom; topMargin: win.s2
                               horizontalCenter: parent.horizontalCenter }
                     spacing: 3
