@@ -150,6 +150,12 @@ layout_dims() {
     esac
 }
 
+# Is there room for a logo BESIDE the fixed-width info box?
+logo_fits() {
+    local cols; cols=$(tput cols 2>/dev/null || echo 80)
+    (( cols - 5 - 58 >= 8 ))
+}
+
 # ---- Compute resize-aware sizes from current terminal ---------------------
 # Echoes: LOGO_W LOGO_H COL BAR_LEN
 # The template's default dims encode the desired aspect ratio; we scale
@@ -177,7 +183,10 @@ compute_sizes() {
         local c=$(( cols - 1 ))
         (( c > box + 1 )) && c=$(( box + 1 ))
         (( c < 20 )) && c=20
-        printf '0 0 %d %d' "$c" "$(( c - 2 ))"
+        # 1, not 0: fastfetch refuses a zero logo width outright and prints
+        # a JsonConfig error instead of rendering anything. The logo is removed
+        # with --logo none on the command line, where it belongs.
+        printf '1 1 %d %d' "$c" "$(( c - 2 ))"
         return
     fi
 
@@ -288,11 +297,9 @@ main() {
 
     build_config "$icon" "$template" > "$cfg"
 
-    # compute_sizes reports a zero-width logo when the terminal is too narrow to
-    # carry one next to the box. Keep the styling, drop the image.
-    local lw_check
-    lw_check="$(compute_sizes $(layout_dims "$template") | cut -d" " -f1)"
-    if [[ $lw_check == 0 ]]; then
+    # Too narrow to carry a logo next to the box? Keep the styling, drop the
+    # image — a box that fits beats a picture that shreds it.
+    if ! logo_fits; then
         exec fastfetch --config "$cfg" --logo none
     fi
     exec fastfetch --config "$cfg"

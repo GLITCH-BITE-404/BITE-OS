@@ -29,12 +29,11 @@ Item {
         anchors.fill: parent
         anchors.topMargin: 34
         backgroundColor: "#04080d"
-        profile: WebEngineProfile {
-            // Nothing about a search toy needs to persist a browsing history.
-            offTheRecord: true
-            httpUserAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
-                           "(KHTML, like Gecko) Chrome/120 Safari/537.36"
-        }
+        // No `profile:` block on purpose. Creating a WebEngineProfile inline is
+        // deprecated from Qt 6.9 and prints a warning on every launch; the
+        // default QML profile is already off-the-record, which is the only
+        // property that actually mattered here — a search toy has no business
+        // keeping a browsing history.
         settings.javascriptEnabled: true
         settings.localStorageEnabled: false
         settings.screenCaptureEnabled: false

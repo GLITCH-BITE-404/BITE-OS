@@ -55,4 +55,12 @@ trap 'kill "$ENGINE" 2>/dev/null; wait "$ENGINE" 2>/dev/null' EXIT INT TERM
 
 export QML_XHR_ALLOW_FILE_READ=1 QML_XHR_ALLOW_FILE_WRITE=1
 cd "$RUNDIR" || die "cannot enter $RUNDIR"
-qml6 Dig.qml
+
+# Mesa probes for GBM backends this machine does not have and says so on every
+# launch. It is not an error and nothing acts on it, but it lands in the hub's
+# output where it reads like one. Filtered by exact text so a real Mesa problem
+# still gets through.
+qml6 Dig.qml 2>&1 | grep -v --line-buffered \
+    -e "MESA-LOADER: failed to open" \
+    -e "^failed to open .*_gbm.so" \
+    || true
