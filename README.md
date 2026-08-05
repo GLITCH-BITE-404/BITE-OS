@@ -9,9 +9,9 @@
 **A glitch-themed, performance-obsessed Linux distribution.**
 Built on the CachyOS base — riced to the teeth, engineered to never get in your way.
 
-`v1.0` · codename **dedsec** · build `202608` · by **GLITCH-BITE-404**
+`v1.0` · codename **dedsec** · build `20260805` · by **GLITCH-BITE-404**
 
-[![Latest build](https://img.shields.io/badge/latest%20build-202608-00ff78?style=for-the-badge)](#-download)
+[![Latest build](https://img.shields.io/badge/latest%20build-20260805-00ff78?style=for-the-badge)](#-download)
 [![TikTok](https://img.shields.io/badge/TikTok-@glitch__bite404-ff0050?style=for-the-badge&logo=tiktok)](https://www.tiktok.com/@glitch_bite404)
 ![Base](https://img.shields.io/badge/base-CachyOS%20%2F%20Arch-1793d1?style=for-the-badge&logo=archlinux)
 ![Shell](https://img.shields.io/badge/desktop-Hyprland%20%2B%20Quickshell-00ff78?style=for-the-badge)
@@ -23,7 +23,7 @@ Built on the CachyOS base — riced to the teeth, engineered to never get in you
 
 ---
 
-> ## ⬛ Latest version — build `202608`
+> ## ⬛ Latest version — build `20260805`
 >
 > **This is the newest ISO and replaces every earlier upload.** Same BITE-OS,
 > now with **[`bite-toys`](#-toys)** — a hub for the fun half of the system,
@@ -201,20 +201,21 @@ The system maps directly to these custom core inputs for elite navigation:
 
 ## ◈ Download
 
-> ### ⬛ Latest build — `202608`
+> ### ⬛ Latest build — `20260805`
 > This is the **current** ISO and supersedes every earlier upload. It's the same
 > BITE-OS plus **`bite-toys`**, the toy hub, with `bitecam`, `bitemask`,
 > `bitebeat` and `bitemuseum` preinstalled and ready as commands on first login.
-> If you're running an older build, you don't need to reinstall — `SUPER+U`
-> pulls it in.
+> This build also drops the Hyprland `.conf` deprecation banner that sat across
+> the top of the desktop. If you're running an older build, you don't need to
+> reinstall — `SUPER+U` pulls it in.
 
 > The ISO (~5.4 GiB) is hosted off-GitHub due to file-size limits.
 
-**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_202608/bite-os-1.0-x86_64.iso)**
+**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_20260805/bite-os-1.0-x86_64.iso)**
 
-*(mirror / details page: [archive.org item](https://archive.org/details/bite-os-1.0-x86_64_202608))*
+*(mirror / details page: [archive.org item](https://archive.org/details/bite-os-1.0-x86_64_20260805))*
 
-`SHA256`: `5d0de0a78aebc393de5ac62a4ca0a132faf04657a6a3574add1e2c6be5e7e517`
+`SHA256`: `f51175b6584e3533370477a926ffa5407642cdd177dbbdb7f3a36d7f81e66755`
 
 Verify the download before flashing — anything that doesn't match this hash is not the ISO I built:
 
