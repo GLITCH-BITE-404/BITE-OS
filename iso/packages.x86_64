@@ -36,7 +36,6 @@ cava
 chafa
 chwd
 cliphist
-cloudflared
 cmatrix
 cpupower
 cryptsetup
@@ -191,7 +190,6 @@ python-pipx
 python-pywalfox
 python-requests
 python-screeninfo
-qrencode
 qt5-multimedia
 qt5-wayland
 qt6-virtualkeyboard
