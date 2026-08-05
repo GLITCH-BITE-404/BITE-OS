@@ -211,9 +211,9 @@ The system maps directly to these custom core inputs for elite navigation:
 
 > The ISO (~5.4 GiB) is hosted off-GitHub due to file-size limits.
 
-**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_20260805/bite-os-1.0-x86_64.iso)**
+**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_20260805_1014/bite-os-1.0-x86_64.iso)**
 
-*(mirror / details page: [archive.org item](https://archive.org/details/bite-os-1.0-x86_64_20260805))*
+*(mirror / details page: [archive.org item](https://archive.org/details/bite-os-1.0-x86_64_20260805_1014))*
 
 `SHA256`: `f51175b6584e3533370477a926ffa5407642cdd177dbbdb7f3a36d7f81e66755`
 
