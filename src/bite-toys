@@ -1374,10 +1374,12 @@ ui_tab_customize() {
 #
 #   bitedig  draws itself in a real QML window. Capturing its stdout paints an
 #            empty pane and leaves a stray window behind, so it gets no preview.
-#   bitecam  and bitemask open the camera and pull frames — seconds of work and
-#   bitemask a device handle, spent because a cursor landed on a row. For those
-#            the hub DRAWS the preview itself: a static impression of the HUD
-#            they put on screen, clearly labelled as a mockup so it can never be
+#   bitecam  already draw a synthetic scene for --preview and never open the
+#   bitemask camera — that is not the problem. The problem is that their sample
+#            is real pixel video, and squeezing real video into a pane this size
+#            turns a 10px dossier into unreadable coloured mush. So the hub
+#            DRAWS these two instead: the same HUD, in characters, at a size
+#            that can actually be read. Labelled as a mockup so it is never
 #            mistaken for a live frame.
 #
 # This lives in the hub, not in the toys, so the toys stay exactly as shipped.
@@ -1404,14 +1406,15 @@ pv_reason() {
     printf '%s' "$why"
 }
 
-# Said on every drawn preview. The point of a mockup is lost if someone thinks
-# the camera is on, so it says so plainly rather than in a corner.
+# Said on every drawn preview. A mockup nobody knows is a mockup is just a lie,
+# so it says so plainly rather than in small print in a corner.
 pv_sim_note() {
     printf '%s\n' \
-      "▲ mockup — the hub drew this. It does NOT start $1." \
-      "  Previewing for real would open the camera and grab frames: seconds of" \
-      "  work and a device handle, just to fill this pane. So this is a drawn" \
-      "  impression of the HUD $1 puts on screen, not a live picture." \
+      "▲ mockup — the hub drew this. It is not $1 running." \
+      "  $1 previews itself with real video, and real video shrunk into a pane" \
+      "  this size turns its 10px HUD text into unreadable mush. This is the" \
+      "  same HUD drawn in characters instead, at a size you can actually read." \
+      "  Nothing was started and no camera was opened either way." \
       "  Press Enter on tab 1 to run the real thing."
 }
 
