@@ -108,7 +108,9 @@ SHELL_CSS = r"""
 html,body{height:100%;background:#000;overflow:hidden}
 body{font:15px/1.5 "JetBrains Mono","DejaVu Sans Mono",ui-monospace,monospace;
      color:#c8f7d0;cursor:__CURSOR__;-webkit-font-smoothing:none}
-body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:9000;
+/* Opt-in, not global. The scenes that imitate a real operating system must not
+   have a CRT filter over them — a scanlined BSOD is a poster of a BSOD. */
+body.crt::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:9000;
   background:repeating-linear-gradient(180deg,rgba(0,0,0,0) 0 2px,rgba(0,0,0,.28) 2px 4px);
   mix-blend-mode:multiply}
 #stage{position:fixed;inset:0;overflow:hidden;padding:5vh 6vw}
@@ -145,8 +147,12 @@ b,strong{color:#fff}
 #bail{margin-top:26px;background:#0e2416;color:#3dff6e;border:1px solid #3dff6e;
   padding:12px 22px;font:inherit;cursor:pointer;letter-spacing:1px}
 #bail:hover{background:#3dff6e;color:#000}
+/* Neutral by default so it disappears into an OS screen it is sitting on top
+   of; the green only belongs on the scenes that are meant to look like a toy.
+   It stays present either way — ESC is the way out and must be findable. */
 .hint{position:fixed;bottom:10px;right:14px;z-index:9100;font-size:11px;
-  color:#2f5f3f;display:none}
+  color:rgba(255,255,255,.22);display:none}
+body.crt .hint{color:#2f5f3f}
 """
 
 SHARED_JS = r"""
@@ -539,77 +545,216 @@ async function runScene(){
 
 
 def s_bsod():
-    return {'css': 'body{background:#0a55c4;color:#fff}body::after{opacity:.25}'
-                   '#stage{padding:9vh 10vw}.sad{font-size:clamp(60px,12vw,150px);line-height:1}',
-            'js': r"""
+    """Windows 10/11 stop screen, laid out the way the real one is.
+
+    The details are the whole point: Segoe UI rather than a monospace font, the
+    thin sad face at the top left of an 11% margin, the percentage on its own
+    line, and — the part everyone remembers — the QR block beside the support
+    text. Get those right and nobody reads it as a web page.
+    """
+    return {'real': True, 'css': """
+body{background:#0078D7;color:#fff;cursor:none;
+  font:400 16px/1.42 "Segoe UI Variable Text","Segoe UI",Selawik,"Noto Sans",
+       system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+#stage{padding:0;display:flex;align-items:center;overflow:hidden}
+.wrap{max-width:none;margin:0;width:100%;padding:0 8vw 0 11vw}
+.sad{font-size:clamp(64px,9.5vw,132px);line-height:1;font-weight:275;margin-bottom:22px}
+.msg{font-size:clamp(16px,1.75vw,23px);line-height:1.4;max-width:30em;margin-bottom:24px}
+.pct{font-size:clamp(16px,1.75vw,23px);margin-bottom:30px}
+.qrrow{display:flex;gap:20px;align-items:flex-start;max-width:40em}
+.qrbox{background:#fff;padding:6px;flex:none;line-height:0}
+.sup{font-size:13px;line-height:1.5}
+.stop{margin-top:22px;font-size:13px;line-height:1.55}
+""", 'js': r"""
+/* A drawn stand-in for the stop-screen QR: three finder squares and a stable
+   scatter. It does not encode anything — it is not meant to be scanned, it is
+   meant to be recognised from across a room. */
+function qrSVG(n,px){
+  n=n||25; px=px||5;
+  const m=Array.from({length:n},()=>new Array(n).fill(0));
+  const finder=(ox,oy)=>{ for(let y=0;y<7;y++) for(let x=0;x<7;x++){
+      const edge=(x===0||x===6||y===0||y===6), core=(x>=2&&x<=4&&y>=2&&y<=4);
+      m[oy+y][ox+x]=(edge||core)?1:0; } };
+  let seed=987654321; const rnd=()=>{ seed=(seed*1103515245+12345)&0x7fffffff; return seed/0x7fffffff; };
+  for(let y=0;y<n;y++) for(let x=0;x<n;x++){
+    const inFinder=(x<8&&y<8)||(x>=n-8&&y<8)||(x<8&&y>=n-8);
+    if(!inFinder) m[y][x]=rnd()<.46?1:0;
+  }
+  for(let i=8;i<n-8;i++){ m[6][i]=i%2?0:1; m[i][6]=i%2?0:1; }
+  finder(0,0); finder(n-7,0); finder(0,n-7);
+  let r='';
+  for(let y=0;y<n;y++) for(let x=0;x<n;x++) if(m[y][x])
+    r+='<rect x="'+x+'" y="'+y+'" width="1" height="1"/>';
+  return '<svg width="'+n*px+'" height="'+n*px+'" viewBox="0 0 '+n+' '+n+'" fill="#000">'+r+'</svg>';
+}
+
 async function runScene(){
-  await goFull(); tone(180,.5,'sine',.08);
-  put('<div class="sad">:(</div>');
-  await wait(700);
-  await say_("Your PC ran into a problem and needs to restart. We're just "+
-             "collecting some error info, and then we'll restart for you.",'mid',18);
-  await wait(600);
-  const pc=put('<div class="mid" style="margin:26px 0" id="pc">0% complete</div>');
-  const el=$('#pc');
-  for(let i=0;i<=100;i+=Math.ceil(rnd(1,5))){ el.textContent=Math.min(i,100)+'% complete';
-    await wait(rnd(60,220)); }
-  el.textContent='100% complete';
   await INTEL_READY;
-  await wait(500);
-  put('<div class="dim" style="margin-top:30px">Stop code: '+
-      'KERNEL_TRUST_VIOLATION</div>');
-  put('<div class="dim">What failed: '+esc(INTEL.browser||'tab')+'.sys</div>');
-  put('<div class="dim">Node: '+esc(INTEL.ip)+' · '+esc(place())+'</div>');
-  await wait(2600); await reveal();
+  const codes=['CRITICAL_PROCESS_DIED','KERNEL_SECURITY_CHECK_FAILURE',
+               'SYSTEM_SERVICE_EXCEPTION','PAGE_FAULT_IN_NONPAGED_AREA'];
+  const code=pick(codes);
+  const mod=(INTEL.browser||'win32k').toLowerCase()+'.sys';
+  wrap().innerHTML =
+    '<div class="sad">:(</div>'+
+    '<div class="msg">Your PC ran into a problem and needs to restart. '+
+      "We're just collecting some error info, and then we'll restart for you.</div>"+
+    '<div class="pct" id="pc">0% complete</div>'+
+    '<div class="qrrow"><div class="qrbox">'+qrSVG(25,5)+'</div>'+
+      '<div class="sup">For more information about this issue and possible fixes, '+
+      'visit https://www.windows.com/stopcode<br><br>'+
+      'If you call a support person, give them this info:</div></div>'+
+    '<div class="stop">Stop code: '+esc(code)+'<br>What failed: '+esc(mod)+'</div>';
+  tone(180,.45,'sine',.05);
+  const el=$('#pc');
+  /* The real one does not climb smoothly — it sticks, then jumps. */
+  let v=0;
+  while(v<100){
+    v=Math.min(100, v+(Math.random()<.25?0:Math.ceil(rnd(1,7))));
+    el.textContent=v+'% complete';
+    await wait(v>90?rnd(400,900):rnd(90,420));
+  }
+  await wait(2400);
+  await reveal();
 }"""}
 
 
 def s_panic():
-    return {'css': 'body{background:#000;color:#d8d8d8}#stage{padding:4vh 4vw;font-size:13px}',
-            'js': r"""
+    """A bare Linux console. No filter, no colour, no styling at all.
+
+    A real panic is grey-on-black in whatever the console font is, with tight
+    line spacing and a cursor that stops blinking when the kernel dies. Anything
+    added to that — a glow, a scanline, a green tint — is exactly what makes it
+    read as a screensaver instead of a dead machine.
+    """
+    return {'real': True, 'css': """
+body{background:#000;color:#b2b2b2;cursor:none;
+  font:400 15px/1.15 "DejaVu Sans Mono","Liberation Mono",Consolas,monospace}
+#stage{padding:8px 10px;overflow:hidden}
+.wrap{max-width:none;margin:0;white-space:pre-wrap;word-break:break-all}
+.cur{display:inline-block;width:8px;height:15px;background:#b2b2b2;
+  vertical-align:-2px;animation:cbl 1.05s steps(2) infinite}
+@keyframes cbl{50%{opacity:0}}
+""", 'js': r"""
+const NL = String.fromCharCode(10);
 async function runScene(){
-  await goFull(); noise(.3,.12);
   await INTEL_READY;
+  const w=wrap();
+  let clk=0.0;
+  const stamp=()=>{ clk+=Math.random()*0.04; return '['+clk.toFixed(6).padStart(12,' ')+'] '; };
+  const emit=(str)=>{ w.insertAdjacentText('beforeend',str+NL); };
+  const hex=(n)=>{ let s=''; for(let i=0;i<n;i++) s+='0123456789abcdef'[Math.floor(Math.random()*16)]; return s; };
   const lines=[
-    '[    0.000000] Kernel panic - not syncing: Attempted to kill init!',
-    '[    0.000001] CPU: '+INTEL.cores+' PID: 1 Comm: curiosity Tainted: G   U  '+BRAND,
-    '[    0.000002] Hardware name: '+INTEL.os+' / '+INTEL.browser,
-    '[    0.000004] Call Trace:',
-    '                dump_stack+0x5c/0x80',
-    '                panic+0x101/0x2e3',
-    '                trust_a_stranger+0x2f/0x40',
-    '                clicked_the_link+0x1a4/0x1f0',
-    '                do_exit.cold+0x3b/0x3b',
-    '[    0.000009] ---[ end trace '+Math.random().toString(16).slice(2,18)+' ]---',
-    '[    0.000011] net: origin '+INTEL.ip+' ('+place()+')',
-    '[    0.000013] Rebooting in 10 seconds..',
+    stamp()+'Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000100',
+    stamp()+'CPU: '+(INTEL.cores||4)+' PID: 1 Comm: systemd Tainted: G     U      6.9.3-1',
+    stamp()+'Hardware name: '+(INTEL.os||'Unknown')+'/'+(INTEL.browser||'Unknown')+', BIOS 2.14 05/22/2024',
+    stamp()+'Call Trace:',
+    stamp()+' <TASK>',
+    stamp()+' dump_stack_lvl+0x48/0x70',
+    stamp()+' panic+0x35c/0x390',
+    stamp()+' do_exit.cold+0x1b/0x1b',
+    stamp()+' do_group_exit+0x31/0xa0',
+    stamp()+' __x64_sys_exit_group+0x18/0x20',
+    stamp()+' do_syscall_64+0x5f/0x170',
+    stamp()+' entry_SYSCALL_64_after_hwframe+0x76/0x7e',
+    stamp()+'RIP: 0033:0x7f'+hex(10),
+    stamp()+'RSP: 002b:00007ffd'+hex(8)+' EFLAGS: 00000246',
+    stamp()+'RAX: ffffffffffffffda RBX: 00000000000000e7 RCX: 00007f'+hex(10),
+    stamp()+' </TASK>',
+    stamp()+'Kernel Offset: 0x'+hex(7)+' from 0xffffffff81000000',
+    stamp()+'---[ end Kernel panic - not syncing: Attempted to kill init! ]---',
   ];
-  for(const l of lines){ await say_(l,'',6); await wait(120); }
-  let n=10; const el=await say_('','warnc',0);
-  while(n>0){ el.textContent='[  panic  ] reboot in '+n+'…'; tone(220,.06); await wait(700); n--; }
-  shake(true); noise(.6,.2);
-  await wait(600); await reveal();
+  for(const l of lines){ emit(l); tone(140,.012,'square',.012); await wait(rnd(40,150)); }
+  const c=document.createElement('span'); c.className='cur'; w.appendChild(c);
+  await wait(4200);
+  /* A panicked kernel stops updating the screen — including the cursor. */
+  c.style.animation='none';
+  await wait(2600);
+  await reveal();
 }"""}
 
 
 def s_format():
-    return {'js': r"""
+    """An elevated Command Prompt formatting the system drive.
+
+    Not a green terminal aesthetic — the actual thing: the title bar reads
+    Administrator, the banner carries a real build number, the prompt is the
+    system32 one, and the warning is quoted the way format.com really prints
+    it, in capitals, split across two lines.
+    """
+    return {'real': True, 'css': """
+body{background:#000;cursor:none;font:400 16px/1.35 "Cascadia Mono",Consolas,
+  "Lucida Console","DejaVu Sans Mono",monospace;color:#ccc}
+#stage{padding:0;display:flex;flex-direction:column}
+.wrap{max-width:none;margin:0;width:100%;height:100%;display:flex;flex-direction:column}
+.tbar{display:flex;align-items:center;background:#f3f3f3;color:#1a1a1a;flex:none;
+  height:32px;font:400 12.5px/1 "Segoe UI",system-ui,sans-serif;padding-left:11px}
+.tbar .ico{width:14px;height:14px;background:#0c0c0c;margin-right:9px;flex:none;
+  position:relative}
+.tbar .ico::after{content:">";color:#ccc;font:700 9px/14px monospace;
+  position:absolute;left:2px}
+.tbar .ttl{flex:1}
+.tbar .btns{display:flex;height:100%}
+.tbar .btns b{width:45px;display:flex;align-items:center;justify-content:center;
+  font-weight:400;font-size:11px}
+.tbar .btns b:last-child{background:#e81123;color:#fff}
+.term{flex:1;background:#0c0c0c;padding:6px 9px;overflow:hidden;white-space:pre-wrap}
+.cur{display:inline-block;width:9px;height:17px;background:#ccc;
+  vertical-align:-3px;animation:cbl 1.05s steps(2) infinite}
+@keyframes cbl{50%{opacity:0}}
+""", 'js': r"""
+const NL = String.fromCharCode(10);
 async function runScene(){
-  await goFull();
-  await say_('> mounting volume…','dim'); await wait(400);
-  await INTEL_READY;
-  await say_('> device: '+INTEL.os+' primary volume','dim'); await wait(500);
-  await say_('WARNING: this will erase everything.','bad mid'); await wait(1200);
-  beeps(4,300);
-  await bar('formatting  [ ext4 ]',5200);
-  const sectors=['/home','/etc','/var','/usr/bin','/boot','/srv','/opt'];
-  for(const s of sectors){
-    put('<div class="dim">  wiped '+esc(s)+' <span class="bad">✓</span></div>');
-    tone(180,.05); await wait(420);
+  wrap().innerHTML =
+    '<div class="tbar"><div class="ico"></div>'+
+      '<div class="ttl">Administrator: Command Prompt</div>'+
+      '<div class="btns"><b>&#8211;</b><b>&#9633;</b><b>&#10005;</b></div></div>'+
+    '<div class="term" id="t"></div>';
+  const t=$('#t');
+  const w_=(str)=>{ t.insertAdjacentText('beforeend',str); t.scrollTop=t.scrollHeight; };
+  const line=(str)=>w_(str+NL);
+  async function typeIn(str,sp){
+    for(const c of str){ w_(c); click(); await wait(sp||18); }
+    w_(NL);
   }
-  shake(true);
-  put('<div class="big bad glitch" data-t="DRIVE EMPTY" style="margin-top:24px">DRIVE EMPTY</div>');
-  await wait(2200); await reveal();
+  line('Microsoft Windows [Version 10.0.19045.3803]');
+  line('(c) Microsoft Corporation. All rights reserved.');
+  line('');
+  await wait(700);
+  w_('C:' + String.fromCharCode(92) + 'WINDOWS' + String.fromCharCode(92) + 'system32>');
+  await typeIn('format C: /FS:NTFS /Q', 62);
+  await wait(500);
+  line('The type of the file system is NTFS.');
+  line('');
+  await wait(700);
+  line('WARNING, ALL DATA ON NON-REMOVABLE DISK');
+  line('DRIVE C: WILL BE LOST!');
+  await wait(900);
+  w_('Proceed with Format (Y/N)? ');
+  await wait(1400);
+  await typeIn('y', 0);
+  await wait(600);
+  line('QuickFormatting 476.29 GB');
+  const pct=document.createElement('span'); t.appendChild(pct);
+  for(let p=0;p<=100;){
+    pct.textContent=String(p).padStart(3,' ')+' percent completed.';
+    tone(200,.02,'square',.015);
+    await wait(rnd(80,300));
+    p+=Math.ceil(rnd(1,6)); if(p>100) p=100;
+    if(pct.textContent.indexOf('100')===0) break;
+  }
+  pct.textContent='100 percent completed.'+NL;
+  await wait(500);
+  line('Creating file system structures.');
+  await wait(1500);
+  line('Format complete.');
+  line('   476.29 GB total disk space.');
+  line('   476.29 GB are available.');
+  line('');
+  await wait(900);
+  w_('C:' + String.fromCharCode(92) + 'WINDOWS' + String.fromCharCode(92) + 'system32>');
+  const c=document.createElement('span'); c.className='cur'; t.appendChild(c);
+  await wait(3200);
+  await reveal();
 }"""}
 
 
@@ -820,38 +965,64 @@ async function runScene(){
 
 
 def s_update():
-    return {'css': 'body{background:#0b3a75;color:#fff}#stage{display:flex;align-items:center;'
-                   'justify-content:center;text-align:center;height:100%}'
-                   '.ring{width:64px;height:64px;border:5px solid rgba(255,255,255,.25);'
-                   'border-top-color:#fff;border-radius:50%;margin:0 auto 34px;'
-                   'animation:sp 1s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}',
-            'js': r"""
+    """The forced-update screen, down to the spinner.
+
+    Windows does not use a spinning ring here, it uses five dots chasing each
+    other around a circle with an easing that makes them bunch up and stretch
+    out again. That spinner is the most recognisable thing on the screen, so it
+    is built properly rather than faked with a border-radius trick.
+    """
+    return {'real': True, 'css': """
+body{background:#0078D7;color:#fff;cursor:none;
+  font:400 16px/1.5 "Segoe UI Variable Text","Segoe UI",Selawik,"Noto Sans",
+       system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+#stage{padding:0;display:flex;align-items:center;justify-content:center;text-align:center}
+.wrap{max-width:none;width:100%}
+.wspin{position:relative;width:78px;height:78px;margin:0 auto 46px}
+.wspin i{position:absolute;inset:0;animation:wsp 1.85s cubic-bezier(.62,.03,.4,.97) infinite}
+.wspin i::after{content:"";position:absolute;top:0;left:50%;width:7px;height:7px;
+  margin-left:-3.5px;border-radius:50%;background:#fff}
+/* Negative, so the dots are already strung out around the ring on the very
+   first frame. Positive delays leave all five stacked on top of each other for
+   the first half second, which is the one moment anybody is looking. */
+.wspin i:nth-child(2){animation-delay:-.13s}
+.wspin i:nth-child(3){animation-delay:-.26s}
+.wspin i:nth-child(4){animation-delay:-.39s}
+.wspin i:nth-child(5){animation-delay:-.52s}
+@keyframes wsp{to{transform:rotate(360deg)}}
+.head{font-size:clamp(21px,2.6vw,32px);font-weight:300;margin-bottom:16px}
+.sub{font-size:clamp(14px,1.5vw,18px);font-weight:300;opacity:.95}
+.sub2{font-size:clamp(13px,1.35vw,16px);font-weight:300;opacity:.85;margin-top:8px}
+""", 'js': r"""
+const DONT = "Don" + String.fromCharCode(39) + "t turn off your PC. This will take a while.";
 async function runScene(){
-  await goFull();
-  put('<div class="ring"></div>'+
-      '<div class="mid" id="pct">Working on updates 0%</div>'+
-      '<div class="dim" style="margin-top:16px" id="sub">Please do not turn off your computer</div>');
-  const p=$('#pct'), sub=$('#sub');
   await INTEL_READY;
-  const notes=['Please do not turn off your computer',
-               'This might take a while',
-               'Getting a few things ready',
-               'Do not unplug '+(INTEL.os||'your device'),
-               "Almost there — don't close this",
-               'Reverting changes'];
-  let i=0;
-  const rot=setInterval(()=>{ sub.textContent=notes[i++ % notes.length]; },4200);
+  wrap().innerHTML =
+    '<div class="wspin"><i></i><i></i><i></i><i></i><i></i></div>'+
+    '<div class="head" id="h">Working on updates 0%</div>'+
+    '<div class="sub" id="s1"></div>'+
+    '<div class="sub2" id="s2">Your PC will restart several times.</div>';
+  const h=$('#h'), s1=$('#s1'), s2=$('#s2');
+  s1.textContent=DONT;
   let v=0;
-  while(v<99){ v+=rnd(.4,3.2); p.textContent='Working on updates '+Math.floor(v)+'%';
-    await wait(rnd(120,600)); }
-  p.textContent='Working on updates 99%';
-  sub.textContent='Please do not turn off your computer';
-  await wait(6000);
-  clearInterval(rot);
-  document.body.style.background='#7a0b0b';
-  p.textContent='Something went wrong';
-  sub.textContent='Undoing changes made to '+(INTEL.os||'your device')+'…';
-  await wait(2600); await reveal();
+  while(v<32){ v+=rnd(.3,2.1); h.textContent='Working on updates '+Math.floor(v)+'%';
+    await wait(rnd(140,520)); }
+  s1.textContent='Getting Windows ready';
+  while(v<71){ v+=rnd(.2,1.6); h.textContent='Working on updates '+Math.floor(v)+'%';
+    await wait(rnd(180,700)); }
+  s1.textContent=DONT;
+  while(v<99){ v+=rnd(.1,.9); h.textContent='Working on updates '+Math.floor(v)+'%';
+    await wait(rnd(240,900)); }
+  h.textContent='Working on updates 99%';
+  /* The dead stop at 99 does more work than anything that moves. */
+  await wait(7000);
+  s2.textContent='';
+  await wait(1800);
+  h.textContent='We could' + String.fromCharCode(39) + 't complete the updates';
+  s1.textContent='Undoing changes';
+  s2.textContent='Do not turn off your computer';
+  await wait(3400);
+  await reveal();
 }"""}
 
 
@@ -1010,6 +1181,10 @@ def build_page(key, bait, target, gotcha, report=False):
     name_bit = (html.escape(target) + ', ') if target else ''
     bait_html = BAITS[bait]['html'].replace('__NAME__', name_bit)
     title = BAITS[bait].get('pagetitle') or sc['pagetitle'] or '​'
+    # `real` scenes imitate an actual OS screen and style themselves completely,
+    # so they get no CRT overlay. The flag comes from the scene builder, not the
+    # registry entry — the builder is what knows how it renders.
+    body_class = '' if parts.get('real') else 'crt'
     return textwrap.dedent(f"""\
         <!doctype html>
         <html lang="en"><head>
@@ -1019,7 +1194,7 @@ def build_page(key, bait, target, gotcha, report=False):
         <meta name="robots" content="noindex,nofollow">
         <title>{html.escape(title)}</title>
         <style>{css}</style>
-        </head><body>
+        </head><body class="{body_class}">
         <div id="stage"><div class="wrap"></div></div>
         {parts.get('html', '')}
         {bait_html}
