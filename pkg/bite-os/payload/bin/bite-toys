@@ -20,6 +20,9 @@
 set -euo pipefail
 
 APP="BITE-OS"
+# The hub's own version, separate from any toy's. Published in hub.tsv by
+# `pack` and compared by `bite-toys self-update`.
+HUB_VERSION="1.1"
 # Resolved path to this script — shims point here, so they keep working whether
 # bite-toys lives in /usr/bin or you're testing a copy out of the build tree.
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
@@ -586,10 +589,122 @@ cmd_update() {
     done < "$index"
 
     ok "catalog updated — $n toys known, $new new or updated"
+    hub_check --fetch
+    if hub_outdated; then
+        say
+        say "  ${c_ylw}↑${c_rst} the hub itself has an update: ${c_bld}${HUB_VERSION}${c_rst} → ${c_bld}${HUB_REMOTE_VER}${c_rst}"
+        say "${c_dim}  bite-toys self-update    pull it${c_rst}"
+    fi
     if [[ $new -gt 0 ]]; then
         say "${c_dim}  bite-toys fetch <toy>     download one you don't have${c_rst}"
         say "${c_dim}  bite-toys upgrade         update the ones you already run${c_rst}"
     fi
+    return 0
+}
+
+# ─── updating the hub itself ─────────────────────────────────────────────────
+#
+# The toy catalog can hand you new toys, but it cannot hand you a new hub, and a
+# hub that can only be replaced by reinstalling the distro is a dead end. So the
+# hub publishes its own version and checksum in hub.tsv next to catalog.tsv, and
+# can pull a newer copy of itself over the old one.
+#
+# Installing a toy symlinks ~/.local/bin/<toy> at this very file, so replacing
+# the file in place keeps every shim working — no relinking needed.
+
+HUB_REMOTE_VER=""
+
+# Fetch hub.tsv and set HUB_REMOTE_VER. Quiet and best-effort: being offline
+# must never make `update` look like it failed.
+hub_check() {
+    local meta="$CACHE/hub.tsv" line rest
+    HUB_REMOTE_VER=""
+    if [[ "${1:-}" == "--fetch" ]]; then
+        command -v curl >/dev/null 2>&1 || return 0
+        curl -fsSL --connect-timeout 8 "$REPO/hub.tsv" -o "$meta.tmp" 2>/dev/null \
+            && mv "$meta.tmp" "$meta" || rm -f "$meta.tmp"
+    fi
+    [[ -f "$meta" ]] || return 0
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        HUB_REMOTE_VER="${line%%$'\t'*}"
+        break
+    done < "$meta"
+    return 0
+}
+
+# True when a different version is published. Deliberately string inequality
+# rather than "is newer", for the same reason the toy catalog is: the repo is
+# the authority, including when it needs to move you backwards.
+hub_outdated() {
+    [[ -n "$HUB_REMOTE_VER" && "$HUB_REMOTE_VER" != "$HUB_VERSION" ]]
+}
+
+cmd_selfupdate() {
+    command -v curl >/dev/null 2>&1 || die "curl is required for bite-toys self-update"
+    command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required for bite-toys self-update"
+
+    # A packaged hub belongs to pacman. Writing over it would work exactly once
+    # — until the next -Syu put it back — and would leave a file pacman believes
+    # it owns disagreeing with the package database.
+    case "$SELF" in
+        /usr/*)
+            err "this bite-toys came from the ${APP} package, so pacman owns it"
+            say "  ${c_cyn}sudo pacman -Syu bite-os${c_rst}   updates it properly"
+            say "${c_dim}  (or install a copy of your own into ~/.local/bin)${c_rst}"
+            return 1 ;;
+    esac
+    [[ -w "$SELF" ]] || die "$SELF is not writable"
+
+    say "Checking ${c_dim}${REPO}${c_rst}..."
+    hub_check --fetch
+    if [[ -z "$HUB_REMOTE_VER" ]]; then
+        err "couldn't read hub.tsv from the repo"
+        return 1
+    fi
+    if ! hub_outdated; then
+        ok "bite-toys $HUB_VERSION is already current"
+        return 0
+    fi
+
+    local meta="$CACHE/hub.tsv" line rest ver sha path
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        ver="${line%%$'\t'*}";  rest="${line#*$'\t'}"
+        sha="${rest%%$'\t'*}";  path="${rest#*$'\t'}"
+        break
+    done < "$meta"
+    [[ -n "$path" && -n "$sha" ]] || die "hub.tsv is malformed"
+
+    say "  ${c_ylw}↑${c_rst} $HUB_VERSION → ${c_bld}${ver}${c_rst}"
+
+    # Staged beside the target so the final move is a same-filesystem rename,
+    # and a half-downloaded hub can never end up being the hub.
+    local new="${SELF}.new.$$"
+    if ! curl -fsSL --connect-timeout 15 "$REPO/$path" -o "$new"; then
+        rm -f "$new"; die "download failed — nothing was changed"
+    fi
+
+    local got; got="$(sha256sum "$new" | cut -d' ' -f1)"
+    if [[ "$got" != "$sha" ]]; then
+        rm -f "$new"
+        die "checksum mismatch — refusing to install
+  published $sha
+  received  $got"
+    fi
+    # A hub that does not parse would take the whole tool out, and it is the one
+    # thing that cannot repair itself afterwards.
+    if ! bash -n "$new" 2>/dev/null; then
+        rm -f "$new"; die "the downloaded hub does not parse — refusing to install it"
+    fi
+
+    local backup="$CACHE/bite-toys-$HUB_VERSION.bak"
+    cp -p "$SELF" "$backup" 2>/dev/null || true
+    chmod 755 "$new"
+    mv "$new" "$SELF"
+    ok "bite-toys is now $ver"
+    say "${c_dim}  the copy you were running is kept at $backup${c_rst}"
+    say "${c_dim}  toy shims point at this file, so they all still work${c_rst}"
     return 0
 }
 
@@ -754,9 +869,22 @@ cmd_pack() {
         n=$((n+1))
     done
 
+    # The hub ships alongside the toys so it can update itself. Published from
+    # the running file, so what gets checksummed is exactly what was tested.
+    mkdir -p "$out/hub"
+    local hubfile="hub/bite-toys-$HUB_VERSION" hubsha
+    cp -f "$SELF" "$out/$hubfile"
+    chmod 755 "$out/$hubfile"
+    hubsha="$(sha256sum "$out/$hubfile" | cut -d' ' -f1)"
+    { printf '# %s toy hub — version\tsha256\tpath\n' "$APP"
+      printf '%s\t%s\t%s\n' "$HUB_VERSION" "$hubsha" "$hubfile"
+    } > "$out/hub.tsv"
+    ok "hub v$HUB_VERSION  ${c_dim}${hubsha:0:12}…${c_rst}"
+
     echo
     ok "packed $n toy(s) into $out"
     say "${c_dim}  $index${c_rst}"
+    say "${c_dim}  $out/hub.tsv${c_rst}"
     say "${c_dim}  publish by committing that directory to the toys repo${c_rst}"
     return $failed
 }
@@ -834,6 +962,12 @@ cmd_doctor() {
     printf '%s%s toy hub — checkup%s\n\n' "$c_bld" "$APP" "$c_rst"
     local issues=0
 
+    hub_check
+    if hub_outdated; then
+        warn "bite-toys is $HUB_VERSION, the repo publishes $HUB_REMOTE_VER — bite-toys self-update"
+    else
+        ok "hub: bite-toys $HUB_VERSION ($SELF)"
+    fi
     if [[ -d "$SYS_TOYS" ]]; then ok "bundled catalog: $SYS_TOYS"
     else warn "bundled catalog missing ($SYS_TOYS)"; issues=$((issues+1)); fi
 
@@ -886,6 +1020,7 @@ ${c_bld}REPO${c_rst}
   ${c_cyn}bite-toys update${c_rst}             refresh the catalog from the toys repo
   ${c_cyn}bite-toys fetch${c_rst} <toy>        download one that didn't ship with the ISO
   ${c_cyn}bite-toys upgrade${c_rst} [toy...]   update installed toys — settings are kept
+  ${c_cyn}bite-toys self-update${c_rst}        update ${c_bld}bite-toys itself${c_rst} (you are on $HUB_VERSION)
   ${c_cyn}bite-toys doctor${c_rst}             check for broken toys / PATH problems
 
 ${c_bld}MAKE ONE${c_rst}
@@ -974,6 +1109,10 @@ hr() {
 
 ui_refresh() {
     INST=(); AVAIL=(); ADESC=(); ASTATE=(); UPG=()
+    # Reads the cached hub.tsv only — no network, no fork — so the header can
+    # say a new hub is waiting without costing anything per redraw. `u` runs
+    # cmd_update, which refetches it, and this picks the answer up afterwards.
+    hub_check
     local n
     while read -r n; do [[ -n "$n" ]] && INST+=("$n"); done < "$STATE"
 
@@ -1026,7 +1165,9 @@ ui_header() {
         row "$c_mag ██╔══██╗██║   ██║   ██╔══╝        ██║   ██║╚════██║$c_rst"
         row "$c_mag ██████╔╝██║   ██║   ███████╗      ╚██████╔╝███████║$c_rst"
         row "$c_mag ╚═════╝ ╚═╝   ╚═╝   ╚══════╝       ╚═════╝ ╚══════╝$c_rst"
-        row " ${c_dim}░▒▓█${c_rst}${c_grn}▓▒░ // t o y s ░▒▓${c_rst}${c_dim}█▓▒░${c_rst}  ${c_dim}${#INST[@]} installed · ${#AVAIL[@]} in the catalogue${c_rst}"
+        local hubtag=""
+        hub_outdated && hubtag="   ${c_ylw}↑ hub ${HUB_REMOTE_VER}${c_rst}${c_dim} — bite-toys self-update${c_rst}"
+        row " ${c_dim}░▒▓█${c_rst}${c_grn}▓▒░ // t o y s ░▒▓${c_rst}${c_dim}█▓▒░${c_rst}  ${c_dim}${#INST[@]} installed · ${#AVAIL[@]} in the catalogue${c_rst}${hubtag}"
     else
         row " ${c_cyn}${c_bld}BITE-OS${c_rst}${c_grn}//toys${c_rst}  ${c_dim}${#INST[@]} installed${c_rst}"
     fi
@@ -2069,8 +2210,10 @@ case "${1:-ui}" in
     search|find)      shift; cmd_search "$@" ;;
     update|sync)      shift; cmd_update "$@" ;;
     fetch|get|dl)     shift; cmd_fetch "$@" ;;
+    self-update|selfupdate|upgrade-self)
+                      shift; cmd_selfupdate "$@" ;;
     doctor|check)     shift; cmd_doctor "$@" ;;
     help|-h|--help)   cmd_help ;;
-    --version|-v)     say "bite-toys 1.0 ($APP toy hub)" ;;
+    --version|-v)     say "bite-toys $HUB_VERSION ($APP toy hub)" ;;
     *)                err "unknown command: $1"; echo; cmd_help; exit 1 ;;
 esac
