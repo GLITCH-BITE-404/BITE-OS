@@ -37,6 +37,8 @@ import shutil
 import socket
 import subprocess
 import sys
+import termios
+import tty
 import urllib.parse
 import textwrap
 import threading
@@ -294,12 +296,33 @@ async function reveal(){
 BOOT_JS = r"""
 document.addEventListener('keydown',e=>{ if(e.key==='Escape'||e.key==='Esc') reveal(); });
 let STARTED=false;
-function launch(){
+
+/* A real video does not cut to something else the instant you press play — it
+   buffers first. Going straight from the card to the scene is the single
+   biggest tell, so the player spends a second and a half looking like it is
+   loading, with a timecode that actually ticks. */
+function buffer(b){
+  return new Promise(done=>{
+    const card=b.querySelector('.bcard');
+    if(!card){ done(); return; }
+    b.style.background='#000';
+    card.style.background='#000'; card.style.boxShadow='none';
+    card.innerHTML='<div class="bmedia"><div class="bspin"></div>'+
+                   '<div class="bdur" id="btc">0:00</div></div>';
+    const tc=card.querySelector('#btc'); let t=0;
+    const iv=setInterval(()=>{ t++; tc.textContent='0:'+String(t).padStart(2,'0'); },430);
+    setTimeout(()=>{ clearInterval(iv); done(); },1650);
+  });
+}
+
+async function launch(){
   if(STARTED) return; STARTED=true;
   /* Called from inside a real click handler, which is the only moment a
      browser will grant fullscreen and let a sound play. Order matters. */
   ac(); goFull(); hit('open');
-  const b=$('#bait'); if(b) b.remove();
+  const b=$('#bait');
+  if(b && b.dataset.load) await buffer(b);
+  if(b) b.remove();
   const h=document.querySelector('.hint'); if(h) h.style.display='block';
   runScene().catch(e=>{ console.error(e); reveal(); });
 }
@@ -382,6 +405,9 @@ BAIT_CSS = r"""
 .bbtn{display:block;width:100%;padding:15px;border:0;background:#2f6bff;color:#fff;
   font:600 15px/1 inherit}
 .bnote{margin-top:15px;text-align:center;color:#4e4e58;font-size:12px}
+.bspin{position:absolute;inset:0;margin:auto;width:46px;height:46px;border-radius:50%;
+  border:3px solid rgba(255,255,255,.22);border-top-color:#fff;animation:bsp .85s linear infinite}
+@keyframes bsp{to{transform:rotate(360deg)}}
 """
 
 BAITS = {
@@ -389,7 +415,7 @@ BAITS = {
         pagetitle='new message',
         label='a video someone sent you',
         desc='A message with a blurred clip and a play button — the most clickable thing there is',
-        html='<div id="bait"><div class="bcard">'
+        html='<div id="bait" data-load="1"><div class="bcard">'
              '<div class="bhead"><div class="bav"></div><div>'
              '<div class="bname">new message</div>'
              '<div class="bsub">1 video · just now</div></div></div>'
@@ -1438,6 +1464,80 @@ def preview():
     say()
 
 
+def _getkey():
+    """One keypress, with the three-byte arrow sequences folded into names.
+
+    Reads the file descriptor directly rather than sys.stdin: the text wrapper
+    buffers, so in raw mode a read(1) can sit waiting for bytes that only arrive
+    with the NEXT keypress — which reads as arrow keys simply not working.
+    """
+    fd = sys.stdin.fileno()
+    ch = os.read(fd, 1)
+    if ch == b'\x1b':
+        import select as _sel
+        if not _sel.select([fd], [], [], 0.06)[0]:
+            return 'ESC'
+        if os.read(fd, 1) != b'[':
+            return 'ESC'
+        return {b'A': 'UP', b'B': 'DOWN', b'C': 'RIGHT',
+                b'D': 'LEFT'}.get(os.read(fd, 1), '?')
+    if ch in (b'\r', b'\n'):
+        return 'ENTER'
+    if ch == b'\x03':
+        raise KeyboardInterrupt
+    return ch.decode('utf-8', 'replace')
+
+
+def pick(title, rows, default=0):
+    """An arrow-key list, because typing the answer to a menu is not a menu.
+
+    rows are (key, label, tag). Redraws in place by walking the cursor back up,
+    so the list never scrolls away. Falls back to the default when there is no
+    terminal to drive — a preview pane or a pipe must never block on a keypress.
+    """
+    n = len(rows)
+    idx = max(0, min(default, n - 1))
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return rows[idx][0]
+    width = max(len(r[0]) for r in rows)
+    say()
+    say(f'  {C.y}{title}{C.r}   {C.d}↑↓ move · Enter pick · 1-{n} jump{C.r}')
+    say()
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    first = True
+    try:
+        tty.setraw(fd)
+        sys.stdout.write('\x1b[?25l')
+        while True:
+            if not first:
+                sys.stdout.write(f'\x1b[{n}A')
+            first = False
+            for i, (k, label, tag) in enumerate(rows):
+                on = i == idx
+                mark = f'{C.g}▸{C.r}' if on else ' '
+                name = k.ljust(width)
+                body = f'{name}  {label}' if on else f'{C.d}{name}  {label}{C.r}'
+                colour = f'{C.b}{C.c}' if on else C.c
+                sys.stdout.write(f'\r\x1b[K  {mark} {colour}{body}{C.r}{tag}\r\n')
+            sys.stdout.flush()
+            k = _getkey()
+            if k == 'UP':
+                idx = (idx - 1) % n
+            elif k == 'DOWN':
+                idx = (idx + 1) % n
+            elif k == 'ENTER':
+                return rows[idx][0]
+            elif k in ('ESC', 'q'):
+                raise KeyboardInterrupt
+            elif k.isdigit() and 1 <= int(k) <= n:
+                idx = int(k) - 1
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        sys.stdout.write('\x1b[?25h')
+        sys.stdout.flush()
+
+
 def ask(prompt, default=''):
     try:
         val = input(f'  {C.g}›{C.r} {prompt}'
@@ -1450,46 +1550,26 @@ def ask(prompt, default=''):
 
 def choose_interactive():
     banner()
-    items = list(SCENES.items())
-    for i, (k, v) in enumerate(items, 1):
-        tag = f'{C.e}  · spicy{C.r}' if v['spicy'] else ''
-        say(f'  {C.y}{str(i).rjust(2)}{C.r}  {C.c}{k.ljust(13)}{C.r}{v["desc"]}{tag}')
-    say()
-    raw = ask('which one? (number or name)')
-    key = None
-    if raw.isdigit() and 1 <= int(raw) <= len(items):
-        key = items[int(raw) - 1][0]
-    elif raw in SCENES:
-        key = raw
-    if not key:
-        die(f'no scene called {raw!r} — try biteprank list')
+    scene = pick('which scene?',
+                 [(k, v['desc'], f'{C.e}  · spicy{C.r}' if v['spicy'] else '')
+                  for k, v in SCENES.items()])
     say()
     target = ask("their name? (goes in the page, blank to skip)", DEF_NAME)
     gotcha = ask('a line for the reveal? (blank to skip)')
 
-    say()
-    say(f'  {C.d}what it looks like when they open the link:{C.r}')
-    for k, v in BAITS.items():
-        mark = f'{C.g} ←{C.r}' if k == DEF_BAIT else ''
-        say(f'      {C.c}{k.ljust(8)}{C.r}{v["desc"]}{mark}')
-    say()
-    bait = ask('which bait?', DEF_BAIT)
-    if bait not in BAITS:
-        die(f'no bait called {bait!r}')
+    bait = pick('what the link opens as',
+                [(k, v['desc'], '') for k, v in BAITS.items()],
+                default=list(BAITS).index(DEF_BAIT) if DEF_BAIT in BAITS else 0)
 
-    say()
-    say(f'  {C.d}how it gets to them:{C.r}')
+    rows = []
     for k, v in DELIVERY.items():
         miss = missing_for(k)
         tag = (f'{C.y}  ✗ needs {", ".join(c for c, _ in miss)}{C.r}' if miss
                else f'{C.g}  ✓{C.r}')
-        mark = f'{C.g} ←{C.r}' if k == DEF_HOST else ''
-        say(f'      {C.c}{k.ljust(8)}{C.r}{v["label"]}{tag}{mark}')
-    say()
-    host = ask('how are you sending it?', DEF_HOST)
-    if host not in DELIVERY:
-        die(f'no delivery called {host!r}')
-    return key, bait, target, gotcha, host
+        rows.append((k, v['label'], tag))
+    host = pick('how it gets to them', rows,
+                default=list(DELIVERY).index(DEF_HOST) if DEF_HOST in DELIVERY else 0)
+    return scene, bait, target, gotcha, host
 
 
 def forge(key, bait, target, gotcha, host):
