@@ -25,6 +25,8 @@ depends=(
     # bite-toys hub + the bundled toys (bitebeat / bitecam / bitemuseum):
     'ffmpeg' 'python' 'python-numpy' 'python-pillow' 'qt6-declarative'
     'v4l-utils' 'v4l2loopback-dkms'
+    # biteprank: cloudflared makes the public link, qrencode prints it for phones
+    'cloudflared' 'qrencode'
 )
 
 # These BITE-OS files replace whatever CachyOS shipped:

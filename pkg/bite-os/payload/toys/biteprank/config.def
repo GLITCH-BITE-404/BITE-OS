@@ -1,0 +1,73 @@
+# How the page gets to them.
+# tunnel is a real public link that works from anywhere — different city, mobile
+# data, whatever — and it dies the second you Ctrl-C, so the prank cannot outlive
+# the joke. It needs cloudflared; if you do not have it, biteprank offers to
+# install it when you pick this, rather than refusing to start.
+# local serves it on your Wi-Fi, so only someone in the same house can open it.
+# github commits it to a Pages repo for a link that outlives this terminal
+# (needs ghrepo set below).
+# file just writes the .html to disk. It is here for testing it on yourself —
+# nobody opens a random attachment, so do not try to send with it.
+# tunnel and local also print a live feed of every stage they reach.
+# @choices tunnel,local,github,file
+host=tunnel
+
+# What the link looks like when they open it, before anything happens. This is
+# the difference between a link someone clicks and a link someone ignores.
+# video is a message with a blurred clip and a play button. photo is blurred
+# out with tap-to-reveal over it. folder is three files and an Open button —
+# the boring, trustworthy one. none skips the disguise and starts immediately.
+# The bait also earns the one deliberate click a browser demands before it will
+# allow fullscreen or play a sound, so none is the weakest of the four for
+# reasons that have nothing to do with taste.
+# @choices video,photo,folder,none
+bait=video
+
+# Your GitHub Pages repo, as user/repo, for host=github. The repo has to exist
+# already and have Pages turned on, and push has to work over SSH without
+# asking you for anything. Leave blank if you never use github delivery.
+ghrepo=
+
+# Where forged .html files land.
+outdir=~/biteprank
+
+# The port the local and tunnel servers listen on. Change it if something else
+# on your machine already owns 8404.
+# @range 1024-65535
+port=8404
+
+# Their name. The page uses it — the scene addresses them directly, which is
+# worth a surprising amount. You can leave this blank and pass a name per
+# prank instead; this is just what gets offered as the default.
+target=
+
+# How fast text types itself out on their screen. slow is menacing, fast is
+# barely a typewriter effect at all. normal is the one that reads as a machine
+# rather than a person.
+# @choices slow,normal,fast
+pace=normal
+
+# Sound on their end — beeps, static bursts, the low tone under a crash.
+# Every noise is synthesised in the page, so nothing is downloaded and there
+# are no audio files to bundle. Browsers stay muted until they click or press
+# a key, which every scene waits for anyway.
+sound=on
+
+# Whether their mouse cursor stays visible during the scene. Hiding it makes a
+# full-screen crash much more convincing, and also makes it much harder for
+# them to find the way out — ESC still works, but they have to think of it.
+# Leave this on for anyone who spooks easily.
+cursor=on
+
+# Copy the link (or the file path) to your clipboard the moment it is forged,
+# so you can paste it straight into the chat.
+copylink=on
+
+# Print a QR code in the terminal alongside the link, for handing a prank to
+# someone's phone across a table. Needs qrencode.
+qr=on
+
+# The name in the reveal card, and the line under it. This is the part that
+# tells them it was you, so keep it recognisable.
+brand=BITE-OS
+tagline=you have been bitten

@@ -1350,21 +1350,123 @@ ui_tab_customize() {
     # screen — but rendering it RUNS the toy, and for a camera toy that means
     # opening the device just because you wanted to change a number. Opening
     # settings must never start hardware, so this is opt-in on `p`.
-    local args out
+    local args out kind
     args="$(meta "$sdir" preview)"
-    if [[ -n "$args" ]]; then
+    kind="$(pv_kind "$sel")"
+    if [[ "$kind" != none ]]; then
         row
         if [[ $LIVE -eq 0 ]]; then
-            row "  ${c_dim}p  live preview${c_rst}"
+            row "  ${c_dim}p  $( [[ "$kind" == sim ]] && printf 'mockup preview' || printf 'live preview' )${c_rst}"
         else
-            row "  ${c_dim}┌─ live ─────────────────────────${c_rst}"
-            out="$(preview_run "$sel" "$args")"
+            row "  ${c_dim}┌─ $( [[ "$kind" == sim ]] && printf 'mockup — not running %s ' "$sel" || printf 'live ' )────────────${c_rst}"
+            if [[ "$kind" == sim ]]; then out="$(pv_sim "$sel")"; else out="$(preview_run "$sel" "$args")"; fi
             local l
             while IFS= read -r l; do row "  ${c_dim}│${c_rst}  $l"; done <<< "$out"
             row "  ${c_dim}└─ p closes · r re-rolls ────────${c_rst}"
         fi
     fi
     return 0
+}
+
+# ─── preview policy ──────────────────────────────────────────────────────────
+#
+# Not every toy should be previewed by running it.
+#
+#   bitedig  draws itself in a real QML window. Capturing its stdout paints an
+#            empty pane and leaves a stray window behind, so it gets no preview.
+#   bitecam  and bitemask open the camera and pull frames — seconds of work and
+#   bitemask a device handle, spent because a cursor landed on a row. For those
+#            the hub DRAWS the preview itself: a static impression of the HUD
+#            they put on screen, clearly labelled as a mockup so it can never be
+#            mistaken for a live frame.
+#
+# This lives in the hub, not in the toys, so the toys stay exactly as shipped.
+declare -A PV_POLICY=( [bitedig]=none [bitecam]=sim [bitemask]=sim )
+declare -A PV_REASON=(
+    [bitedig]="bitedig draws itself in a real QML window, so a text pane has nothing to show and previewing it would leave a stray window behind. Press Enter on tab 1 to open it properly."
+)
+
+# real -> run the toy · sim -> draw a mockup · none -> no preview at all
+pv_kind() {
+    local k="${PV_POLICY[$1]-}" dir
+    [[ -n "$k" ]] && { printf '%s' "$k"; return 0; }
+    dir="$(toy_dir "$1" 2>/dev/null)" || { printf 'none'; return 0; }
+    [[ -n "$(meta "$dir" preview)" ]] && printf 'real' || printf 'none'
+}
+
+pv_reason() {
+    local why="${PV_REASON[$1]-}" dir
+    if [[ -z "$why" ]]; then
+        dir="$(toy_dir "$1" 2>/dev/null)"
+        [[ -n "$dir" ]] && why="$(meta "$dir" nopreview)"
+    fi
+    [[ -n "$why" ]] || why="$1 takes over the whole screen — run it from tab 1 instead"
+    printf '%s' "$why"
+}
+
+# Said on every drawn preview. The point of a mockup is lost if someone thinks
+# the camera is on, so it says so plainly rather than in a corner.
+pv_sim_note() {
+    printf '%s\n' \
+      "▲ mockup — the hub drew this. It does NOT start $1." \
+      "  Previewing for real would open the camera and grab frames: seconds of" \
+      "  work and a device handle, just to fill this pane. So this is a drawn" \
+      "  impression of the HUD $1 puts on screen, not a live picture." \
+      "  Press Enter on tab 1 to run the real thing."
+}
+
+pv_sim() {
+    case "$1" in
+        bitemask) pv_sim_bitemask ;;
+        bitecam)  pv_sim_bitecam ;;
+        *)        printf '%s\n' "no mockup for $1" ;;
+    esac
+}
+
+pv_paint() {
+    local l
+    while IFS= read -r l; do
+        case "$l" in
+            *REDACTED*|*SUBJECT*|*THREAT*) printf '%s%s%s\n' "$c_bld$c_grn" "$l" "$c_rst" ;;
+            *)                             printf '%s%s%s\n' "$c_grn" "$l" "$c_rst" ;;
+        esac
+    done
+}
+
+pv_sim_bitemask() {
+    pv_paint <<'ART'
+┌ BITE-OS // OPTIC ───────────────────────────── 1 SUBJECT ┐
+│▓▒░▒▓█░▒▓▒░▓█▒░▒▓░█▒▓░▒▓█▒░▓▒░▒▓█▓▒░▒▓░▒▓█▒░▓▒░▒▓█▓▒░▒▓░▒▓│
+│ ╭──────────────╮  ░▒▓█  SUBJECT : yes known              │
+│ │              │  █░▒▓  MATCH   : 0 results              │
+│ │ ████████████ │  ▓▒░▓  THREAT  : 67%                    │
+│ │ █ REDACTED █ │  ▓█▒░  SIG     : 0A3D0F92               │
+│ │ ████████████ │  ░▒▓░  GEO     : 32.0N 34.7E            │
+│ │              │  ░█▒▓                                   │
+│ ╰──────────────╯  ▓░▒▓  ── scanning ───────              │
+│█░▒▓▒░▓█▒░▒▓░█▒▓░▒▓█▒░▓▒░▒▓█▓▒░▒▓░▒▓█▒░▓▒░▒▓█▓▒░▒▓░▒▓█▒░▓▒│
+└──────────────────────────────────────────────────────────┘
+ART
+}
+
+pv_sim_bitecam() {
+    pv_paint <<'ART'
+┌ BITE-OS // CAM ────────────────────────── ascii · 24 fps ┐
+│                                                          │
+│                      .....:::::.....                     │
+│                  ...:::-----------:::...                 │
+│                ..:::--====+++++====--:::..               │
+│               ..::--= ++*********++ =--::..              │
+│              ..::-=    .##%%%%%##.    =-::..             │
+│              ..:--==++*##%%@@@%%##*++==--:..             │
+│              ..::-==++**##%%%%%##**++==-::..             │
+│               ..::--=......:::......=--::..              │
+│                ..:::-...............-:::..               │
+│                  ...::::---------::::...                 │
+│..:::----===++++***####%%%%@@@@@%%%%####***++++===----:::.│
+│...::::----====++++*******#######*******++++====----::::..│
+└──────────────────────────────────────────────────────────┘
+ART
 }
 
 # A preview costs a real subprocess — a camera toy has to open the device and
@@ -1467,19 +1569,22 @@ ui_tab_preview() {
         local name dir a
         for name in "${INST[@]}"; do
             dir="$(toy_dir "$name" 2>/dev/null)"
-            a="$( [[ -n "$dir" ]] && meta "$dir" preview )"
+            a="$(pv_kind "$name")"
             G_NAMES+=("$name")
             G_DESCS+=("$( [[ -n "$dir" ]] && meta "$dir" desc )")
-            G_TAGS+=("$( [[ -z "$a" ]] && printf '%s·fullscreen%s' "$c_dim" "$c_rst" )")
+            case "$a" in
+                sim)  G_TAGS+=("$(printf '%s·mockup%s' "$c_dim" "$c_rst")") ;;
+                none) G_TAGS+=("$(printf '%s·fullscreen%s' "$c_dim" "$c_rst")") ;;
+                *)    G_TAGS+=("") ;;
+            esac
         done
         ui_grid
         row "${c_dim}$(hr)${c_rst}"
         sel="${INST[${CUR[$TAB]}]}"
         sdir="$(toy_dir "$sel" 2>/dev/null)" || return 0
-        if [[ -z "$(meta "$sdir" preview)" ]]; then
+        if [[ "$(pv_kind "$sel")" == none ]]; then
             # A toy can say WHY it has no preview; that beats a generic excuse.
-            local why; why="$(meta "$sdir" nopreview)"
-            [[ -n "$why" ]] || why="${sel} takes over the whole screen — run it from tab 1 instead"
+            local why; why="$(pv_reason "$sel")"
             local wl
             while IFS= read -r wl; do row "  ${c_dim}${wl}${c_rst}"; done \
                 < <(printf '%s\n' "$why" | fold -s -w $(( ${COLS:-80} > 12 ? COLS - 6 : 74 )))
@@ -1503,7 +1608,7 @@ ui_tab_preview() {
     fi
     row
 
-    if [[ $PV_STARTING -eq 1 ]]; then
+    if [[ $PV_STARTING -eq 1 && "$(pv_kind "$sel")" != sim ]]; then
         # A preview is a real subprocess and can take seconds. Without this the
         # last frame just sits there and the hub looks hung, which is exactly
         # what "it lags" means from the outside.
@@ -1513,13 +1618,23 @@ ui_tab_preview() {
         row "  ${c_dim}(it opens the camera / reads the device, so give it a moment)${c_rst}"
         return 0
     fi
-    if [[ $PV_PANE -eq 2 ]]; then
+    local kind; kind="$(pv_kind "$sel")"
+    if [[ "$kind" == sim ]]; then
+        PV_STARTING=0
+        out="$(pv_sim "$sel")"
+    elif [[ $PV_PANE -eq 2 ]]; then
         out="$PREVIEW_OUT"          # held still: tuning must not re-run the toy
     else
         out="$(preview_run "$sel" "$args")"
     fi
     local plines=0
     while IFS= read -r l; do row "  $l"; plines=$(( plines + 1 )); done <<< "$out"
+    if [[ "$kind" == sim ]]; then
+        row
+        while IFS= read -r l; do row "  ${c_dim}${l}${c_rst}"; plines=$(( plines + 1 )); done \
+            < <(pv_sim_note "$sel")
+        plines=$(( plines + 1 ))
+    fi
 
     if [[ $PV_PANE -eq 1 ]]; then
         row
@@ -1911,7 +2026,7 @@ cmd_ui() {
             "3:")  if [[ ${#INST[@]} -gt 0 ]]; then
                        sel="${INST[${CUR[3]}]}"
                        sdir="$(toy_dir "$sel" 2>/dev/null)"
-                       if [[ -n "$(meta "$sdir" preview)" ]]; then
+                       if [[ "$(pv_kind "$sel")" != none ]]; then
                            PV_PANE=1; PV_TMP=(); PREVIEW_ROLL=$(( PREVIEW_ROLL + 1 ))
                            PV_STARTING=1; REDRAW=1
                        else

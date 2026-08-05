@@ -1,0 +1,1627 @@
+#!/usr/bin/env python3
+"""biteprank — the prank you send, not the prank you run.
+
+Nothing here touches your friend's machine. It cannot: a web page in a browser
+tab has no files, no shell, no persistence. What it does have is a full screen,
+a speaker, and — this is the part that lands — a small pile of things about the
+visitor that are genuinely true. Their city. Their carrier. Their exact battery
+percentage, ticking down as they watch. When a page reads your real numbers back
+to you the fake numbers beside them stop feeling fake, and that is the entire
+trick. No exploit, just theatre with two honest sentences in it.
+
+So the toy is a generator, not a runner. You pick a scene, it forges one
+self-contained .html file — every byte inlined, sound synthesised by WebAudio,
+no external request except the one geo lookup — and then it puts that file
+somewhere your friend can reach: saved to disk to send by hand, served over your
+LAN, pushed through a cloudflared tunnel for a public link, or committed to a
+GitHub Pages repo for a link that outlives this terminal.
+
+Lines it does not cross, deliberately: it never asks for a password or a login,
+never collects anything anywhere (the intel is read in their tab and dies with
+it), never phones home, and ESC always ends the show immediately. Every scene
+resolves to the same reveal — a big GOTCHA, then a plain sentence telling them
+nothing happened and nothing was taken. A prank they can't get out of, or can't
+tell was a prank afterwards, is just being mean to someone.
+
+Settings arrive from the hub as TOY_* env vars (see config.def). Defaults are
+repeated here so the toy still runs standalone, outside the hub.
+"""
+
+import hashlib
+import html
+import json
+import os
+import random
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import urllib.parse
+import textwrap
+import threading
+import time
+from datetime import datetime
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+# ─────────────────────────────────────────────────────────── settings ────
+
+def env(k, d=''):
+    return os.environ.get('TOY_' + k, d)
+
+BRAND    = env('BRAND', 'BITE-OS')
+TAGLINE  = env('TAGLINE', 'you have been bitten')
+OUTDIR   = Path(os.path.expanduser(env('OUTDIR', '~/biteprank'))).expanduser()
+DEF_HOST = env('HOST', 'tunnel')
+DEF_NAME = env('TARGET', '')
+GH_REPO  = env('GHREPO', '')
+PORT     = int(env('PORT', '8404') or 8404)
+DEF_BAIT = env('BAIT', 'video')
+PACE     = env('PACE', 'normal')
+SOUND    = env('SOUND', 'on') == 'on'
+CURSOR   = env('CURSOR', 'on') == 'on'
+COPYLINK = env('COPYLINK', 'on') == 'on'
+QR       = env('QR', 'on') == 'on'
+
+CACHE = Path(os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache') / 'bite-os'
+LOG   = CACHE / 'biteprank.log'
+
+PACE_MS = {'slow': 46, 'normal': 26, 'fast': 12}.get(PACE, 26)
+
+# ────────────────────────────────────────────────────────────── colour ────
+
+class C:
+    r = '\033[0m'; b = '\033[1m'; d = '\033[2m'
+    g = '\033[38;5;46m'; c = '\033[38;5;51m'; m = '\033[38;5;201m'
+    y = '\033[38;5;226m'; e = '\033[38;5;196m'; w = '\033[38;5;250m'
+
+if not sys.stdout.isatty() or os.environ.get('NO_COLOR'):
+    for _k in dir(C):
+        if not _k.startswith('_'):
+            setattr(C, _k, '')
+
+def say(msg=''):
+    # Flushed on purpose: the live feed is written from server threads while the
+    # main thread sleeps, and any redirection at all (a log file, a pipe, tmux
+    # capture) turns stdout block-buffered — so the play-by-play would arrive
+    # in one lump at Ctrl-C, or never.
+    print(msg, flush=True)
+
+def ok(msg):
+    say(f'{C.g}  ✔{C.r} {msg}')
+
+def warn(msg):
+    say(f'{C.y}  !{C.r} {msg}')
+
+def die(msg, code=1):
+    say(f'{C.e}  ✘{C.r} {msg}')
+    sys.exit(code)
+
+# ───────────────────────────────────────────────────── the page shell ────
+
+SHELL_CSS = r"""
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;background:#000;overflow:hidden}
+body{font:15px/1.5 "JetBrains Mono","DejaVu Sans Mono",ui-monospace,monospace;
+     color:#c8f7d0;cursor:__CURSOR__;-webkit-font-smoothing:none}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:9000;
+  background:repeating-linear-gradient(180deg,rgba(0,0,0,0) 0 2px,rgba(0,0,0,.28) 2px 4px);
+  mix-blend-mode:multiply}
+#stage{position:fixed;inset:0;overflow:hidden;padding:5vh 6vw}
+.wrap{max-width:1000px;margin:0 auto}
+.dim{opacity:.55}
+.ok{color:#3dff6e}.bad{color:#ff2f4d}.warnc{color:#ffcc00}.cy{color:#25e6ff}
+b,strong{color:#fff}
+.big{font-size:clamp(34px,9vw,110px);line-height:1.05;font-weight:700;letter-spacing:-2px}
+.mid{font-size:clamp(18px,3.4vw,34px);line-height:1.25}
+.bar{height:14px;border:1px solid #2c7a44;margin:10px 0;position:relative;overflow:hidden}
+.bar>i{display:block;height:100%;background:#3dff6e;width:0}
+.row{display:flex;gap:12px;justify-content:space-between;border-bottom:1px dotted #1d4a2c;padding:5px 0}
+.row span:last-child{color:#fff}
+@keyframes shk{0%,100%{transform:translate(0,0)}10%{transform:translate(-6px,3px)}
+ 25%{transform:translate(5px,-4px)}40%{transform:translate(-4px,-3px)}
+ 60%{transform:translate(6px,2px)}80%{transform:translate(-3px,4px)}}
+.shake{animation:shk .35s linear infinite}
+.glitch{position:relative;display:inline-block}
+.glitch::before,.glitch::after{content:attr(data-t);position:absolute;left:0;top:0;
+  width:100%;overflow:hidden}
+.glitch::before{color:#ff2f4d;animation:gl1 2.1s infinite steps(2)}
+.glitch::after{color:#25e6ff;animation:gl2 1.7s infinite steps(2)}
+@keyframes gl1{0%,92%,100%{clip-path:inset(0 0 100% 0);transform:none}
+ 93%{clip-path:inset(12% 0 60% 0);transform:translate(-4px,0)}
+ 96%{clip-path:inset(52% 0 22% 0);transform:translate(5px,0)}}
+@keyframes gl2{0%,90%,100%{clip-path:inset(0 0 100% 0);transform:none}
+ 91%{clip-path:inset(70% 0 8% 0);transform:translate(4px,0)}
+ 95%{clip-path:inset(24% 0 48% 0);transform:translate(-5px,0)}}
+#reveal{position:fixed;inset:0;z-index:9500;display:none;background:#050505;
+  align-items:center;justify-content:center;text-align:center;padding:6vw;cursor:auto}
+#reveal .card{max-width:720px}
+#reveal p{margin:18px 0;font-size:clamp(14px,2.2vw,19px);color:#9fb8a6}
+#reveal .sig{margin-top:26px;font-size:13px;color:#3dff6e;letter-spacing:2px}
+#bail{margin-top:26px;background:#0e2416;color:#3dff6e;border:1px solid #3dff6e;
+  padding:12px 22px;font:inherit;cursor:pointer;letter-spacing:1px}
+#bail:hover{background:#3dff6e;color:#000}
+.hint{position:fixed;bottom:10px;right:14px;z-index:9100;font-size:11px;
+  color:#2f5f3f;display:none}
+"""
+
+SHARED_JS = r"""
+const BRAND=__BRAND__, TAGLINE=__TAGLINE__, TARGET=__TARGET__, GOTCHA=__GOTCHA__;
+const PACE=__PACE__, SOUNDON=__SOUND__, REPORT=__REPORT__;
+
+/* The only thing this page ever sends anywhere: a one-word note to the server
+   that served it — which is the sender's own terminal — so they can watch the
+   prank land in real time. Same origin, no body, no identifiers; the server
+   already saw the request that fetched the page. On GitHub Pages there is
+   nothing listening and it fails silently. The reveal says this happened. */
+function hit(stage){
+  if(!REPORT) return;
+  try{ navigator.sendBeacon('hit?s='+encodeURIComponent(stage)); }
+  catch(e){ try{ fetch('hit?s='+stage,{method:'POST',keepalive:true}); }catch(e2){} }
+}
+const $=s=>document.querySelector(s), stage=()=>$('#stage'), wrap=()=>$('#stage .wrap');
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const pick=a=>a[Math.floor(Math.random()*a.length)];
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+/* ── sound: nothing is downloaded, every noise is synthesised on the spot ── */
+let AC=null;
+function ac(){ if(!SOUNDON) return null;
+  if(!AC){ try{ AC=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ return null; } }
+  if(AC.state==='suspended') AC.resume();
+  return AC; }
+function tone(f,dur,type,vol){ const a=ac(); if(!a) return;
+  const o=a.createOscillator(), g=a.createGain();
+  o.type=type||'square'; o.frequency.value=f;
+  g.gain.setValueAtTime(vol||.06,a.currentTime);
+  g.gain.exponentialRampToValueAtTime(.0001,a.currentTime+dur);
+  o.connect(g).connect(a.destination); o.start(); o.stop(a.currentTime+dur); }
+function noise(dur,vol){ const a=ac(); if(!a) return;
+  const n=a.sampleRate*dur, buf=a.createBuffer(1,n,a.sampleRate), d=buf.getChannelData(0);
+  for(let i=0;i<n;i++) d[i]=(Math.random()*2-1)*(1-i/n);
+  const s=a.createBufferSource(), g=a.createGain();
+  s.buffer=buf; g.gain.value=vol||.14;
+  s.connect(g).connect(a.destination); s.start(); }
+function beeps(n,f){ for(let i=0;i<(n||3);i++) setTimeout(()=>tone(f||880,.09),i*150); }
+function click(){ tone(1400+Math.random()*600,.012,'square',.02); }
+
+/* ── the intel: every field below is real, which is why the fake ones work ── */
+const INTEL={ip:'…',city:'',region:'',country:'',org:'',os:'',browser:'',mobile:false,
+  screen:'',lang:'',cores:'',mem:'',tz:'',batt:null,charging:null,net:'',now:''};
+const INTEL_READY=(async()=>{
+  const ua=navigator.userAgent;
+  INTEL.os = /Windows NT 10/.test(ua)?'Windows 10/11' : /Windows/.test(ua)?'Windows'
+    : /Android/.test(ua)?'Android' : /iPhone|iPad/.test(ua)?'iOS'
+    : /Mac OS X/.test(ua)?'macOS' : /CrOS/.test(ua)?'ChromeOS'
+    : /Linux/.test(ua)?'Linux' : 'unknown';
+  INTEL.browser = /Edg\//.test(ua)?'Edge' : /OPR\//.test(ua)?'Opera'
+    : /Firefox\//.test(ua)?'Firefox' : /Chrome\//.test(ua)?'Chrome'
+    : /Safari\//.test(ua)?'Safari' : 'unknown';
+  INTEL.mobile  = /Android|iPhone|iPad|Mobile/.test(ua);
+  INTEL.screen  = screen.width+'×'+screen.height+' @'+(window.devicePixelRatio||1)+'x';
+  INTEL.lang    = navigator.language||'--';
+  INTEL.cores   = navigator.hardwareConcurrency||'?';
+  INTEL.mem     = navigator.deviceMemory ? navigator.deviceMemory+' GB' : 'undisclosed';
+  try{ INTEL.tz = Intl.DateTimeFormat().resolvedOptions().timeZone; }catch(e){ INTEL.tz='--'; }
+  INTEL.now = new Date().toLocaleString();
+  try{ const c=navigator.connection; if(c&&c.effectiveType) INTEL.net=c.effectiveType.toUpperCase(); }catch(e){}
+  try{ if(navigator.getBattery){ const b=await navigator.getBattery();
+        INTEL.batt=Math.round(b.level*100); INTEL.charging=b.charging; } }catch(e){}
+  /* one lookup, two providers, no key, nothing stored anywhere */
+  try{
+    const r=await fetch('https://ipwho.is/',{referrerPolicy:'no-referrer'});
+    const j=await r.json();
+    if(j&&j.success!==false){ INTEL.ip=j.ip; INTEL.city=j.city||''; INTEL.region=j.region||'';
+      INTEL.country=j.country||''; INTEL.org=(j.connection&&j.connection.isp)||''; }
+    else throw 0;
+  }catch(e){
+    try{ const r=await fetch('https://ipapi.co/json/',{referrerPolicy:'no-referrer'});
+      const j=await r.json();
+      INTEL.ip=j.ip||'unavailable'; INTEL.city=j.city||''; INTEL.region=j.region||'';
+      INTEL.country=j.country_name||''; INTEL.org=j.org||'';
+    }catch(e2){ INTEL.ip='unavailable'; }
+  }
+  return INTEL;
+})();
+const place=()=>[INTEL.city,INTEL.region,INTEL.country].filter(Boolean).join(', ')||'location withheld';
+const device=()=>(INTEL.os||'?')+' · '+(INTEL.browser||'?')+(INTEL.mobile?' · mobile':'');
+
+/* ── output helpers ── */
+/* Everything lands inside .wrap so lines keep a readable measure instead of
+   stretching the full width of a 4K monitor; #stage is what scrolls. */
+function put(h){ wrap().insertAdjacentHTML('beforeend',h);
+  stage().scrollTop=stage().scrollHeight; }
+async function say_(text,cls,speed){
+  const el=document.createElement('div');
+  if(cls) el.className=cls; wrap().appendChild(el);
+  const sp=speed||PACE;
+  for(const ch of text){ el.textContent+=ch; if(ch.trim()) click();
+    stage().scrollTop=stage().scrollHeight; await wait(sp); }
+  return el;
+}
+async function bar(label,ms){
+  const el=document.createElement('div');
+  el.innerHTML='<div class="dim">'+esc(label)+'</div><div class="bar"><i></i></div>';
+  wrap().appendChild(el); const fill=el.querySelector('i');
+  const t0=performance.now();
+  return new Promise(r=>{ (function step(){
+    const p=Math.min(1,(performance.now()-t0)/ms);
+    fill.style.width=(p*100).toFixed(1)+'%';
+    if(p<1) requestAnimationFrame(step); else r(el);
+  })(); });
+}
+function shake(on){ document.body.classList.toggle('shake',on!==false); }
+/* Fire-and-forget on purpose. Without a user gesture this rejects, and in some
+   embedded contexts the promise never settles at all — awaiting it would stall
+   the scene on its first line, so nothing here ever waits for the answer. */
+function goFull(){
+  try{ const p=document.documentElement.requestFullscreen();
+       if(p&&p.catch) p.catch(()=>{}); }catch(e){}
+}
+
+/* ── the punchline: every scene, no exceptions, ends here ── */
+let DONE=false;
+async function reveal(){
+  if(DONE) return; DONE=true;
+  shake(false);
+  try{ if(document.fullscreenElement) await document.exitFullscreen(); }catch(e){}
+  document.querySelectorAll('.ephemeral').forEach(n=>n.remove());
+  const who = TARGET ? esc(TARGET)+', ' : '';
+  $('#reveal').innerHTML =
+    '<div class="card">'+
+      '<div class="glitch big" data-t="GOTCHA">GOTCHA</div>'+
+      '<p>'+who+'nothing happened.</p>'+
+      '<p>No files were touched, nothing was downloaded, nothing was installed, '+
+      'and nothing about you was stored anywhere. It was one web page in one '+
+      'tab, and it just got closed.</p>'+
+      (REPORT ? '<p>The one thing that did happen: whoever sent you this got a '+
+                'line in their terminal saying you opened it. That is the whole '+
+                'hack.</p>' : '')+
+      (GOTCHA ? '<p style="color:#e8ffe8">'+esc(GOTCHA)+'</p>' : '')+
+      '<div class="sig">'+esc(BRAND)+' biteprank · '+esc(TAGLINE)+'</div>'+
+      '<button id="bail">😂 alright, you got me</button>'+
+    '</div>';
+  $('#reveal').style.display='flex';
+  hit('reveal');
+  $('#bail').onclick=()=>{ try{window.close();}catch(e){} location.replace('about:blank'); };
+  beeps(3,520);
+}
+"""
+
+BOOT_JS = r"""
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'||e.key==='Esc') reveal(); });
+let STARTED=false;
+function launch(){
+  if(STARTED) return; STARTED=true;
+  /* Called from inside a real click handler, which is the only moment a
+     browser will grant fullscreen and let a sound play. Order matters. */
+  ac(); goFull(); hit('open');
+  const b=$('#bait'); if(b) b.remove();
+  const h=document.querySelector('.hint'); if(h) h.style.display='block';
+  runScene().catch(e=>{ console.error(e); reveal(); });
+}
+window.addEventListener('load',()=>{
+  const b=$('#bait');
+  if(b){
+    /* Wait for them. The click is the whole point — it is consent to be
+       startled, and it is what unlocks fullscreen and audio. */
+    b.addEventListener('click',launch,{once:true});
+    b.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' ') launch(); });
+    hit('bait');
+  } else {
+    /* No bait: start immediately and upgrade on whatever they touch first. */
+    const go=()=>{ document.removeEventListener('pointerdown',go);
+                   document.removeEventListener('keydown',go);
+                   ac(); if(!DONE) goFull(); };
+    document.addEventListener('pointerdown',go);
+    document.addEventListener('keydown',go);
+    launch();
+  }
+});
+"""
+
+# ───────────────────────────────────────────────────────────── the bait ────
+#
+# The honest problem with sending someone a prank link: nobody clicks a bare
+# URL, and nobody opens a stray .html at all. So the page opens as something
+# ordinary — a message with a video in it, a photo waiting to be revealed, a
+# shared folder — and the scene erupts out of whatever they press.
+#
+# That framing also solves a real technical problem. Browsers refuse fullscreen
+# and refuse to make a sound until the visitor has deliberately touched the
+# page, so without a bait half the effect fired into a muted, windowed tab. The
+# bait guarantees exactly one deliberate click, which is all either needs.
+#
+# There is no bait that asks for a password, a login, or a payment, and there
+# never will be — that stops being a prank and starts being phishing. These
+# imitate no real service: no logos, no brand names, no lookalike domains.
+
+BAIT_CSS = r"""
+#bait{position:fixed;inset:0;z-index:9200;display:flex;align-items:center;
+  justify-content:center;background:#0b0b0d;padding:5vw;cursor:pointer;
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+#bait *{cursor:pointer}
+.bcard{width:min(520px,94vw);background:#17171b;border-radius:16px;overflow:hidden;
+  box-shadow:0 24px 70px rgba(0,0,0,.7);animation:bin .5s ease both}
+@keyframes bin{from{opacity:0;transform:translateY(14px) scale(.98)}}
+.bhead{display:flex;align-items:center;gap:11px;padding:15px 17px}
+.bav{width:36px;height:36px;border-radius:50%;flex:none;
+  background:linear-gradient(135deg,#3dff6e,#25e6ff)}
+.bname{color:#f2f2f6;font-size:15px;font-weight:600}
+.bsub{color:#8a8a96;font-size:12.5px;margin-top:2px}
+.bmedia{position:relative;aspect-ratio:16/10;background:#000;overflow:hidden}
+.thumb{position:absolute;inset:-12px;filter:blur(11px) saturate(1.15);
+  background:
+    radial-gradient(58% 68% at 31% 34%,#7a5a41 0%,transparent 62%),
+    radial-gradient(52% 62% at 71% 56%,#2c4d68 0%,transparent 66%),
+    radial-gradient(85% 95% at 50% 92%,#0f1219 0%,transparent 72%),
+    linear-gradient(160deg,#3d4250,#14161c)}
+.thumb.hard{filter:blur(26px) saturate(1.25)}
+.bplay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+.bplay i{width:72px;height:72px;border-radius:50%;background:rgba(255,255,255,.94);
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 6px 24px rgba(0,0,0,.45);transition:transform .15s}
+#bait:hover .bplay i{transform:scale(1.07)}
+.bplay i::after{content:"";border-left:23px solid #111;border-top:14px solid transparent;
+  border-bottom:14px solid transparent;margin-left:6px}
+.blocked{position:absolute;inset:0;display:flex;align-items:center;
+  justify-content:center;flex-direction:column;gap:12px;color:#fff;
+  font-size:15px;text-shadow:0 2px 10px rgba(0,0,0,.8)}
+.blocked span{font-size:38px}
+.bdur{position:absolute;right:10px;bottom:10px;background:rgba(0,0,0,.75);
+  color:#fff;font-size:12px;padding:2px 6px;border-radius:4px}
+.bfoot{padding:14px 17px;color:#d2d2da;font-size:14.5px;line-height:1.45}
+.blist{padding:4px 0 8px}
+.brow{display:flex;justify-content:space-between;gap:14px;padding:11px 17px;
+  color:#d2d2da;font-size:14px}
+.brow span{color:#7e7e8a;font-size:12.5px}
+.brow+.brow{border-top:1px solid #232329}
+.bbtn{display:block;width:100%;padding:15px;border:0;background:#2f6bff;color:#fff;
+  font:600 15px/1 inherit}
+.bnote{margin-top:15px;text-align:center;color:#4e4e58;font-size:12px}
+"""
+
+BAITS = {
+    'video': dict(
+        pagetitle='new message',
+        label='a video someone sent you',
+        desc='A message with a blurred clip and a play button — the most clickable thing there is',
+        html='<div id="bait"><div class="bcard">'
+             '<div class="bhead"><div class="bav"></div><div>'
+             '<div class="bname">new message</div>'
+             '<div class="bsub">1 video · just now</div></div></div>'
+             '<div class="bmedia"><div class="thumb"></div>'
+             '<div class="bplay"><i></i></div><div class="bdur">0:27</div></div>'
+             '<div class="bfoot">__NAME__is this you?? 😭 look at 0:14</div>'
+             '</div></div>'),
+    'photo': dict(
+        pagetitle='photo',
+        label='a photo waiting to be revealed',
+        desc='Blurred out with a tap-to-reveal over it, which nobody has ever not tapped',
+        html='<div id="bait"><div class="bcard">'
+             '<div class="bhead"><div class="bav"></div><div>'
+             '<div class="bname">someone sent you a photo</div>'
+             '<div class="bsub">hidden · expires in 24 hours</div></div></div>'
+             '<div class="bmedia"><div class="thumb hard"></div>'
+             '<div class="blocked"><span>👁</span>tap to reveal</div></div>'
+             '<div class="bfoot">__NAME__you\'re in this one.</div>'
+             '</div></div>'),
+    'folder': dict(
+        pagetitle='shared_folder',
+        label='a shared folder',
+        desc='Three files with believable sizes and an Open button — the boring, trustworthy one',
+        html='<div id="bait"><div class="bcard">'
+             '<div class="bhead"><div class="bav"></div><div>'
+             '<div class="bname">shared_folder</div>'
+             '<div class="bsub">3 files · shared with you</div></div></div>'
+             '<div class="blist">'
+             '<div class="brow">📄 receipts_2026.pdf<span>1.2 MB</span></div>'
+             '<div class="brow">🖼 IMG_4417.jpg<span>3.8 MB</span></div>'
+             '<div class="brow">🗜 backup.zip<span>241 MB</span></div>'
+             '</div><button class="bbtn">Open folder</button>'
+             '</div></div>'),
+    'none': dict(
+        label='no bait — straight into it',
+        desc='Opens directly on the scene. Fullscreen and sound then wait for them to touch the page',
+        html=''),
+}
+
+# ────────────────────────────────────────────────────────────── scenes ────
+# Each builder returns {css?, html?, js} and the js must define runScene().
+
+def s_trace():
+    return {'js': r"""
+async function runScene(){
+  await say_('establishing session…','dim'); await wait(300);
+  await goFull();
+  await say_('> remote handshake accepted','ok');
+  await bar('resolving endpoint',1400);
+  await INTEL_READY;
+  noise(.2,.1);
+  put('<div class="mid ok" style="margin:18px 0">TRACE COMPLETE</div>');
+  const rows=[
+    ['public address',INTEL.ip],
+    ['approx. location',place()],
+    ['network / carrier',INTEL.org||'unresolved'],
+    ['device',device()],
+    ['display',INTEL.screen],
+    ['cpu threads',INTEL.cores],
+    ['memory',INTEL.mem],
+    ['timezone',INTEL.tz],
+    ['local time',INTEL.now],
+  ];
+  if(INTEL.batt!==null) rows.push(['battery',INTEL.batt+'%'+(INTEL.charging?' (charging)':'')]);
+  if(INTEL.net) rows.push(['connection',INTEL.net]);
+  for(const [k,v] of rows){
+    put('<div class="row"><span class="dim">'+esc(k)+'</span><span>'+esc(v)+'</span></div>');
+    tone(660,.03); await wait(190);
+  }
+  await wait(700);
+  await say_('','');
+  await say_('> indexing user directory…','warnc');
+  const files=['taxes_2025.pdf','passwords.txt','camera_roll/','not_suspicious.zip',
+               'resume_FINAL_final2.docx','.ssh/id_ed25519','browser_history.sqlite'];
+  for(const f of files){
+    put('<div class="dim">  + '+esc(f)+'</div>'); tone(320,.03); await wait(230);
+  }
+  await bar('uploading 4.2 GB',3200);
+  shake(true); noise(.5,.18);
+  put('<div class="big bad glitch" data-t="ACCESS GRANTED" style="margin-top:20px">ACCESS GRANTED</div>');
+  await wait(1800); await reveal();
+}"""}
+
+
+def s_matrix():
+    return {'css': '#rain{position:fixed;inset:0;z-index:1}#stage{position:relative;z-index:2;pointer-events:none}',
+            'html': '<canvas id="rain" class="ephemeral"></canvas>',
+            'js': r"""
+async function runScene(){
+  await goFull();
+  const cv=$('#rain'), ctx=cv.getContext('2d');
+  const fit=()=>{cv.width=innerWidth;cv.height=innerHeight;};
+  fit(); addEventListener('resize',fit);
+  const glyphs='0123456789ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉABCDEF@#$%'.split('');
+  const step=16; let cols=[];
+  const reset=()=>{cols=new Array(Math.ceil(cv.width/step)).fill(0).map(()=>rnd(-60,0));};
+  reset();
+  (function draw(){
+    ctx.fillStyle='rgba(0,0,0,.07)'; ctx.fillRect(0,0,cv.width,cv.height);
+    ctx.font=step+'px monospace';
+    for(let i=0;i<cols.length;i++){
+      ctx.fillStyle = Math.random()<.03 ? '#dfffe6' : '#25c04a';
+      ctx.fillText(pick(glyphs),i*step,cols[i]*step);
+      if(cols[i]*step>cv.height && Math.random()>.975) cols[i]=0;
+      cols[i]++;
+    }
+    if(!DONE) requestAnimationFrame(draw);
+  })();
+  await wait(2600);
+  await INTEL_READY;
+  await say_('wake up, '+(TARGET||'friend')+'…','mid ok',60);
+  await wait(900);
+  await say_('we can see the whole tab.','mid ok',60);
+  await wait(900);
+  await say_('we can see '+place()+'.','mid ok',60);
+  await wait(1600);
+  noise(.4,.16); shake(true);
+  put('<div class="big bad glitch" data-t="SYSTEM COMPROMISED">SYSTEM COMPROMISED</div>');
+  await wait(2200); await reveal();
+}"""}
+
+
+def s_bsod():
+    return {'css': 'body{background:#0a55c4;color:#fff}body::after{opacity:.25}'
+                   '#stage{padding:9vh 10vw}.sad{font-size:clamp(60px,12vw,150px);line-height:1}',
+            'js': r"""
+async function runScene(){
+  await goFull(); tone(180,.5,'sine',.08);
+  put('<div class="sad">:(</div>');
+  await wait(700);
+  await say_("Your PC ran into a problem and needs to restart. We're just "+
+             "collecting some error info, and then we'll restart for you.",'mid',18);
+  await wait(600);
+  const pc=put('<div class="mid" style="margin:26px 0" id="pc">0% complete</div>');
+  const el=$('#pc');
+  for(let i=0;i<=100;i+=Math.ceil(rnd(1,5))){ el.textContent=Math.min(i,100)+'% complete';
+    await wait(rnd(60,220)); }
+  el.textContent='100% complete';
+  await INTEL_READY;
+  await wait(500);
+  put('<div class="dim" style="margin-top:30px">Stop code: '+
+      'KERNEL_TRUST_VIOLATION</div>');
+  put('<div class="dim">What failed: '+esc(INTEL.browser||'tab')+'.sys</div>');
+  put('<div class="dim">Node: '+esc(INTEL.ip)+' · '+esc(place())+'</div>');
+  await wait(2600); await reveal();
+}"""}
+
+
+def s_panic():
+    return {'css': 'body{background:#000;color:#d8d8d8}#stage{padding:4vh 4vw;font-size:13px}',
+            'js': r"""
+async function runScene(){
+  await goFull(); noise(.3,.12);
+  await INTEL_READY;
+  const lines=[
+    '[    0.000000] Kernel panic - not syncing: Attempted to kill init!',
+    '[    0.000001] CPU: '+INTEL.cores+' PID: 1 Comm: curiosity Tainted: G   U  '+BRAND,
+    '[    0.000002] Hardware name: '+INTEL.os+' / '+INTEL.browser,
+    '[    0.000004] Call Trace:',
+    '                dump_stack+0x5c/0x80',
+    '                panic+0x101/0x2e3',
+    '                trust_a_stranger+0x2f/0x40',
+    '                clicked_the_link+0x1a4/0x1f0',
+    '                do_exit.cold+0x3b/0x3b',
+    '[    0.000009] ---[ end trace '+Math.random().toString(16).slice(2,18)+' ]---',
+    '[    0.000011] net: origin '+INTEL.ip+' ('+place()+')',
+    '[    0.000013] Rebooting in 10 seconds..',
+  ];
+  for(const l of lines){ await say_(l,'',6); await wait(120); }
+  let n=10; const el=await say_('','warnc',0);
+  while(n>0){ el.textContent='[  panic  ] reboot in '+n+'…'; tone(220,.06); await wait(700); n--; }
+  shake(true); noise(.6,.2);
+  await wait(600); await reveal();
+}"""}
+
+
+def s_format():
+    return {'js': r"""
+async function runScene(){
+  await goFull();
+  await say_('> mounting volume…','dim'); await wait(400);
+  await INTEL_READY;
+  await say_('> device: '+INTEL.os+' primary volume','dim'); await wait(500);
+  await say_('WARNING: this will erase everything.','bad mid'); await wait(1200);
+  beeps(4,300);
+  await bar('formatting  [ ext4 ]',5200);
+  const sectors=['/home','/etc','/var','/usr/bin','/boot','/srv','/opt'];
+  for(const s of sectors){
+    put('<div class="dim">  wiped '+esc(s)+' <span class="bad">✓</span></div>');
+    tone(180,.05); await wait(420);
+  }
+  shake(true);
+  put('<div class="big bad glitch" data-t="DRIVE EMPTY" style="margin-top:24px">DRIVE EMPTY</div>');
+  await wait(2200); await reveal();
+}"""}
+
+
+def s_ransom():
+    return {'css': 'body{background:#120005;color:#ffb3c1}.lock{font-size:clamp(50px,11vw,130px)}'
+                   '.btc{word-break:break-all;color:#ffcc00;font-size:13px}',
+            'js': r"""
+async function runScene(){
+  await goFull(); noise(.4,.15); beeps(3,180);
+  put('<div class="lock">🔒</div>');
+  await say_('YOUR FILES HAVE BEEN ENCRYPTED','big bad',24);
+  await INTEL_READY;
+  await wait(600);
+  await say_('All documents, photos and databases on this device are locked '+
+             'with AES-256. There is no way to recover them without the key.','',10);
+  await wait(500);
+  put('<div style="margin:20px 0" class="btc">send 0.4 BTC to '+
+      'bc1q'+Math.random().toString(36).slice(2,12)+Math.random().toString(36).slice(2,14)+'</div>');
+  put('<div class="row"><span class="dim">machine id</span><span>'+esc(INTEL.ip)+'</span></div>');
+  put('<div class="row"><span class="dim">registered to</span><span>'+esc(place())+'</span></div>');
+  const el=await say_('','warnc mid',0);
+  let t=180;
+  const tick=setInterval(()=>{ t--; tone(440,.04);
+    const m=String(Math.floor(t/60)).padStart(2,'0'), s=String(t%60).padStart(2,'0');
+    el.textContent='time remaining  '+m+':'+s;
+    if(t<=170){ clearInterval(tick); reveal(); }
+  },380);
+}"""}
+
+
+def s_crack():
+    return {'css': '#glass{position:fixed;inset:0;z-index:8000;pointer-events:none;display:none}',
+            'html': '<svg id="glass" class="ephemeral"></svg>',
+            'js': r"""
+async function runScene(){
+  await goFull();
+  await say_('checking display integrity…','dim'); await wait(1400);
+  await bar('panel diagnostic',1800);
+  await say_('> refresh test','dim'); await wait(900);
+  noise(.35,.22); shake(true); tone(90,.5,'sawtooth',.12);
+  const g=$('#glass'); g.style.display='block';
+  const cx=rnd(innerWidth*.3,innerWidth*.7), cy=rnd(innerHeight*.3,innerHeight*.7);
+  let d='';
+  for(let i=0;i<26;i++){
+    const a=(i/26)*Math.PI*2+rnd(-.1,.1); let x=cx,y=cy,p='M'+cx+' '+cy;
+    for(let s=0;s<5;s++){ const r=rnd(40,150);
+      x+=Math.cos(a+rnd(-.35,.35))*r; y+=Math.sin(a+rnd(-.35,.35))*r; p+=' L'+x.toFixed(0)+' '+y.toFixed(0); }
+    d+='<path d="'+p+'" stroke="rgba(255,255,255,.85)" stroke-width="'+rnd(.6,2.2).toFixed(1)+'" fill="none"/>';
+  }
+  for(let i=0;i<7;i++){
+    const r=30+i*26;
+    d+='<circle cx="'+cx+'" cy="'+cy+'" r="'+r+'" stroke="rgba(255,255,255,.4)" stroke-width=".7" fill="none"/>';
+  }
+  g.innerHTML=d+'<circle cx="'+cx+'" cy="'+cy+'" r="14" fill="rgba(255,255,255,.9)"/>';
+  await wait(500); shake(false);
+  await wait(2400); await reveal();
+}"""}
+
+
+def s_typer():
+    return {'js': r"""
+async function runScene(){
+  await goFull(); await INTEL_READY;
+  const you = TARGET || 'hey';
+  const script=[
+    [you+'.',900],
+    ['i can see this tab.',1400],
+    ['no, really — '+INTEL.browser+' on '+INTEL.os+'. '+INTEL.screen+'.',1800],
+    ['you are somewhere around '+place()+'.',2000],
+    (INTEL.batt!==null?['your battery is on '+INTEL.batt+'%'+(INTEL.charging?', plugged in':', not charging')+'.',2000]:['',0]),
+    ['and it is '+INTEL.now+' where you are sitting.',2200],
+    ['i am going to be honest with you.',1600],
+    ['keep reading.',1400],
+  ].filter(x=>x[0]);
+  for(const [t,p] of script){ await say_(t,'mid',52); await wait(p); await say_(''); }
+  await wait(600); await reveal();
+}"""}
+
+
+def s_webcam():
+    return {'css': """
+#vf{position:fixed;inset:6vh 8vw;border:2px solid #ff2f4d;z-index:5;display:none}
+#vf::before{content:"● REC";position:absolute;top:10px;left:12px;color:#ff2f4d;
+  font-weight:700;animation:bl 1s steps(2) infinite}
+@keyframes bl{50%{opacity:0}}
+#vf .cor{position:absolute;width:34px;height:34px;border:2px solid #ff2f4d}
+#noise{position:absolute;inset:0;opacity:.32}
+#tstamp{position:absolute;bottom:10px;right:12px;color:#ff2f4d;font-size:12px}
+""",
+            'html': '<div id="vf" class="ephemeral"><canvas id="noise"></canvas>'
+                    '<div class="cor" style="top:-2px;left:-2px;border-right:0;border-bottom:0"></div>'
+                    '<div class="cor" style="top:-2px;right:-2px;border-left:0;border-bottom:0"></div>'
+                    '<div class="cor" style="bottom:-2px;left:-2px;border-right:0;border-top:0"></div>'
+                    '<div class="cor" style="bottom:-2px;right:-2px;border-left:0;border-top:0"></div>'
+                    '<div id="tstamp"></div></div>',
+            'js': r"""
+/* no getUserMedia call is made anywhere in this file — the "feed" is static */
+async function runScene(){
+  await goFull();
+  await say_('requesting media device…','dim'); await wait(1500);
+  await say_('> capture device attached','ok'); await wait(900);
+  noise(.15,.1);
+  const vf=$('#vf'); vf.style.display='block';
+  const cv=$('#noise'), ctx=cv.getContext('2d');
+  const fit=()=>{cv.width=vf.clientWidth;cv.height=vf.clientHeight;};
+  fit(); addEventListener('resize',fit);
+  (function grain(){
+    const d=ctx.createImageData(cv.width,cv.height);
+    for(let i=0;i<d.data.length;i+=4){ const v=Math.random()*255;
+      d.data[i]=d.data[i+1]=d.data[i+2]=v; d.data[i+3]=255; }
+    ctx.putImageData(d,0,0);
+    if(!DONE) setTimeout(()=>requestAnimationFrame(grain),55);
+  })();
+  const ts=$('#tstamp');
+  setInterval(()=>{ if(!DONE) ts.textContent=new Date().toLocaleString(); },500);
+  await INTEL_READY;
+  await wait(2200);
+  put('<div class="mid bad" style="position:relative;z-index:6">recording · '+
+      esc(place())+' · '+esc(INTEL.ip)+'</div>');
+  await wait(3000); await reveal();
+}"""}
+
+
+def s_cursors():
+    return {'css': '.fc{position:fixed;width:0;height:0;z-index:8000;pointer-events:none}'
+                   '.fc::after{content:"";position:absolute;width:0;height:0;'
+                   'border-left:9px solid #fff;border-right:5px solid transparent;'
+                   'border-bottom:14px solid transparent;filter:drop-shadow(0 1px 2px #000);'
+                   'transform:rotate(-28deg)}',
+            'js': r"""
+async function runScene(){
+  await goFull();
+  await say_('> injecting input devices','dim'); await wait(1200);
+  const N=45, arr=[];
+  for(let i=0;i<N;i++){
+    const d=document.createElement('div'); d.className='fc ephemeral';
+    document.body.appendChild(d);
+    arr.push({el:d,x:rnd(0,innerWidth),y:rnd(0,innerHeight),
+              vx:rnd(-3.4,3.4),vy:rnd(-3.4,3.4)});
+    await wait(70); click();
+  }
+  (function move(){
+    for(const c of arr){
+      c.x+=c.vx; c.y+=c.vy;
+      if(c.x<0||c.x>innerWidth) c.vx*=-1;
+      if(c.y<0||c.y>innerHeight) c.vy*=-1;
+      c.el.style.transform='translate('+c.x.toFixed(0)+'px,'+c.y.toFixed(0)+'px)';
+    }
+    if(!DONE) requestAnimationFrame(move);
+  })();
+  await wait(1500);
+  put('<div class="mid warnc">45 remote sessions attached to this display</div>');
+  await wait(3400); await reveal();
+}"""}
+
+
+def s_corrupt():
+    return {'js': r"""
+async function runScene(){
+  await goFull(); await INTEL_READY;
+  await say_('reading page…','dim'); await wait(900);
+  const junk='▓▒░█▚▞◤◢╳¿¡ØΔ¤‡§∎'.split('');
+  const words=('this page is fine. nothing is wrong with this page. everything on '+
+    'this page is exactly where it should be and it will stay that way for as long '+
+    'as you keep looking at it, '+(TARGET||'friend')+'.').split(' ');
+  const el=await say_('','mid',34);
+  el.textContent=words.join(' ');
+  await wait(1400);
+  let s=el.textContent, rot=0;
+  const t=setInterval(()=>{
+    rot++;
+    const a=s.split('');
+    for(let i=0;i<rot*3;i++){ a[Math.floor(Math.random()*a.length)]=pick(junk); }
+    el.textContent=a.join('');
+    if(rot%3===0){ noise(.06,.09); shake(rot>12); }
+    if(rot>22){ clearInterval(t);
+      put('<div class="big bad glitch" data-t="MEMORY FAULT" style="margin-top:24px">MEMORY FAULT</div>');
+      put('<div class="dim">at '+esc(INTEL.ip)+' · '+esc(place())+'</div>');
+      setTimeout(reveal,2000); }
+  },260);
+}"""}
+
+
+def s_battery():
+    return {'js': r"""
+async function runScene(){
+  await goFull(); await INTEL_READY;
+  if(INTEL.batt===null){
+    await say_('battery interface unavailable on this device','dim'); await wait(900);
+    await say_('falling back to thermal drain…','warnc'); await wait(1400);
+  }
+  const start = INTEL.batt!==null ? INTEL.batt : 87;
+  await say_('> power controller attached','ok'); await wait(700);
+  await say_('> current charge: '+start+'%'+(INTEL.charging?' (charging)':''),'',18);
+  await wait(1200);
+  await say_('> initiating discharge','bad mid'); await wait(800);
+  const el=await say_('','big bad',0);
+  let v=start;
+  const t=setInterval(()=>{
+    v-=Math.max(1,Math.round(start/26));
+    if(v<=0){ v=0; clearInterval(t);
+      el.textContent='0%'; noise(.5,.18); shake(true);
+      setTimeout(async()=>{ document.body.style.background='#000';
+        await wait(900); reveal(); },900);
+    } else { el.textContent=v+'%'; tone(300-v,.05); }
+  },230);
+}"""}
+
+
+def s_update():
+    return {'css': 'body{background:#0b3a75;color:#fff}#stage{display:flex;align-items:center;'
+                   'justify-content:center;text-align:center;height:100%}'
+                   '.ring{width:64px;height:64px;border:5px solid rgba(255,255,255,.25);'
+                   'border-top-color:#fff;border-radius:50%;margin:0 auto 34px;'
+                   'animation:sp 1s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}',
+            'js': r"""
+async function runScene(){
+  await goFull();
+  put('<div class="ring"></div>'+
+      '<div class="mid" id="pct">Working on updates 0%</div>'+
+      '<div class="dim" style="margin-top:16px" id="sub">Please do not turn off your computer</div>');
+  const p=$('#pct'), sub=$('#sub');
+  await INTEL_READY;
+  const notes=['Please do not turn off your computer',
+               'This might take a while',
+               'Getting a few things ready',
+               'Do not unplug '+(INTEL.os||'your device'),
+               "Almost there — don't close this",
+               'Reverting changes'];
+  let i=0;
+  const rot=setInterval(()=>{ sub.textContent=notes[i++ % notes.length]; },4200);
+  let v=0;
+  while(v<99){ v+=rnd(.4,3.2); p.textContent='Working on updates '+Math.floor(v)+'%';
+    await wait(rnd(120,600)); }
+  p.textContent='Working on updates 99%';
+  sub.textContent='Please do not turn off your computer';
+  await wait(6000);
+  clearInterval(rot);
+  document.body.style.background='#7a0b0b';
+  p.textContent='Something went wrong';
+  sub.textContent='Undoing changes made to '+(INTEL.os||'your device')+'…';
+  await wait(2600); await reveal();
+}"""}
+
+
+def s_selfdestruct():
+    return {'css': 'body{background:#100000;color:#ff6b6b}',
+            'js': r"""
+async function runScene(){
+  await goFull(); await INTEL_READY;
+  await say_('SESSION FLAGGED','big bad',26);
+  await wait(700);
+  await say_('This link was single-use. It has now been claimed by '+
+             esc(INTEL.ip)+' ('+place()+').','',12);
+  await wait(1000);
+  await say_('Purging local trace in:','mid');
+  const el=await say_('','big',0);
+  for(let n=10;n>0;n--){ el.textContent=n; tone(160+n*30,.12,'square',.09); await wait(760); }
+  el.textContent='0';
+  noise(.7,.24); shake(true);
+  document.body.style.background='#fff';
+  await wait(160); document.body.style.background='#000';
+  await wait(1400); await reveal();
+}"""}
+
+
+def s_bitten():
+    return {'js': r"""
+async function runScene(){
+  await INTEL_READY;
+  await say_('hey.','mid',54); await wait(900);
+  await say_('this is not a virus, an exploit, or anything scary.','mid',40);
+  await wait(1200);
+  await say_('it is one web page that reads a few things your browser tells '+
+             'every site you visit, and then says them back to you:','',22);
+  await wait(600);
+  const rows=[['you are near',place()],['on',device()],['screen',INTEL.screen],
+              ['timezone',INTEL.tz]];
+  if(INTEL.batt!==null) rows.push(['battery',INTEL.batt+'%']);
+  for(const [k,v] of rows){
+    put('<div class="row"><span class="dim">'+esc(k)+'</span><span>'+esc(v)+'</span></div>');
+    tone(700,.03); await wait(320);
+  }
+  await wait(1400);
+  await say_('','');
+  await say_('every site you open can see that much. that is the whole point.','mid ok',34);
+  await wait(2200); await reveal();
+}"""}
+
+
+SCENES = {
+    'trace': dict(title='trace', spicy=False, build=s_trace,
+                  pagetitle='connection diagnostic',
+                  desc='Reads their real IP, city, carrier and battery back to them, then fakes an upload',
+                  about='The flagship, and the one that actually works on people. It opens as a bland '
+                        'diagnostic, then prints a column of facts about the visitor that are all true — '
+                        'their public address, roughly where they are, who their carrier is, their exact '
+                        'battery percentage — and once those land, the fake half (a directory listing and '
+                        'a 4.2 GB upload bar) arrives already believed.'),
+    'matrix': dict(title='matrix', spicy=False, build=s_matrix,
+                   pagetitle='...',
+                   desc='Green rain over the whole screen, then it addresses them by name',
+                   about='Full-screen falling glyphs on a canvas, and once it has their attention the '
+                         'rain starts talking — by name, and with the city they are sitting in.'),
+    'bsod': dict(title='bsod', spicy=False, build=s_bsod,
+                 pagetitle='',
+                 desc='The blue screen, with a percentage that crawls and a stop code about them',
+                 about='A faithful blue screen, sad face and all. The tell that makes it stick is the '
+                       'bottom: the failing module is named after their actual browser.'),
+    'panic': dict(title='panic', spicy=False, build=s_panic,
+                  pagetitle='',
+                  desc='A Linux kernel panic with a call trace that names what they just did',
+                  about='For the friend who would see through a blue screen. Real panic formatting, real '
+                        'stack frames, and one frame called trust_a_stranger+0x2f/0x40.'),
+    'format': dict(title='format', spicy=True, build=s_format,
+                   pagetitle='disk utility',
+                   desc='Pretends to wipe the drive, partition by partition',
+                   about='A formatting progress bar that walks /home, /etc, /boot and ticks each one off. '
+                         'Spicy: this one genuinely frightens people, so pick your target.'),
+    'ransom': dict(title='ransom', spicy=True, build=s_ransom,
+                   pagetitle='!!! READ ME !!!',
+                   desc='Fake encryption notice, fake wallet, a countdown that resolves fast',
+                   about='The full ransomware theatre — padlock, AES-256 claim, a randomly generated '
+                         'bitcoin address and a timer. Spicy, and deliberately the shortest fuse in the '
+                         'set: the countdown reveals after about ten ticks rather than running to zero, '
+                         'because nobody should sit in that feeling for three minutes.'),
+    'crack': dict(title='crack', spicy=False, build=s_crack,
+                  pagetitle='display diagnostic',
+                  desc='Shatters their screen, from wherever the impact happens to land',
+                  about='A display test that ends in an SVG fracture — radial cracks and shockwave rings '
+                        'drawn from a random impact point, with the whole page shaking under it.'),
+    'typer': dict(title='typer', spicy=False, build=s_typer,
+                  pagetitle='',
+                  desc='Someone types to them, slowly, and knows too much',
+                  about='No sirens, no red. Just a cursor typing one line at a time, naming their browser, '
+                        'their OS, their city and their battery, then telling them to keep reading. The '
+                        'quietest scene here and often the most effective.'),
+    'webcam': dict(title='webcam', spicy=True, build=s_webcam,
+                   pagetitle='remote capture',
+                   desc='A REC viewfinder with a live timestamp — and no camera access, ever',
+                   about='Framing brackets, a blinking REC dot, a ticking timestamp and a field of static '
+                         'where the feed should be. Worth being explicit: this file never calls '
+                         'getUserMedia, never requests camera permission and cannot see anything. It is '
+                         'a drawing of a camera feed. Spicy because it reads as the real thing.'),
+    'cursors': dict(title='cursors', spicy=False, build=s_cursors,
+                    pagetitle='input diagnostic',
+                    desc='Forty-five other mouse pointers appear and start wandering',
+                    about='Pointers fade in one by one and drift around the page bouncing off the edges. '
+                          'Silly rather than scary, and the one that gets screenshotted.'),
+    'corrupt': dict(title='corrupt', spicy=False, build=s_corrupt,
+                    pagetitle='',
+                    desc='A calm sentence about how nothing is wrong, decaying into garbage',
+                    about='It writes a reassuring paragraph, then eats it — a few more characters replaced '
+                          'with block glyphs every pass until the whole thing collapses into MEMORY FAULT.'),
+    'battery': dict(title='battery', spicy=False, build=s_battery,
+                    pagetitle='power management',
+                    desc='Drains their real battery percentage to zero on screen',
+                    about='It reads the actual charge level off the device and counts it down from exactly '
+                          'there, which is why it works — the first number is right, so the rest look '
+                          'right. Falls back gracefully on browsers without the battery API.'),
+    'update': dict(title='update', spicy=False, build=s_update,
+                   pagetitle='Working on updates',
+                   desc='The forced update screen that sticks at 99% and then reverts',
+                   about='Spinner, percentage, and the rotating do-not-turn-off-your-computer messages. '
+                         'It creeps to 99%, sits there for six full seconds, and then turns red and starts '
+                         'undoing changes. Slow-burn, no jump scare.'),
+    'selfdestruct': dict(title='selfdestruct', spicy=False, build=s_selfdestruct,
+                         pagetitle='single-use link',
+                         desc='Tells them the link was one-use, then counts down from ten',
+                         about='Sells the link itself as the payload: claimed, flagged, purging in ten. '
+                               'The countdown does the work, and a white flash lands at zero.'),
+    'bitten': dict(title='bitten', spicy=False, build=s_bitten,
+                   pagetitle='hello',
+                   desc='No scare at all — just shows them what every site already knows',
+                   about='The one to send to someone you should not frighten. It says up front that it is '
+                         'not a virus, shows the same real fields the other scenes weaponise, and closes '
+                         'by pointing out that every page they open can read all of it. A prank that ends '
+                         'as a privacy demo.'),
+}
+
+# ────────────────────────────────────────────────────────── page build ────
+
+def build_page(key, bait, target, gotcha, report=False):
+    sc = SCENES[key]
+    parts = sc['build']()
+    css = (SHELL_CSS.replace('__CURSOR__', 'default' if CURSOR else 'none')
+           + (BAIT_CSS if bait != 'none' else '') + parts.get('css', ''))
+    shared = (SHARED_JS
+              .replace('__BRAND__', json.dumps(BRAND))
+              .replace('__TAGLINE__', json.dumps(TAGLINE))
+              .replace('__TARGET__', json.dumps(target or ''))
+              .replace('__GOTCHA__', json.dumps(gotcha or ''))
+              .replace('__PACE__', str(PACE_MS))
+              .replace('__SOUND__', 'true' if SOUND else 'false')
+              .replace('__REPORT__', 'true' if report else 'false'))
+    # The bait addresses them by name when there is one and reads naturally
+    # when there isn't — "yuval, is this you??" against "is this you??".
+    name_bit = (html.escape(target) + ', ') if target else ''
+    bait_html = BAITS[bait]['html'].replace('__NAME__', name_bit)
+    title = BAITS[bait].get('pagetitle') or sc['pagetitle'] or '​'
+    return textwrap.dedent(f"""\
+        <!doctype html>
+        <html lang="en"><head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+        <meta name="referrer" content="no-referrer">
+        <meta name="robots" content="noindex,nofollow">
+        <title>{html.escape(title)}</title>
+        <style>{css}</style>
+        </head><body>
+        <div id="stage"><div class="wrap"></div></div>
+        {parts.get('html', '')}
+        {bait_html}
+        <div id="reveal"></div>
+        <div class="hint ephemeral">press ESC to stop</div>
+        <script>
+        {shared}
+        {parts['js']}
+        {BOOT_JS}
+        </script>
+        </body></html>
+        """)
+
+# ──────────────────────────────────────────────────────────── delivery ────
+
+def _lan_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('10.255.255.255', 1))
+        return s.getsockname()[0]
+    except Exception:
+        return '127.0.0.1'
+    finally:
+        s.close()
+
+
+def _prank_id(key):
+    seed = f'{key}{time.time()}{random.random()}'.encode()
+    return key + '-' + hashlib.sha256(seed).hexdigest()[:7]
+
+
+def _clip(text):
+    if not COPYLINK:
+        return False
+    for cmd in (['wl-copy'], ['xclip', '-selection', 'clipboard']):
+        if shutil.which(cmd[0]):
+            try:
+                subprocess.run(cmd, input=text.encode(), check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return True
+            except Exception:
+                pass
+    return False
+
+
+def _qr(text):
+    if not QR or not shutil.which('qrencode'):
+        return
+    try:
+        out = subprocess.run(['qrencode', '-t', 'ANSIUTF8', '-m', '1', text],
+                             capture_output=True, text=True, timeout=8)
+        if out.returncode == 0 and out.stdout.strip():
+            say()
+            say(out.stdout)
+    except Exception:
+        pass
+
+
+def _log(key, target, where, link):
+    try:
+        CACHE.mkdir(parents=True, exist_ok=True)
+        with LOG.open('a') as f:
+            f.write(f'{datetime.now().isoformat(timespec="seconds")}\t{key}\t'
+                    f'{target or "-"}\t{where}\t{link}\n')
+    except Exception:
+        pass
+
+
+def _write(path, page):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(page, encoding='utf-8')
+    return path
+
+
+def _serve(root, port):
+    handler = partial(QuietHandler, directory=str(root))
+    srv = ThreadingHTTPServer(('0.0.0.0', port), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+STAGES = {
+    'bait':   (lambda: C.y, 'opened the link'),
+    'open':   (lambda: C.m, 'took the bait — scene is running'),
+    'reveal': (lambda: C.g, 'reached the GOTCHA'),
+}
+
+
+class QuietHandler(SimpleHTTPRequestHandler):
+    """Serves the page and narrates what happens to it.
+
+    The page beacons one word per stage back here, so the sender watches the
+    prank land live instead of wondering whether the link even worked. Behind
+    cloudflared every request looks like it came from 127.0.0.1, so the real
+    address is read out of CF-Connecting-IP when it is there. Nothing is
+    written to disk and nothing leaves this terminal.
+    """
+
+    def log_message(self, fmt, *args):
+        pass    # the beacons say more than a request log would
+
+    def _who(self):
+        ip = (self.headers.get('CF-Connecting-IP')
+              or self.headers.get('X-Forwarded-For', '').split(',')[0].strip()
+              or self.address_string())
+        ua = self.headers.get('User-Agent', '')
+        plat = ('Windows' if 'Windows' in ua else 'Android' if 'Android' in ua
+                else 'iPhone' if 'iPhone' in ua or 'iPad' in ua else 'Mac' if 'Mac OS' in ua
+                else 'Linux' if 'Linux' in ua else '?')
+        brow = ('Edge' if 'Edg/' in ua else 'Opera' if 'OPR/' in ua
+                else 'Firefox' if 'Firefox/' in ua else 'Chrome' if 'Chrome/' in ua
+                else 'Safari' if 'Safari/' in ua else '?')
+        return ip, f'{brow} on {plat}'
+
+    def _event(self, stage):
+        colour, label = STAGES.get(stage, (lambda: C.c, stage))
+        ip, dev = self._who()
+        say(f'{colour()}  ●{C.r} {C.d}{datetime.now().strftime("%H:%M:%S")}{C.r}  '
+            f'{C.b}{label}{C.r}  {C.d}· {ip} · {dev}{C.r}')
+
+    def do_POST(self):
+        if urllib.parse.urlparse(self.path).path.rstrip('/').endswith('hit'):
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                if n:
+                    self.rfile.read(n)
+            except Exception:
+                pass
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            self._event((q.get('s') or ['?'])[0])
+            self.send_response(204)
+            self.end_headers()
+            return
+        self.send_error(404)
+
+    def end_headers(self):
+        self.send_header('Cache-Control', 'no-store')
+        super().end_headers()
+
+
+def host_file(page, key, target):
+    path = _write(OUTDIR / (_prank_id(key) + '.html'), page)
+    ok(f'forged  {C.c}{path}{C.r}')
+    say()
+    say(f'{C.d}  Send them the file itself. It is entirely self-contained —')
+    say(f'  no assets, no scripts pulled in, opens straight from Downloads.{C.r}')
+    _clip(str(path)) and ok('path copied to clipboard')
+    return str(path)
+
+
+def host_local(page, key, target):
+    root = OUTDIR / '.serve'
+    if root.exists():
+        shutil.rmtree(root, ignore_errors=True)
+    name = _prank_id(key) + '.html'
+    _write(root / name, page)
+    _write(root / 'index.html', page)
+    try:
+        _serve(root, PORT)
+    except OSError as exc:
+        die(f'could not bind port {PORT} — {exc}. Change port in settings.')
+    link = f'http://{_lan_ip()}:{PORT}/{name}'
+    ok('serving on your network')
+    say()
+    say(f'    {C.b}{C.c}{link}{C.r}')
+    _clip(link) and ok('link copied to clipboard')
+    _qr(link)
+    say()
+    say(f'{C.d}  Only reachable from your Wi-Fi — same house, same network.')
+    say(f'  Ctrl-C stops it. Anyone opening it shows up below.{C.r}')
+    say()
+    return link
+
+
+def host_tunnel(page, key, target):
+    if not shutil.which('cloudflared'):
+        die('a public link needs cloudflared, which is not installed:\n\n'
+            f'      {C.c}sudo pacman -S --needed cloudflared{C.r}\n\n'
+            '    Or send it another way right now — every other delivery works\n'
+            '    without it:  -H local  (your Wi-Fi)   -H file  (a .html to send)')
+    root = OUTDIR / '.serve'
+    if root.exists():
+        shutil.rmtree(root, ignore_errors=True)
+    _write(root / 'index.html', page)
+    try:
+        _serve(root, PORT)
+    except OSError as exc:
+        die(f'could not bind port {PORT} — {exc}')
+    say(f'{C.d}  opening tunnel…{C.r}')
+    proc = subprocess.Popen(
+        ['cloudflared', 'tunnel', '--url', f'http://localhost:{PORT}', '--no-autoupdate'],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    link = None
+    deadline = time.time() + 45
+    while time.time() < deadline:
+        line = proc.stdout.readline()
+        if not line:
+            if proc.poll() is not None:
+                break
+            continue
+        m = re.search(r'https://[-\w]+\.trycloudflare\.com', line)
+        if m:
+            link = m.group(0)
+            break
+    if not link:
+        proc.terminate()
+        die('tunnel did not come up in time — try again, or use host=github')
+    ok('public link is live')
+    say()
+    say(f'    {C.b}{C.c}{link}{C.r}')
+    _clip(link) and ok('link copied to clipboard')
+    _qr(link)
+    say()
+    say(f'{C.d}  Works anywhere — different city, mobile data, whatever.')
+    say(f'  It dies the moment you Ctrl-C, so it cannot outlive the joke.{C.r}')
+    say()
+    return link
+
+
+def host_github(page, key, target):
+    if not GH_REPO:
+        die('set ghrepo in settings first, e.g. ghrepo=you/prank-site\n'
+            '    the repo must exist and have GitHub Pages turned on.')
+    if not shutil.which('git'):
+        die('git is not installed')
+    slug = GH_REPO.strip().rstrip('/')
+    if slug.startswith('http') or slug.startswith('git@'):
+        m = re.search(r'[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?$', slug)
+        if not m:
+            die(f'could not read a user/repo out of {slug}')
+        user, repo = m.group(1), m.group(2)
+    else:
+        if '/' not in slug:
+            die('ghrepo should look like user/repo')
+        user, repo = slug.split('/', 1)
+        repo = repo.removesuffix('.git')
+    work = CACHE / 'biteprank-pages'
+    remote = f'git@github.com:{user}/{repo}.git'
+    if not (work / '.git').exists():
+        shutil.rmtree(work, ignore_errors=True)
+        work.parent.mkdir(parents=True, exist_ok=True)
+        say(f'{C.d}  cloning {user}/{repo}…{C.r}')
+        r = subprocess.run(['git', 'clone', '--depth', '1', remote, str(work)],
+                           capture_output=True, text=True)
+        if r.returncode:
+            die(f'clone failed — {r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "?"}')
+    else:
+        subprocess.run(['git', '-C', str(work), 'pull', '--quiet', '--ff-only'],
+                       capture_output=True, text=True)
+    name = _prank_id(key) + '.html'
+    _write(work / name, page)
+    subprocess.run(['git', '-C', str(work), 'add', name], capture_output=True)
+    subprocess.run(['git', '-C', str(work), 'commit', '-m', f'add {name}'],
+                   capture_output=True, text=True)
+    r = subprocess.run(['git', '-C', str(work), 'push'], capture_output=True, text=True)
+    if r.returncode:
+        die(f'push failed — {r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "?"}')
+    link = f'https://{user}.github.io/{repo}/{name}'
+    ok('pushed to GitHub Pages')
+    say()
+    say(f'    {C.b}{C.c}{link}{C.r}')
+    _clip(link) and ok('link copied to clipboard')
+    _qr(link)
+    say()
+    say(f'{C.d}  Permanent, and it does not need this terminal to stay open.')
+    say(f'  Pages can take a minute on the first push. Delete the file to kill it.{C.r}')
+    return link
+
+
+# Ordered best-first. `needs` is (command, pacman package) — nothing here is a
+# dependency of the toy, only of one particular way of sending it, which is why
+# none of it is declared in toy.meta. Gating `biteprank list` behind cloudflared
+# because one delivery wants it is how a toy becomes annoying.
+DELIVERY = {
+    'tunnel': dict(label='a public link — works anywhere, dies when you Ctrl-C',
+                   needs=[('cloudflared', 'cloudflared')], fn=host_tunnel, live=True),
+    'local':  dict(label='a link that only works on your own Wi-Fi',
+                   needs=[], fn=host_local, live=True),
+    'github': dict(label='a permanent link that outlives this terminal',
+                   needs=[('git', 'git')], fn=host_github, live=False),
+    'file':   dict(label='a .html on disk — for testing it yourself, not for sending',
+                   needs=[], fn=host_file, live=False),
+}
+
+
+def missing_for(mode):
+    return [(c, pkg) for c, pkg in DELIVERY[mode]['needs'] if not shutil.which(c)]
+
+
+def ready(mode):
+    return not missing_for(mode)
+
+
+def ensure(mode):
+    """Check one delivery's tools, and offer to install them rather than dying.
+
+    Being told "cloudflared is not installed" and dropped back at a prompt is a
+    dead end when the answer is one command the toy could have run. So it asks,
+    runs pacman itself, and re-checks. Saying no is not a failure either — it
+    prints the deliveries that do work right now.
+    """
+    miss = missing_for(mode)
+    if not miss:
+        return True
+    pkgs = sorted({pkg for _, pkg in miss})
+    names = ' and '.join(c for c, _ in miss)
+    verb = 'is' if len(miss) == 1 else 'are'
+    say()
+    warn(f'{C.b}{mode}{C.r} needs {C.c}{names}{C.r}, which {verb} not installed.')
+    say(f'{C.d}    The prank itself is already built — this is only how it gets sent.{C.r}')
+    say()
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        say(f'    {C.c}sudo pacman -S --needed {" ".join(pkgs)}{C.r}')
+        return False
+    if ask(f'install {" ".join(pkgs)} now? [Y/n]', 'Y').strip().lower() not in ('y', 'yes'):
+        others = [m for m in DELIVERY if m != mode and ready(m)]
+        say()
+        say(f'{C.d}    No problem. These work right now with nothing to install:{C.r}')
+        for m in others:
+            say(f'      {C.c}-H {m}{C.r}  {C.d}{DELIVERY[m]["label"]}{C.r}')
+        say()
+        return False
+    say()
+    subprocess.run(['sudo', 'pacman', '-S', '--needed'] + pkgs)
+    say()
+    if missing_for(mode):
+        warn(f'{names} still is not there — nothing was sent.')
+        return False
+    ok(f'{names} installed')
+    return True
+
+# ───────────────────────────────────────────────────────────────── cli ────
+
+def banner():
+    say()
+    say(f'  {C.g}{C.b}biteprank{C.r}  {C.d}·  the prank you send, not the prank you run{C.r}')
+    say()
+
+
+def print_catalog(full=False):
+    banner()
+    width = max(len(k) for k in SCENES)
+    for k, v in SCENES.items():
+        tag = f'{C.e}  · spicy{C.r}' if v['spicy'] else ''
+        say(f'  {C.c}{k.ljust(width)}{C.r}  {v["desc"]}{tag}')
+        if full:
+            for line in textwrap.wrap(v['about'], 74):
+                say(f'  {" " * width}  {C.d}{line}{C.r}')
+            say()
+    if not full:
+        say()
+        say(f'{C.d}  biteprank list --full   for what each one actually does{C.r}')
+    say()
+    say(f'  {C.y}what the link looks like when they open it{C.r}')
+    for k, v in BAITS.items():
+        mark = f'{C.g}  ←{C.r}' if k == DEF_BAIT else ''
+        say(f'  {C.c}{k.ljust(width)}{C.r}  {v["desc"]}{mark}')
+    say()
+    say(f'  {C.y}how you send it{C.r}')
+    for k, v in DELIVERY.items():
+        miss = missing_for(k)
+        if miss:
+            tag = f'{C.y}  ✗ needs {", ".join(c for c, _ in miss)}{C.r}'
+        else:
+            tag = f'{C.g}  ✓{C.r}'
+        mark = f'{C.g} ←{C.r}' if k == DEF_HOST else ''
+        say(f'  {C.c}{k.ljust(width)}{C.r}  {v["label"]}{tag}{mark}')
+    say()
+    say(f'{C.d}  Anything missing gets offered to you when you pick it — nothing{C.r}')
+    say(f'{C.d}  has to be installed before you can look around.{C.r}')
+    say()
+
+
+def about():
+    banner()
+    body = """
+    biteprank makes one self-contained web page and hands you a way to get it
+    to someone. Everything happens in their browser tab: it cannot touch their
+    files, install anything, or persist past the tab closing. What it can do is
+    go fullscreen, make noise, and read back a handful of things about them that
+    are genuinely true — the city their IP resolves to, their carrier, their
+    browser and OS, their screen, their timezone, their exact battery percentage.
+
+    That honesty is the whole mechanism. Once a page tells you your real battery
+    level, the fake 4.2 GB upload underneath it stops looking fake.
+
+    Nobody clicks a bare link and nobody opens a stray file, so the page opens
+    as something ordinary first: a message with a blurred video in it, a photo
+    waiting to be revealed, a shared folder. The scene fires out of whatever
+    they press. That framing is not just dressing — a browser refuses fullscreen
+    and refuses to make a sound until the visitor has deliberately touched the
+    page, so the bait is what makes the rest work at all.
+
+    Nothing is collected. The geo lookup happens in their tab and the answer
+    never leaves it. The one thing that does travel is a single word — opened,
+    started, revealed — sent back to the little server in this terminal so you
+    can watch it land; it holds no data beyond the request the server already
+    saw, it is never written down, and it dies with the link. The reveal tells
+    them that happened.
+
+    No scene and no bait ever asks for a password, a login or a payment, and
+    none of them imitate a real company. ESC ends any of them instantly, and
+    every single one resolves to the same reveal: a big GOTCHA and a plain
+    sentence saying nothing happened and nothing was taken.
+
+    Three scenes are marked spicy — format, ransom and webcam read as the real
+    thing to people who have actually been hacked before. Aim carefully.
+    """
+    for para in body.strip().split('\n\n'):
+        for line in textwrap.wrap(' '.join(para.split()), 74):
+            say(f'  {line}')
+        say()
+    say(f'  {C.d}forged pages land in {OUTDIR}{C.r}')
+    say(f'  {C.d}history: {LOG}{C.r}')
+    say()
+
+
+def preview():
+    """What the hub shows in its browser — a static taste, no side effects."""
+    banner()
+    say(f'  {C.d}One page. Fifteen scenes. Send it, do not run it.{C.r}')
+    say()
+    demo = [
+        ('public address',   '81.•••.•••.42'),
+        ('approx. location', 'their actual city'),
+        ('network',          'their actual carrier'),
+        ('battery',          'their actual %'),
+    ]
+    for k, v in demo:
+        say(f'  {C.d}{k.ljust(18)}{C.r}{C.c}{v}{C.r}')
+    say()
+    say(f'  {C.g}…then it starts making things up, and they believe those too.{C.r}')
+    say()
+    keys = ', '.join(list(SCENES)[:8])
+    for line in textwrap.wrap(keys + ', …', 70):
+        say(f'  {C.d}{line}{C.r}')
+    say()
+    say(f'  {C.y}the link opens as{C.r} {C.d}a video · a photo · a shared folder{C.r}')
+    say(f'  {C.y}you send it by  {C.r} {C.d}public tunnel · your Wi-Fi · GitHub Pages{C.r}')
+    say()
+    say(f'  {C.y}ESC always ends it. Every scene reveals. Nothing is collected.{C.r}')
+    say()
+
+
+def ask(prompt, default=''):
+    try:
+        val = input(f'  {C.g}›{C.r} {prompt}'
+                    + (f' {C.d}[{default}]{C.r}' if default else '') + ' ').strip()
+    except (EOFError, KeyboardInterrupt):
+        say()
+        sys.exit(0)
+    return val or default
+
+
+def choose_interactive():
+    banner()
+    items = list(SCENES.items())
+    for i, (k, v) in enumerate(items, 1):
+        tag = f'{C.e}  · spicy{C.r}' if v['spicy'] else ''
+        say(f'  {C.y}{str(i).rjust(2)}{C.r}  {C.c}{k.ljust(13)}{C.r}{v["desc"]}{tag}')
+    say()
+    raw = ask('which one? (number or name)')
+    key = None
+    if raw.isdigit() and 1 <= int(raw) <= len(items):
+        key = items[int(raw) - 1][0]
+    elif raw in SCENES:
+        key = raw
+    if not key:
+        die(f'no scene called {raw!r} — try biteprank list')
+    say()
+    target = ask("their name? (goes in the page, blank to skip)", DEF_NAME)
+    gotcha = ask('a line for the reveal? (blank to skip)')
+
+    say()
+    say(f'  {C.d}what it looks like when they open the link:{C.r}')
+    for k, v in BAITS.items():
+        mark = f'{C.g} ←{C.r}' if k == DEF_BAIT else ''
+        say(f'      {C.c}{k.ljust(8)}{C.r}{v["desc"]}{mark}')
+    say()
+    bait = ask('which bait?', DEF_BAIT)
+    if bait not in BAITS:
+        die(f'no bait called {bait!r}')
+
+    say()
+    say(f'  {C.d}how it gets to them:{C.r}')
+    for k, v in DELIVERY.items():
+        miss = missing_for(k)
+        tag = (f'{C.y}  ✗ needs {", ".join(c for c, _ in miss)}{C.r}' if miss
+               else f'{C.g}  ✓{C.r}')
+        mark = f'{C.g} ←{C.r}' if k == DEF_HOST else ''
+        say(f'      {C.c}{k.ljust(8)}{C.r}{v["label"]}{tag}{mark}')
+    say()
+    host = ask('how are you sending it?', DEF_HOST)
+    if host not in DELIVERY:
+        die(f'no delivery called {host!r}')
+    return key, bait, target, gotcha, host
+
+
+def forge(key, bait, target, gotcha, host):
+    if key not in SCENES:
+        die(f'no scene called {key!r} — try biteprank list')
+    if bait not in BAITS:
+        die(f'no bait called {bait!r} — one of: {", ".join(BAITS)}')
+    if host not in DELIVERY:
+        die(f'no delivery called {host!r} — one of: {", ".join(DELIVERY)}')
+
+    banner()
+    sc = SCENES[key]
+    say(f'  scene     {C.c}{key}{C.r}  {C.d}{sc["desc"]}{C.r}')
+    say(f'  bait      {C.c}{bait}{C.r}  {C.d}{BAITS[bait]["label"]}{C.r}')
+    if target:
+        say(f'  for       {C.c}{target}{C.r}')
+    if sc['spicy']:
+        warn('this one is spicy — it reads as genuinely real to some people')
+
+    # Ask about tools before building anything, so a missing package never
+    # arrives as a wall of dead output after the work is already done.
+    if not ensure(host):
+        sys.exit(1)
+
+    live = DELIVERY[host]['live']
+    page = build_page(key, bait, target, gotcha, report=live)
+    say(f'  size      {C.d}{len(page.encode()) / 1024:.1f} KB, self-contained{C.r}')
+    say()
+    link = DELIVERY[host]['fn'](page, key, target)
+    _log(key, target, host, link)
+    if live:
+        say(f'{C.d}  watching — every stage they reach shows up here:{C.r}')
+        say()
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            say()
+            ok('link is down. nobody can open it now.')
+    return link
+
+
+HELP = f"""
+  {C.g}{C.b}biteprank{C.r}  {C.d}· the prank you send, not the prank you run{C.r}
+
+  {C.y}usage{C.r}
+    biteprank                       pick a scene and a delivery, step by step
+    biteprank <scene>               forge it with your default delivery
+    biteprank make [options]        forge it with everything spelled out
+    biteprank list [--full]         every scene, and what it actually does
+    biteprank about                 how it works, and what it will not do
+
+  {C.y}options for make{C.r}
+    -s, --scene <name>              which scene           {C.d}(default: asked){C.r}
+    -n, --name <them>               their name, used in the page
+    -m, --msg <line>                a line shown in the reveal
+    -b, --bait <what>               {', '.join(BAITS)}   {C.d}(default: {DEF_BAIT}){C.r}
+    -H, --host <how>                {', '.join(DELIVERY)}   {C.d}(default: {DEF_HOST}){C.r}
+    -o, --out <dir>                 where files land      {C.d}(default: {OUTDIR}){C.r}
+
+  {C.y}examples{C.r}
+    biteprank trace
+    biteprank make -s ransom -n Yuval -b video -H tunnel
+    biteprank make -s bitten -m "happy birthday idiot" -H github
+
+  {C.y}how it lands{C.r}
+    The link opens as something ordinary — a video, a photo, a shared folder.
+    The scene only fires once they press it, which is also the only moment a
+    browser will allow fullscreen and sound. Then you watch each stage they
+    reach appear in this terminal, live.
+
+  {C.d}ESC ends any scene. Every scene reveals itself. Nothing is collected.{C.r}
+"""
+
+
+def cmd_make(argv):
+    key = target = gotcha = None
+    bait = DEF_BAIT
+    host = DEF_HOST
+    global OUTDIR
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        nxt = argv[i + 1] if i + 1 < len(argv) else None
+        if a in ('-s', '--scene'):
+            key = nxt; i += 2
+        elif a in ('-n', '--name'):
+            target = nxt; i += 2
+        elif a in ('-m', '--msg', '--message'):
+            gotcha = nxt; i += 2
+        elif a in ('-b', '--bait'):
+            bait = nxt; i += 2
+        elif a in ('-H', '--host'):
+            host = nxt; i += 2
+        elif a in ('-o', '--out'):
+            OUTDIR = Path(os.path.expanduser(nxt or '.')); i += 2
+        elif a in ('-h', '--help'):
+            say(HELP); return
+        elif not a.startswith('-') and key is None:
+            key = a; i += 1
+        else:
+            die(f'do not know the option {a!r} — try biteprank --help')
+    if key is None:
+        key, bait, target, gotcha, host = choose_interactive()
+    forge(key, bait, target or DEF_NAME, gotcha or '', host)
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv:
+        forge(*choose_interactive())
+        return
+    cmd = argv[0]
+    if cmd == '--preview':
+        preview()
+    elif cmd in ('-h', '--help', 'help'):
+        say(HELP)
+    elif cmd in ('list', 'ls', 'scenes'):
+        print_catalog(full=any(a in ('--full', '-f') for a in argv[1:]))
+    elif cmd in ('about', 'info'):
+        about()
+    elif cmd == 'make':
+        cmd_make(argv[1:])
+    elif cmd in SCENES:
+        cmd_make(argv)
+    else:
+        die(f'no scene or command called {cmd!r} — try biteprank list')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        say()
+        sys.exit(0)
