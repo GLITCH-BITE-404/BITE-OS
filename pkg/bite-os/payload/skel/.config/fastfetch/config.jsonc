@@ -5,48 +5,81 @@
     "type": "file"
   },
   "display": {
-    "separator": "  "
+    "separator": "  ",
+    "color": { "keys": "magenta" }
   },
   "modules": [
     "break",
     {
       "type": "custom",
-      "format": "\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e"
+      "format": "╭────────────────────────────────────────╮"
+    },
+    {
+      "type": "os",
+      "key": "│ 󰚌 distro",
+      "keyWidth": 13,
+      "format": "BITE-OS\u001b[78G│"
     },
     {
       "type": "command",
-      "key": "\u2502  kernel",
+      "key": "│ \uf17c kernel",
       "keyWidth": 13,
       "text": "uname -r | sed 's/-cachyos//'",
-      "format": "{}\u001b[78G\u2502"
+      "format": "{}\u001b[78G│"
     },
     {
-      "type": "uptime",
-      "key": "\u2502  uptime",
+      "type": "command",
+      "key": "│ 󰻠 cpu",
       "keyWidth": 13,
-      "format": "{2}\u001b[78G\u2502"
+      "text": "n=$(awk -F': ' '/^model name/{print $2; exit}' /proc/cpuinfo | sed -e 's/([A-Z]*)//g' -e 's/^[0-9]*th Gen //' -e 's/Intel //' -e 's/AMD //' -e 's/Core //' -e 's/ CPU.*//' -e 's/ Processor//' | tr -s ' ' | sed 's/^ //;s/ $//'); t=''; for f in /sys/class/hwmon/hwmon*/temp1_input; do [ -r \"$f\" ] && { t=$(($(cat \"$f\")/1000)); break; }; done; [ -n \"$t\" ] && printf '%s | %s°C' \"$n\" \"$t\" || printf '%s' \"$n\"",
+      "format": "{}\u001b[78G│"
     },
     {
-      "type": "shell",
-      "key": "\u2502  shell",
+      "type": "gpu",
+      "key": "│ 󰢮 gpu",
       "keyWidth": 13,
-      "format": "{3}\u001b[78G\u2502"
+      "format": "{2}\u001b[78G│"
     },
     {
       "type": "memory",
-      "key": "\u2502  mem",
+      "key": "│ 󰍛 mem",
       "keyWidth": 13,
-      "format": "{1} / {2} {3}\u001b[78G\u2502"
+      "format": "{1} / {2} {3}\u001b[78G│"
+    },
+    {
+      "type": "disk",
+      "key": "│ 󰋊 disk",
+      "keyWidth": 13,
+      "folders": "/",
+      "format": "{1} / {2} {3}\u001b[78G│"
+    },
+    {
+      "type": "wm",
+      "key": "│ 󰌢 wm",
+      "keyWidth": 13,
+      "format": "{1}\u001b[78G│"
+    },
+    {
+      "type": "shell",
+      "key": "│ \uf489 shell",
+      "keyWidth": 13,
+      "format": "{3}\u001b[78G│"
+    },
+    {
+      "type": "uptime",
+      "key": "│ 󰅐 uptime",
+      "keyWidth": 13,
+      "format": "{?days}{days}d {?}{?hours}{hours}h {?}{minutes}m\u001b[78G│"
     },
     {
       "type": "packages",
-      "key": "\u2502  pkgs",
+      "key": "│ 󰏖 pkgs",
       "keyWidth": 13,
-      "format": "{all}\u001b[78G\u2502"
+      "format": "{all}\u001b[78G│"
     },
     {
       "type": "custom",
-      "format": "\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f"
+      "format": "╰────────────────────────────────────────╯"
     },
     "break"
   ]
