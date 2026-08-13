@@ -60,3 +60,24 @@ always in here somewhere, watching. That's the point.
 `BITE-OS` · by **GLITCH-BITE-404** · for **Laffy**
 
 </div>
+
+---
+
+## Laffy Fans
+
+Rq (real quick) — join the Laffy Fans community on WhatsApp: https://whatsapp.com/channel/0029VbDRlqu3AzNS2WwyFv1k
+
+This channel is for fans of Laffy and includes:
+
+- Stickers of Laffy (a sticker pack is in the works)
+- Photos and candid updates of Laffy
+- Announcements about events and repo happenings
+- Community votes on which images/stickers should be included in the official Laffy sticker pack
+
+How voting will work (high-level):
+
+- When a vote starts, candidates will be posted in the channel and fans will vote.
+- Winning images become part of the sticker pack.
+- Want to submit a photo or sticker idea? Drop it in the channel — it may be included in the next vote.
+
+Join the channel, share your favorite Laffy pics, and help decide what goes into the sticker pack! 🐾
