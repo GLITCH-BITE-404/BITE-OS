@@ -76,12 +76,12 @@ This channel is for fans of Laffy and includes:
 Submission & uploads
 
 - Note: the WhatsApp channel does not accept direct photo uploads to be used in the sticker pack.
-- To submit sticker candidates or suggest images, please open a GitHub issue in this repository: https://github.com/GLITCH-BITE-404/BITE-OS/issues/new
+- To submit sticker candidates or suggest images, please join the repository discussion here: https://github.com/GLITCH-BITE-404/BITE-OS/discussions
 
 How voting will work (high-level):
 
-- When a vote starts, candidates will be posted (on the repo issue or linked from the channel) and fans will vote.
+- When a vote starts, candidates will be posted (in the discussion or linked from the channel) and fans will vote.
 - Winning images become part of the sticker pack.
-- Want to propose a sticker idea? File an issue with your suggestion — maintainers will include it in the next vote.
+- Want to propose a sticker idea? Start or reply to a discussion thread — maintainers will include it in the next vote.
 
 Join the channel, help decide what goes into the sticker pack, and share the Laffy love! 🐾
