@@ -38,6 +38,18 @@ reactamount=4
 # @range 8-64
 bars=24
 
+# Start straight in stage mode: the lyric alone, sized to the window, with no
+# title, progress bar, spectrum or key bar around it. Also the s key, any time.
+stage=off
+
+# How the lyric is drawn.
+#   block  big ASCII block letters, always
+#   text   the terminal's own font - small but perfectly crisp, readable at
+#          any window size, and the look most lyric windows in rice videos use
+#   auto   block letters while they fit legibly, text once they would not
+# @choices auto,block,text
+glyphs=auto
+
 # Seconds a new line takes to slide and brighten in
 # @range 0-1.5
 transition=0.25

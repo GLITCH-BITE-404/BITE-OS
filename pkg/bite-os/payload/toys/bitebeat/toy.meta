@@ -1,11 +1,11 @@
 name=bitebeat
-version=1.1
+version=1.2
 desc=Whatever you're playing, with synced lyrics, karaoke style
 category=media
 author=GLITCH-BITE-404
 exec=run
 preview=--preview
 deps=playerctl cava py:numpy:python-numpy py:PIL:python-pillow
-usage=bitebeat   ·   space play/pause, ←→ seek, [ ] fix sync, q quits
-keys=space:play or pause|←/→:seek 5 seconds|,/.:nudge sync by a second|[/]:nudge sync by 0.2s|0:reset the sync offset|n/p:next or previous track|w:toggle the audio reaction|?:hide or show the key bar|q:quit
-about=Reads whatever is playing over MPRIS — mpv, Spotify, VLC, a browser tab — and shows the track with its lyrics sweeping in time, big, karaoke style. Looks for an .lrc next to the audio file first, then your lyrics folder, then lrclib.net if online lookup is on. Big text is rasterised at runtime, so it renders Hebrew and any other script just as happily as English.
+usage=bitebeat   ·   s for the bare lyric window · space play/pause, ←→ seek, [ ] fix sync, q quits
+keys=space:play or pause|←/→:seek 5 seconds|,/.:nudge sync by a second|[/]:nudge sync by 0.2s|0:reset the sync offset|n/p:next or previous track|s:stage mode — the lyric alone, sized to the window|w:toggle the audio reaction|?:hide or show the key bar|q:quit
+about=Reads whatever is playing over MPRIS — mpv, Spotify, VLC, a browser tab — and shows the track with its lyrics sweeping in time, big, karaoke style. Looks for an .lrc next to the audio file first, then your lyrics folder, then lrclib.net if online lookup is on. Big text is rasterised at runtime, so it renders Hebrew and any other script just as happily as English. Press s (or start it with --stage) for stage mode: everything goes except the line being sung, which is resized to fill whatever window you give it — float a small transparent terminal over your rice and it becomes a lyric overlay. Drag it bigger and the letters grow with it; make it too narrow for block text and it drops to a clean centred wipe rather than squashing them into mush. A long line is not shrunk to fit — it is broken into pages that turn as it is sung, so what is on screen stays big enough to read. Set glyphs=text for the terminal's own font instead of block letters: small, perfectly crisp at any size, and the look most rice videos use.

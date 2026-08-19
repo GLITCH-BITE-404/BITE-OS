@@ -54,6 +54,9 @@ REACT   = on(setting("react", "on"))
 REACTAMT= max(0, min(10, int(setting("reactamount", "4") or 4)))
 BARS    = max(8, min(64, int(setting("bars", "24") or 24)))
 TRANS   = max(0.0, min(1.5, float(setting("transition", "0.25") or 0.25)))
+STAGE   = on(setting("stage", "off")) or "--stage" in sys.argv
+GLYPHS  = setting("glyphs", "auto")     # auto | block | text
+MAXBIG  = 40                            # ceiling for auto-sized stage text
 
 ACCENTS = {
     "green":   (0, 255, 128), "cyan":  (0, 220, 255), "magenta": (255, 0, 200),
@@ -64,6 +67,10 @@ DIM = (90, 90, 95)
 
 
 OFFSETS = os.path.expanduser("~/.local/share/bite-os/bitebeat-offsets.json")
+
+# The configured offset, kept apart from the live one. A track with no saved
+# nudge falls back to this, not to whatever the previous track was left at.
+BASE_OFFSET = OFFSET
 
 
 def load_offset(ident, default):
@@ -381,6 +388,32 @@ def wave_row(levels, width, np, chars=" ▁▂▃▄▅▆▇█"):
 
 # ── big text ──────────────────────────────────────────────────────────────────
 
+_FONT_PATH = ""
+
+
+def _font_path():
+    """Resolve the bold sans face once. Stage mode rebuilds the font whenever
+    the window changes size, and fc-match is far too slow to run per resize."""
+    global _FONT_PATH
+    if _FONT_PATH == "":
+        _FONT_PATH = None
+        try:
+            p = subprocess.run(["fc-match", "-f", "%{file}", "sans-serif:bold"],
+                               capture_output=True, text=True,
+                               timeout=3).stdout.strip()
+            if p and os.path.exists(p):
+                _FONT_PATH = p
+        except Exception:
+            pass
+        if not _FONT_PATH:
+            for p in ("/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+                      "/usr/share/fonts/TTF/DejaVuSans.ttf"):
+                if os.path.exists(p):
+                    _FONT_PATH = p
+                    break
+    return _FONT_PATH
+
+
 class BigText:
     """Rasterise a string, then draw it with ▀ so each cell holds two pixels."""
 
@@ -394,17 +427,12 @@ class BigText:
         self._cache = {}
 
     def _font(self, ImageFont, px):
-        try:
-            p = subprocess.run(["fc-match", "-f", "%{file}", "sans-serif:bold"],
-                               capture_output=True, text=True, timeout=3).stdout.strip()
-            if p:
-                return ImageFont.truetype(p, px)
-        except Exception:
-            pass
-        for p in ("/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
-                  "/usr/share/fonts/TTF/DejaVuSans.ttf"):
-            if os.path.exists(p):
-                return ImageFont.truetype(p, px)
+        path = _font_path()
+        if path:
+            try:
+                return ImageFont.truetype(path, px)
+            except Exception:
+                pass
         return ImageFont.load_default()
 
     def bitmap(self, text):
@@ -430,6 +458,126 @@ class BigText:
         return arr
 
 
+_BIG = {}
+
+
+def big_for(rows):
+    """A BigText at this row height, reused across frames."""
+    rows = max(2, min(MAXBIG, int(rows)))
+    if rows not in _BIG:
+        if len(_BIG) > 8:
+            _BIG.clear()
+        try:
+            _BIG[rows] = BigText(rows)
+        except ImportError:
+            return None
+    return _BIG[rows]
+
+
+PROBE  = 8      # reference size the fit is measured against
+MINROW = 4      # fewer ink rows than this and the glyphs are just noise
+
+
+def wrap_words(text, n):
+    """Split a line into at most n balanced pieces, on word boundaries."""
+    words = text.split()
+    if n <= 1 or len(words) < 2:
+        return [text]
+    n = min(n, len(words))
+    target = len(text) / n
+    chunks, cur = [], ""
+    for w in words:
+        nxt = (cur + " " + w) if cur else w
+        if cur and len(nxt) > target * 1.15 and len(chunks) < n - 1:
+            chunks.append(cur)
+            cur = w
+        else:
+            cur = nxt
+    chunks.append(cur)
+    return chunks
+
+
+def _measure(chunks, size):
+    """-> (widest bitmap in cells, tallest chunk in text rows)."""
+    b = big_for(size)
+    boxes = [b.bitmap(c).shape for c in chunks]
+    return max(x[1] for x in boxes), max(x[0] // 2 for x in boxes)
+
+
+def _fit_size(words, budget_w, budget_h, per):
+    """Largest size where the widest word fits across and `per` rows fit down."""
+    probe = big_for(PROBE)
+    widest = max(probe.bitmap(w).shape[1] for w in words)
+    size = max(2, min(MAXBIG, int(PROBE * budget_w / max(1, widest))))
+    for _ in range(5):
+        w, h = _measure(words, size)
+        if (w <= budget_w and h * per <= budget_h) or size <= 2:
+            break
+        size = max(2, int(size * min(budget_w / max(1, w),
+                                     budget_h / max(1, h * per))))
+    w, h = _measure(words, size)
+    return size if w <= budget_w and h * per <= budget_h else 0
+
+
+def stage_pages(text, cols, rows):
+    """Lay a lyric out BIG -> (size, [[row, ...], ...]).
+
+    Shrinking a line until all of it fits is what turned a long lyric into
+    mush: thirty-odd characters across a small window leaves a couple of pixels
+    per glyph. So the size comes from the longest single WORD instead — the
+    smallest unit that has to stay whole — and the line is broken into pages
+    shown one at a time as the song reaches them. Less text on screen, at a
+    size that can be read, rather than all of it at a size that cannot.
+    """
+    words = text.split()
+    if not words or big_for(PROBE) is None:
+        return 0, []
+    budget_w = max(8, cols - 2)
+
+    # One word to a page is the biggest the letters can ever be, but it leaves
+    # most of the window empty. Take an extra row or two whenever that costs
+    # almost no size, and the window fills without the text getting smaller in
+    # any way you would notice.
+    size = _fit_size(words, budget_w, rows, 1)
+    per = 1
+    for k in (2, 3):
+        sk = _fit_size(words, budget_w, rows, k)
+        if sk >= 2 and sk >= 0.85 * size:
+            per, size = k, sk
+    if not size:
+        return 0, []
+
+    # Pack words into rows that fit across, then group rows into pages.
+    big = big_for(size)
+    rws, cur = [], ""
+    for word in words:
+        nxt = (cur + " " + word) if cur else word
+        if cur and big.bitmap(nxt).shape[1] > budget_w:
+            rws.append(cur)
+            cur = word
+        else:
+            cur = nxt
+    if cur:
+        rws.append(cur)
+    return size, [rws[i:i + per] for i in range(0, len(rws), per)]
+
+
+def page_at(pages, frac):
+    """Which page the sung position falls on, plus its character span."""
+    spans, acc = [], 0
+    for pg in pages:
+        start = acc
+        for r in pg:
+            acc += len(r) + 1
+        spans.append((start, max(start, acc - 1)))
+    total = max(1, acc - 1)
+    cut = frac * total
+    for i, (a, b) in enumerate(spans):
+        if cut < b or i == len(pages) - 1:
+            return i, cut
+    return 0, cut
+
+
 def rgb(c):
     return "\x1b[38;2;%d;%d;%dm" % c
 
@@ -447,14 +595,21 @@ def warp(arr, levels, amount, np):
     if amount <= 0 or levels is None or len(levels) == 0:
         return arr
     h, w = arr.shape
-    pad = int(amount) * 2 + 2
-    arr = np.vstack([np.zeros((pad, w), bool), arr, np.zeros((pad, w), bool)])
-    h = arr.shape[0]
+    # Displacement is a FRACTION of the glyph height, not a fixed pixel count.
+    # A fixed count is a faint shimmer on a small glyph and shreds a big stage
+    # glyph into pieces that read as the animation falling out of the window.
+    span = max(1, int(h * amount / 25.0))
+    pad = span + 2
+    padded = np.vstack([np.zeros((pad, w), bool), arr, np.zeros((pad, w), bool)])
     xs = np.linspace(0, len(levels) - 1, w)
     lv = np.interp(xs, np.arange(len(levels)), levels)
-    disp = (lv * amount * 2).astype(int)
-    rr = np.clip(np.arange(h)[:, None] + disp[None, :], 0, h - 1)
-    return arr[rr, np.arange(w)[None, :]]
+    disp = (lv * span).astype(int)
+    # Sample the ORIGINAL window out of the padded copy, so the result is the
+    # same height as the input. Returning the padding grew the line by
+    # amount*2+2 pixel rows a side, which shoved everything below it off screen.
+    rows = np.arange(pad, pad + h)[:, None] + disp[None, :]
+    rr = np.clip(rows, 0, padded.shape[0] - 1)
+    return padded[rr, np.arange(w)[None, :]]
 
 
 def shade(c, f):
@@ -513,10 +668,13 @@ def draw_big(arr, width, fill_frac, np, fade=1.0):
 # The key list lives along the BOTTOM, not in a window over the song. A centred
 # overlay covered the lyrics — the one thing you are actually looking at — so
 # `?` hides and shows this bar instead of opening a panel on top of it.
-def key_bar(offset, source, react_on):
-    return ("\x1b[2m q quit \u00b7 space play \u00b7 \u2190\u2192 seek \u00b7 n p track \u00b7 "
-            "[ ] , . sync %+0.1fs \u00b7 0 reset \u00b7 w wave%s \u00b7 ? hide \u00b7 %s\x1b[0m\x1b[K"
-            % (offset, "" if react_on else " (off)", source or "no lyrics"))
+def key_bar(offset, source, react_on, cols):
+    txt = (" q quit \u00b7 space play \u00b7 \u2190\u2192 seek \u00b7 n p track \u00b7 "
+           "[ ] , . sync %+0.1fs \u00b7 0 reset \u00b7 w wave%s \u00b7 s stage \u00b7 ? hide \u00b7 %s"
+           % (offset, "" if react_on else " (off)", source or "no lyrics"))
+    # Never allowed to wrap: this sits on the bottom row, where wrapping scrolls
+    # the whole frame and leaves a copy of the overflow behind on every redraw.
+    return "\x1b[2m%s\x1b[0m\x1b[K" % txt[:max(0, cols - 1)]
 
 
 def preview_mode():
@@ -597,8 +755,7 @@ def preview_mode():
 
 
 def main():
-    global OFFSET, BIGSIZE
-    bar_on = True
+    global OFFSET
 
     if not sys.stdout.isatty():
         die("bitebeat needs a terminal")
@@ -618,14 +775,63 @@ def main():
     saved = termios.tcgetattr(fd)
     tty.setcbreak(fd)
     out = sys.stdout.buffer
-    out.write(b"\x1b[?1049h\x1b[?25l")
+    out.write(b"\x1b[?1049h\x1b[?25l\x1b[?7l")
     out.flush()
 
     spec = Spectrum(BARS, np) if REACT else None
-    state = {"line": None, "since": 0.0, "trans": TRANS, "amt": REACTAMT}
+    state = {"line": None, "since": 0.0, "trans": TRANS, "amt": REACTAMT,
+             "react": True}
 
     meta = None
     lyrics = []
+    last_size = (0, 0)
+    was_idle = False
+    stage = STAGE
+    bar_on = not STAGE          # the stage is bare until you ask for the keys
+
+    def toast(msg):
+        """Stage mode hides the key bar, so a sync nudge had no visible effect
+        whatsoever and read as a dead key. Say what changed, briefly."""
+        state["toast"] = (msg, time.monotonic() + 1.5)
+
+    def handle(k):
+        """One key dispatch shared by both views. -> False to quit."""
+        nonlocal last_poll, bar_on, stage
+        global OFFSET
+        if k == "q":
+            return False
+        elif k == " ":
+            pctl("play-pause"); last_poll = 0
+        elif k == "RIGHT":
+            pctl("position", "5+"); last_poll = 0
+        elif k == "LEFT":
+            pctl("position", "5-"); last_poll = 0
+        elif k in ("]", "[", ".", ","):
+            OFFSET += {"]": 0.2, "[": -0.2, ".": 1.0, ",": -1.0}[k]
+            save_offset(key_track, OFFSET)
+            toast("sync %+0.1fs" % OFFSET)
+        elif k == "0":                      # back to no correction
+            OFFSET = 0.0; save_offset(key_track, OFFSET)
+            toast("sync reset")
+        elif k == "?":
+            bar_on = not bar_on
+        elif k == "s":
+            toast("")
+            # Live toggle, so you can drop into the bare lyric window
+            # mid-recording without restarting the toy.
+            stage = not stage
+            bar_on = not stage
+        elif k == "w":
+            # Toggles the whole reactive layer — the letter warp AND the
+            # spectrum row. It used to touch only the warp, so the one
+            # thing labelled "wave" was the one thing it left alone.
+            state["react"] = not state["react"]
+            toast("wave %s" % ("on" if state["react"] else "off"))
+        elif k == "n":
+            pctl("next"); last_poll = 0
+        elif k == "p":
+            pctl("previous"); last_poll = 0
+        return True
     source = None
     key_track = None
     last_poll = 0.0
@@ -651,7 +857,7 @@ def main():
                         msg = "looking for lyrics…"
                         text, source = find_lyrics(m)
                         lyrics = parse_lrc(text) if text else []
-                        OFFSET = load_offset(ident, OFFSET)
+                        OFFSET = load_offset(ident, BASE_OFFSET)
                         state["line"] = None
                         msg = ""
                     else:
@@ -662,16 +868,43 @@ def main():
             # Interpolate between polls so the karaoke sweep stays smooth.
             t = pos + (now - pos_at if playing else 0.0) + OFFSET
 
-            cols = shutil.get_terminal_size().columns
-            rows_t = shutil.get_terminal_size().lines
+            cols, rows_t = shutil.get_terminal_size()
             buf = ["\x1b[H"]
 
+            # Frames are drawn with \x1b[K per line instead of a full clear, so a
+            # resize is the one moment the old frame can outlive the new one.
+            if (cols, rows_t) != last_size:
+                last_size = (cols, rows_t)
+                buf.append("\x1b[2J")
+
             if meta is None:
-                buf.append("\x1b[2J\x1b[%d;1H" % (rows_t // 2))
+                if not was_idle:
+                    was_idle = True
+                    buf.append("\x1b[2J")
+                buf.append("\x1b[%d;1H" % (rows_t // 2))
                 buf.append("  \x1b[2mnothing is playing — start something and it'll show up\x1b[0m\x1b[K")
                 out.write("".join(buf).encode())
                 out.flush()
-                if wait_key(fd, 0.3) == "q":
+                if not handle(wait_key(fd, 0.3)):
+                    break
+                continue
+            was_idle = False
+            levels = spec.read() if spec else None
+
+            if stage:
+                # The window IS the lyric: full height, nothing around it.
+                buf += stage_view(lyrics, t, cols, max(1, rows_t - 1), np,
+                                  levels, state, meta["title"] or "")
+                buf.append("\x1b[%d;1H" % rows_t)
+                if bar_on:
+                    buf.append(key_bar(OFFSET, source, REACT, cols))
+                else:
+                    msg_t, until = state.get("toast", ("", 0.0))
+                    buf.append(("  \x1b[2m%s\x1b[0m\x1b[K" % msg_t[:cols - 3])
+                               if now < until else "\x1b[K")
+                out.write("".join(buf).encode())
+                out.flush()
+                if not handle(wait_key(fd, 1.0 / FPS)):
                     break
                 continue
 
@@ -689,66 +922,51 @@ def main():
                 buf.append("\x1b[K\n")
             buf.append("\x1b[K\n")
 
-            levels = spec.read() if spec else None
-
-            body_rows = rows_t - 6
+            # 3 header rows above, 1 key-bar row below.
+            body_rows = max(1, rows_t - 4)
             if lyrics:
-                buf += lyric_view(lyrics, t, cols, body_rows, big, np,
+                body = lyric_view(lyrics, t, cols, body_rows, big, np,
                                   levels, state)
             else:
-                buf.append("  \x1b[2m%s\x1b[0m\x1b[K\n" %
-                           (msg or "no synced lyrics found for this track"))
+                body = ["  \x1b[2m%s\x1b[0m\x1b[K\n" %
+                        (msg or "no synced lyrics found for this track")]
                 if big:
-                    buf.append("\x1b[K\n")
-                    for l in draw_big(big.bitmap(meta["title"][:40] or "?"),
-                                      cols - 2, 1.0 if playing else 0.0, np):
-                        buf.append(" " + l + "\x1b[K\n")
+                    body.append("\x1b[K\n")
+                    bmp = big.bitmap(meta["title"][:40] or "?")
+                    if (levels is not None and state["react"]
+                            and state["amt"] > 0):
+                        bmp = warp(bmp, levels, state["amt"], np)
+                    for l in draw_big(bmp, cols - 2,
+                                      1.0 if playing else 0.0, np):
+                        body.append(" " + l + "\x1b[K\n")
+                if levels is not None and len(levels) and state["react"]:
+                    body.append("\x1b[K\n")
+                    body.append("  " + rgb(shade(FG, 0.55)) +
+                                wave_row(levels, cols - 4, np) +
+                                "\x1b[0m\x1b[K\n")
+
+            # Every frame is exactly body_rows tall. Without this a short frame
+            # leaves the tail of the previous one on screen for good, which is
+            # what buried the no-lyrics view in junk that ? could not hide.
+            del body[body_rows:]
+            body += ["\x1b[K\n"] * (body_rows - len(body))
+            buf += body
 
             buf.append("\x1b[%d;1H" % rows_t)
             if bar_on:
-                buf.append(key_bar(OFFSET, source, REACT))
+                buf.append(key_bar(OFFSET, source, REACT, cols))
             else:
                 buf.append("\x1b[2m ? keys\x1b[0m\x1b[K")
             out.write("".join(buf).encode())
             out.flush()
 
-            k = wait_key(fd, 1.0 / FPS)
-            if k == "q":
+            if not handle(wait_key(fd, 1.0 / FPS)):
                 break
-            elif k == " ":
-                pctl("play-pause"); last_poll = 0
-            elif k == "RIGHT":
-                pctl("position", "5+"); last_poll = 0
-            elif k == "LEFT":
-                pctl("position", "5-"); last_poll = 0
-            elif k == "]":
-                OFFSET += 0.2
-                save_offset(key_track, OFFSET)
-            elif k == "[":
-                OFFSET -= 0.2
-                save_offset(key_track, OFFSET)
-            elif k == ".":                      # coarse: whole seconds
-                OFFSET += 1.0
-                save_offset(key_track, OFFSET)
-            elif k == ",":
-                OFFSET -= 1.0
-                save_offset(key_track, OFFSET)
-            elif k == "0":                      # back to no correction
-                OFFSET = 0.0
-                save_offset(key_track, OFFSET)
-            elif k == "?":
-                bar_on = not bar_on
-            elif k == "w":
-                state["amt"] = 0 if state["amt"] else REACTAMT or 4
-            elif k == "n":
-                pctl("next"); last_poll = 0
-            elif k == "p":
-                pctl("previous"); last_poll = 0
     finally:
         if spec:
             spec.stop()
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
-        out.write(b"\x1b[0m\x1b[?25h\x1b[?1049l")
+        out.write(b"\x1b[?7h\x1b[0m\x1b[?25h\x1b[?1049l")
         out.flush()
 
 
@@ -764,46 +982,28 @@ def wait_key(fd, timeout):
     if ch == "\x1b":
         if select.select([fd], [], [], 0.02)[0]:
             rest = os.read(fd, 2).decode("utf-8", "replace")
-            return {"[C": "RIGHT", "[D": "LEFT", "[A": "UP", "[B": "DOWN"}.get(rest)
+            return {"[C": "RIGHT", "[D": "LEFT", "[A": "UP", "[B": "DOWN",
+                    "OC": "RIGHT", "OD": "LEFT", "OA": "UP",
+                    "OB": "DOWN"}.get(rest)
         return "ESC"
     return ch
 
 
-def lyric_view(lyrics, t, cols, body_rows, big, np, levels=None, state=None):
-    """Current line big with a karaoke wipe, neighbours dimmed around it."""
+def current_index(lyrics, t):
     cur = -1
     for i, row in enumerate(lyrics):
         if row[0] <= t:
             cur = i
         else:
             break
+    return cur
 
-    out = []
-    if cur < 0:
-        # Countdown into the first line, so the intro isn't a dead screen.
-        nxt = lyrics[0][0] if lyrics else 0
-        if levels is not None and len(levels):
-            out.append("  " + rgb(FG) + wave_row(levels, cols - 4, np) + "\x1b[0m\x1b[K\n")
-        out.append("  \x1b[2m♪ %s\x1b[0m\x1b[K\n"
-                   % ("%.0fs" % max(0, nxt - t) if nxt - t > 1 else "…"))
-        return out
 
-    # Line change kicks off a short slide-and-brighten.
-    if state is not None:
-        if state.get("line") != cur:
-            state["line"] = cur
-            state["since"] = time.monotonic()
-        age = time.monotonic() - state.get("since", 0)
-        trans = state.get("trans", 0.25)
-        p = 1.0 if trans <= 0 else max(0.0, min(1.0, age / trans))
-    else:
-        p = 1.0
-
+def line_progress(lyrics, cur, t):
+    """-> (text, 0..1 sung fraction). Word timings give a true per-syllable
+    wipe; otherwise sweep the line linearly across its duration."""
     start, text, words = lyrics[cur]
     end = lyrics[cur + 1][0] if cur + 1 < len(lyrics) else start + 4.0
-
-    # Word timings give a true per-syllable wipe; otherwise sweep the line
-    # linearly across its duration.
     if words and text:
         sung = 0
         for w_start, w_text in words:
@@ -814,7 +1014,110 @@ def lyric_view(lyrics, t, cols, body_rows, big, np, levels=None, state=None):
         frac = sung / max(1, len(text))
     else:
         frac = (t - start) / max(0.35, end - start)
-    frac = max(0.0, min(1.0, frac))
+    return text, max(0.0, min(1.0, frac))
+
+
+def slide_in(state, cur):
+    """0..1 through the line-change transition."""
+    if state is None:
+        return 1.0
+    if state.get("line") != cur:
+        state["line"] = cur
+        state["since"] = time.monotonic()
+    age = time.monotonic() - state.get("since", 0)
+    trans = state.get("trans", 0.25)
+    return 1.0 if trans <= 0 else max(0.0, min(1.0, age / trans))
+
+
+def stage_view(lyrics, t, cols, rows, np, levels=None, state=None, title=""):
+    """Nothing but the line being sung, sized to the window and centred in it.
+
+    No header, no progress, no spectrum, no key bar — the window is the lyric.
+    The letters still move with the music, which is the only thing keeping it
+    from being a static caption.
+    """
+    lines = []
+    cur = current_index(lyrics, t) if lyrics else -1
+    if cur >= 0 or (not lyrics and title):
+        if cur >= 0:
+            text, frac = line_progress(lyrics, cur, t)
+            p = slide_in(state, cur)
+        else:
+            # Nothing to sing: hold the title, unlit, rather than show a dead
+            # black rectangle that looks like the toy has crashed.
+            text, frac, p = title, 0.0, 1.0
+        size, pages = ((0, []) if GLYPHS == "text"
+                       else stage_pages(text, cols, max(2, rows - 2)))
+        react = (levels is not None and state and state.get("react", True)
+                 and state.get("amt", 0) > 0)
+        if size and pages:
+            big = big_for(size)
+            idx, cut = page_at(pages, frac)
+            acc = 0
+            for i, pg in enumerate(pages):     # char offset of the shown page
+                if i == idx:
+                    break
+                for r in pg:
+                    acc += len(r) + 1
+            for r in pg:
+                bmp = big.bitmap(r)
+                if react:
+                    bmp = warp(bmp, levels, state["amt"], np)
+                cf = (cut - acc) / max(1, len(r))
+                lines += [" " + l for l in
+                          draw_big(bmp, cols - 2, max(0.0, min(1.0, cf)), np,
+                                   fade=0.35 + 0.65 * p)]
+                acc += len(r) + 1
+        elif text:
+            # The terminal's own font. Crisp at any size because the terminal
+            # renders it, not us — which is exactly why a small lyric window
+            # stays readable here where block art cannot.
+            width = max(8, cols - 4)
+            rws, cur = [], ""
+            for word in text.split():
+                nxt = (cur + " " + word) if cur else word
+                if cur and len(nxt) > width:
+                    rws.append(cur)
+                    cur = word
+                else:
+                    cur = nxt
+            if cur:
+                rws.append(cur)
+            acc = 0
+            cut = frac * max(1, len(text))
+            for r in rws:
+                ccut = max(0, min(len(r), int(cut - acc)))
+                pad = " " * max(0, (cols - len(r)) // 2)
+                lines.append(pad + rgb(shade(FG, 0.35 + 0.65 * p)) + r[:ccut] +
+                             "\x1b[0m\x1b[2m" + r[ccut:] + "\x1b[0m")
+                acc += len(r) + 1
+
+    out = []
+    top = max(0, (rows - len(lines)) // 2)
+    out += ["\x1b[K\n"] * top
+    out += [l + "\x1b[K\n" for l in lines[:max(0, rows - top)]]
+    out += ["\x1b[K\n"] * max(0, rows - len(out))
+    return out[:rows]
+
+
+def lyric_view(lyrics, t, cols, body_rows, big, np, levels=None, state=None):
+    """Current line big with a karaoke wipe, neighbours dimmed around it."""
+    cur = current_index(lyrics, t)
+
+    out = []
+    if cur < 0:
+        # Countdown into the first line, so the intro isn't a dead screen.
+        nxt = lyrics[0][0] if lyrics else 0
+        if levels is not None and len(levels) and (state is None or
+                                                   state.get("react", True)):
+            out.append("  " + rgb(FG) + wave_row(levels, cols - 4, np) + "\x1b[0m\x1b[K\n")
+        out.append("  \x1b[2m♪ %s\x1b[0m\x1b[K\n"
+                   % ("%.0fs" % max(0, nxt - t) if nxt - t > 1 else "…"))
+        return out
+
+    # Line change kicks off a short slide-and-brighten.
+    p = slide_in(state, cur)
+    text, frac = line_progress(lyrics, cur, t)
 
     for i in range(max(0, cur - CONTEXT), cur):
         out.append("  \x1b[2m%s\x1b[0m\x1b[K\n" % lyrics[i][1][:cols - 4])
@@ -822,7 +1125,8 @@ def lyric_view(lyrics, t, cols, body_rows, big, np, levels=None, state=None):
 
     if big:
         bmp = big.bitmap(text)
-        if levels is not None and state and state.get("amt", 0) > 0:
+        if (levels is not None and state and state.get("react", True)
+                and state.get("amt", 0) > 0):
             bmp = warp(bmp, levels, state["amt"], np)
         lines = draw_big(bmp, cols - 2, frac, np, fade=0.35 + 0.65 * p)
         # Slide in: hold back the top rows until the transition completes.
@@ -836,7 +1140,8 @@ def lyric_view(lyrics, t, cols, body_rows, big, np, levels=None, state=None):
         out.append("  %s%s\x1b[0m\x1b[2m%s\x1b[0m\x1b[K\n"
                    % (rgb(shade(FG, 0.35 + 0.65 * p)), text[:cut], text[cut:]))
 
-    if levels is not None and len(levels):
+    if levels is not None and len(levels) and (state is None or
+                                               state.get("react", True)):
         out.append("  " + rgb(shade(FG, 0.55)) +
                    wave_row(levels, cols - 4, np) + "\x1b[0m\x1b[K\n")
     else:
