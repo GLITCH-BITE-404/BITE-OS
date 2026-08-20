@@ -9,9 +9,9 @@
 **A glitch-themed, performance-obsessed Linux distribution.**
 Built on the CachyOS base — riced to the teeth, engineered to never get in your way.
 
-`v1.0` · codename **dedsec** · build `20260805` · by **GLITCH-BITE-404**
+`v1.0` · codename **dedsec** · build `20260820` · by **GLITCH-BITE-404**
 
-[![Latest build](https://img.shields.io/badge/latest%20build-20260805-00ff78?style=for-the-badge)](#-download)
+[![Latest build](https://img.shields.io/badge/latest%20build-20260820-00ff78?style=for-the-badge)](#-download)
 [![TikTok](https://img.shields.io/badge/TikTok-@glitch__bite404-ff0050?style=for-the-badge&logo=tiktok)](https://www.tiktok.com/@glitch_bite404)
 ![Base](https://img.shields.io/badge/base-CachyOS%20%2F%20Arch-1793d1?style=for-the-badge&logo=archlinux)
 ![Shell](https://img.shields.io/badge/desktop-Hyprland%20%2B%20Quickshell-00ff78?style=for-the-badge)
@@ -23,11 +23,13 @@ Built on the CachyOS base — riced to the teeth, engineered to never get in you
 
 ---
 
-> ## ⬛ Latest version — build `20260805`
+> ## ⬛ Latest version — build `20260820`
 >
 > **This is the newest ISO and replaces every earlier upload.** Same BITE-OS,
-> now with **[`bite-toys`](#-toys)** — a hub for the fun half of the system,
-> shipping `bitecam`, `bitemask`, `bitebeat` and `bitemuseum` preinstalled.
+> with **[`bite-toys`](#-toys)** preinstalled — `bitecam`, `bitemask`, `bitebeat`
+> and `bitemuseum` — now baked in fresher: **`bitebeat` 1.2** with stage mode,
+> a **`bite-toys` hub that updates itself**, and a fastfetch fix (nerd-font
+> glyphs, corrected box alignment).
 >
 > **[⤓ Download it here](#-download)** · already on an older build? Just press
 > `SUPER+U`, no reinstall needed.
@@ -201,21 +203,21 @@ The system maps directly to these custom core inputs for elite navigation:
 
 ## ◈ Download
 
-> ### ⬛ Latest build — `20260805`
+> ### ⬛ Latest build — `20260820`
 > This is the **current** ISO and supersedes every earlier upload. It's the same
 > BITE-OS plus **`bite-toys`**, the toy hub, with `bitecam`, `bitemask`,
 > `bitebeat` and `bitemuseum` preinstalled and ready as commands on first login.
-> This build also drops the Hyprland `.conf` deprecation banner that sat across
-> the top of the desktop. If you're running an older build, you don't need to
-> reinstall — `SUPER+U` pulls it in.
+> Over the `20260805` build it adds `bitebeat` 1.2 (stage mode), a hub that can
+> update itself, and the fastfetch nerd-font / box-alignment fix. If you're
+> running an older build, you don't need to reinstall — `SUPER+U` pulls it in.
 
 > The ISO (~5.4 GiB) is hosted off-GitHub due to file-size limits.
 
-**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_20260805_1014/bite-os-1.0-x86_64.iso)**
+**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_20260820/bite-os-1.0-x86_64.iso)**
 
-*(mirror / details page: [archive.org item](https://archive.org/details/bite-os-1.0-x86_64_20260805_1014))*
+*(mirror / details page: [archive.org item](https://archive.org/details/bite-os-1.0-x86_64_20260820))*
 
-`SHA256`: `f51175b6584e3533370477a926ffa5407642cdd177dbbdb7f3a36d7f81e66755`
+`SHA256`: `c5c7f32c7dc9eafeb455140b1b2d72daf91b4b74d76c6f9f246dc538a0e3801f`
 
 Verify the download before flashing — anything that doesn't match this hash is not the ISO I built:
 
