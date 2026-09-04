@@ -1,0 +1,9 @@
+# Packages inherited from archiso's releng profile that must NOT be installed.
+# One package name per line; '#' comments and blank lines ignored.
+# build-iso.sh filters these out after merging releng + iso/packages.x86_64.
+
+# Arch dropped the binary broadcom-wl from [extra]; the only remaining copy is in
+# cachyos-extra-v3, which we deliberately do NOT enable (v3 packages require an
+# x86-64-v3 CPU and this ISO must boot on older hardware). We ship the DKMS
+# version from [cachyos] instead — see broadcom-wl-dkms in packages.x86_64.
+broadcom-wl

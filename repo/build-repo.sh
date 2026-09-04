@@ -52,6 +52,11 @@ REBUILD_FOREIGN=0
 declare -A PINS=(
     [caelestia-shell]="1.6.1-1"
     [libcava]="0.10.7-2"
+    # quickshell-git is the RUNTIME the pinned caelestia-shell 1.6.1 loads into.
+    # It is a -git package, so paru would build whatever HEAD is today and could
+    # silently pair 1.6.1 with an API it wasn't built against — the same failure
+    # that looks like "Hyprland crashed". Pin it to the build we know works.
+    [quickshell-git]="0.3.0.r3.g7d1c9a9-1"
 )
 
 is_pinned() { [ -n "${PINS[$1]+x}" ]; }

@@ -2,6 +2,7 @@ app2unit
 bibata-cursor-git
 caelestia-cli
 caelestia-shell
+quickshell-git
 hyprshade
 hyprwayland-scanner-git
 libcava

@@ -2,7 +2,7 @@
 
 # File paths
 SETTINGS_FILE="$HOME/.config/hypr/settings.json"
-WEATHER_SCRIPT="$HOME/.config/hypr/scripts/weather.sh"
+WEATHER_SCRIPT="$HOME/.config/hypr/scripts/quickshell/calendar/weather.sh"
 ENV_FILE="$HOME/.config/hypr/scripts/quickshell/calendar/.env"
 
 # Target configuration files
@@ -32,6 +32,11 @@ compile_settings() {
 
     # Read state from JSON (Using 'has' to safely parse booleans)
     LANG=$(jq -r '.language // "us"' "$SETTINGS_FILE")
+    # Whitespace around a layout code ("us, ru,il") produces an invalid xkb entry
+    # and duplicates break group switching — normalise before templating.
+    LANG=$(printf '%s' "$LANG" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+           | awk 'NF && !seen[$0]++' | paste -sd, -)
+    [ -z "$LANG" ] && LANG="us"
     KB_OPT=$(jq -r '.kbOptions // "grp:alt_shift_toggle"' "$SETTINGS_FILE")
     WP_DIR=$(jq -r '.wallpaperDir // empty' "$SETTINGS_FILE")
 

@@ -59,12 +59,12 @@ def wcat(c):
   else "storm" end;
 def icon(c; day):
   wcat(c) as $k
-  | if   $k == "clear" then (if day == 1 then "" else "" end)
-    elif $k == "cloud" then ""
+  | if   $k == "clear" then (if day == 1 then "󰖙" else "󰖔" end)
+    elif $k == "cloud" then "󰖐"
     elif $k == "fog"   then "󰖑"
     elif $k == "rain"  then "󰖗"
-    elif $k == "snow"  then ""
-    else "" end;
+    elif $k == "snow"  then "󰖘"
+    else "󰖓" end;
 def hex(c):
   wcat(c) as $k
   | if   $k == "clear" then "#f9e2af"
@@ -96,12 +96,12 @@ write_dummy_data() {
             \"date\": \"$(date -d "$fd" '+%d %b')\",
             \"max\": \"0\", \"min\": \"0\", \"feels_like\": \"0\",
             \"wind\": \"0\", \"humidity\": \"0\", \"pop\": \"0\",
-            \"icon\": \"\", \"hex\": \"#cdd6f4\", \"desc\": \"No API Key\",
-            \"hourly\": [{\"time\": \"00:00\", \"temp\": \"0\", \"icon\": \"\", \"hex\": \"#cdd6f4\"}]
+            \"icon\": \"󰖐\", \"hex\": \"#cdd6f4\", \"desc\": \"No Data\",
+            \"hourly\": [{\"time\": \"00:00\", \"temp\": \"0\", \"icon\": \"󰖐\", \"hex\": \"#cdd6f4\"}]
         },"
     done
     final_json="${final_json%,}]"
-    echo "{ \"current_temp\": \"0\", \"current_icon\": \"\", \"current_hex\": \"#cdd6f4\", \"forecast\": ${final_json} }" > "${json_file}"
+    echo "{ \"current_temp\": \"0\", \"current_icon\": \"󰖐\", \"current_hex\": \"#cdd6f4\", \"forecast\": ${final_json} }" > "${json_file}"
 }
 
 # Resolve LAT/LON/CITY into globals. Cached so we don't hit ipinfo every run.
@@ -217,7 +217,7 @@ case "$1" in
         PENDING_RETRY_LIMIT=3600 # 1 h for dummy/failed state
         if [ -f "$json_file" ]; then
             diff=$(( $(date +%s) - $(stat -c %Y "$json_file") ))
-            if grep -q '"desc": "No API Key"' "$json_file"; then
+            if grep -q '"desc": "No Data"' "$json_file"; then
                 if [ "$diff" -gt "$PENDING_RETRY_LIMIT" ]; then touch "$json_file"; get_data & fi
             else
                 if [ "$diff" -gt "$CACHE_LIMIT" ]; then touch "$json_file"; get_data & fi

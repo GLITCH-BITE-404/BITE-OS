@@ -546,11 +546,13 @@ Variants {
                 `]
                 stdout: StdioCollector {
                     onStreamFinished: {
-                        let lines = this.text.trim().split("\n");
-                        if (lines.length >= 3) {
-                            barWindow.weatherIcon = lines[0];
-                            barWindow.weatherTemp = lines[1];
-                            barWindow.weatherHex = lines[2] || mocha.yellow;
+                        // An empty icon line gets eaten by trim(), shifting every
+                        // field up and pinning the bar at its "--" placeholder.
+                        let lines = (this.text || "").replace(/\n+$/, "").split("\n");
+                        if (lines.length >= 2 && lines[1].trim() !== "") {
+                            barWindow.weatherIcon = lines[0].trim();
+                            barWindow.weatherTemp = lines[1].trim();
+                            barWindow.weatherHex  = (lines[2] || "").trim() || mocha.yellow;
                         }
                     }
                 }

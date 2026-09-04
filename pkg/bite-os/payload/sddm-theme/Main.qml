@@ -20,14 +20,49 @@ Rectangle {
     property int lockRemaining: 0
     property bool inputBusy: false
 
-    // Who actually gets logged in. lastUser is EMPTY on a fresh install (sddm has
-    // no state yet), so fall back to the first real account in userModel — without
-    // this, sddm.login() is called with "" and every password is rejected.
-    readonly property string loginUser: (userModel.lastUser && userModel.lastUser.length > 0)
+    // Who gets logged in by default. lastUser is EMPTY on a fresh install (sddm
+    // has no state yet), so fall back to the first real account in userModel —
+    // without this, sddm.login() is called with "" and every password is
+    // rejected. DO NOT remove this fallback.
+    readonly property string defaultUser: (userModel.lastUser && userModel.lastUser.length > 0)
         ? userModel.lastUser
         : (userModel.count > 0
             ? userModel.data(userModel.index(Math.max(0, userModel.lastIndex), 0), Qt.UserRole + 1)
             : "")
+
+    // -1 means "whoever defaultUser resolves to". Picking an account from the
+    // greeter sets a real index, so a multi-user machine is no longer stuck on
+    // lastUser forever.
+    property int userIndex: -1
+
+    readonly property string loginUser: (userIndex >= 0 && userIndex < userModel.count)
+        ? userModel.data(userModel.index(userIndex, 0), Qt.UserRole + 1)
+        : defaultUser
+
+    readonly property bool multiUser: userModel.count > 1
+
+    // Resolve the current selection back to a concrete row so cycling starts
+    // from whatever is on screen rather than always from row 0.
+    function currentUserRow() {
+        if (root.userIndex >= 0) return root.userIndex
+        for (var i = 0; i < userModel.count; i++) {
+            if (userModel.data(userModel.index(i, 0), Qt.UserRole + 1) === root.defaultUser)
+                return i
+        }
+        return 0
+    }
+
+    function cycleUser(delta) {
+        if (!root.multiUser) return
+        if (root.mode === "locked" || root.mode === "success" || root.mode === "splash") return
+        if (root.inputBusy) return
+        var n = userModel.count
+        root.userIndex = ((currentUserRow() + delta) % n + n) % n
+        pwField.text = ""
+        errMsg.text = ""
+        root.revealedCount = 0
+        pwField.forceActiveFocus()
+    }
 
     property bool revealMode: false
     property int  revealedCount: 0
@@ -162,8 +197,13 @@ Rectangle {
                 source: "fangs_top.png"
                 width: 56
                 height: 56
+                // Source art is 2048x2110 but this draws at 56px. Without a
+                // sourceSize cap the full texture is decoded and uploaded to
+                // the GPU (~17MB) for every spawned bite. 2x for HiDPI.
+                sourceSize.height: 112
                 fillMode: Image.PreserveAspectFit
                 smooth: true
+                mipmap: true    // 2048->56 is minification; smooth alone shimmers
                 x: 0
                 y: -28      // start clearly above
             }
@@ -173,8 +213,10 @@ Rectangle {
                 source: "fangs_bottom.png"
                 width: 56
                 height: 56
+                sourceSize.height: 112
                 fillMode: Image.PreserveAspectFit
                 smooth: true
+                mipmap: true
                 x: 0
                 y: 52       // start clearly below
             }
@@ -1457,12 +1499,25 @@ Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
                     }
                     Text {
+                        id: userNameText
                         text: root.loginUser.length > 0 ? root.loginUser : "user"
-                        color: root.accent
+                        color: userSwitchMa.containsMouse ? root.accent2 : root.accent
                         font.family: root.mono
                         font.pixelSize: 18
                         font.bold: true
                         anchors.verticalCenter: parent.verticalCenter
+                        Behavior on color { ColorAnimation { duration: 140 } }
+
+                        MouseArea {
+                            id: userSwitchMa
+                            anchors.fill: parent
+                            anchors.margins: -6
+                            hoverEnabled: true
+                            enabled: root.multiUser
+                            cursorShape: root.multiUser ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            onClicked: (mouse) => root.cycleUser(mouse.button === Qt.RightButton ? -1 : 1)
+                        }
                     }
                     Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
@@ -1473,6 +1528,17 @@ Rectangle {
                             NumberAnimation { from: 0.3; to: 1.0; duration: 700 }
                             NumberAnimation { from: 1.0; to: 0.3; duration: 700 }
                         }
+                    }
+
+                    // Only advertised when there is actually somewhere to switch to.
+                    Text {
+                        visible: root.multiUser
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "[ \u2191\u2193 switch \u00b7 " + userModel.count + " accounts ]"
+                        color: userSwitchMa.containsMouse ? root.accent2 : "#5a4a8a"
+                        font.family: root.mono
+                        font.pixelSize: 11
+                        Behavior on color { ColorAnimation { duration: 140 } }
                     }
                 }
 
@@ -1553,6 +1619,10 @@ Rectangle {
                             Keys.onReturnPressed: doLogin()
                             Keys.onEnterPressed:  doLogin()
                             Keys.onEscapePressed: pwField.text = ""
+                            // Account switching from the keyboard — a greeter you
+                            // can only drive with a mouse is not a greeter.
+                            Keys.onUpPressed:   root.cycleUser(-1)
+                            Keys.onDownPressed: root.cycleUser(1)
 
                             onTextChanged: {
                                 pulseAnim.stop(); pulseAnim.start()
@@ -1754,8 +1824,14 @@ Rectangle {
         source: "fangs_top.png"
         width: root.width
         height: root.fangH
+        // fangH is capped at 620 (see property above), so the 2110px source is
+        // never needed. 1280 leaves 2x headroom for HiDPI and still halves the
+        // texture upload.
+        sourceSize.height: 1280
         fillMode: Image.PreserveAspectFit
         smooth: true
+        mipmap: true
+        asynchronous: true
         x: 0
         y: root.topY
         opacity: root.fangOpacity
@@ -1773,8 +1849,11 @@ Rectangle {
         source: "fangs_bottom.png"
         width: root.width
         height: root.fangH
+        sourceSize.height: 1280
         fillMode: Image.PreserveAspectFit
         smooth: true
+        mipmap: true
+        asynchronous: true
         x: 0
         y: root.bottomY
         opacity: root.fangOpacity

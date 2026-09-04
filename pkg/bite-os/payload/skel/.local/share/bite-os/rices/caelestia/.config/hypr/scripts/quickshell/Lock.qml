@@ -91,6 +91,19 @@ ShellRoot {
         command: ["systemctl", "reboot"]
     }
 
+    // Switch User. A lock screen must never authenticate a DIFFERENT account
+    // into THIS session, so we hand off to the display manager instead: logind's
+    // DisplayManager.Seat.SwitchToGreeter spawns a fresh greeter on its own VT
+    // and leaves this session locked and intact behind it.
+    Process {
+        id: switchUserProcess
+        command: ["bash", "-c",
+            "dbus-send --system --type=method_call " +
+            "--dest=org.freedesktop.DisplayManager " +
+            "\"${XDG_SEAT_PATH:-/org/freedesktop/DisplayManager/Seat0}\" " +
+            "org.freedesktop.DisplayManager.Seat.SwitchToGreeter"]
+    }
+
     WlSessionLock {
         id: rootLock
         locked: true
@@ -218,10 +231,13 @@ ShellRoot {
                     command: ["bash", "-c", '"' + scriptPath + '" --current-icon; "' + scriptPath + '" --current-temp']
                     stdout: StdioCollector {
                         onStreamFinished: {
-                            let lines = this.text.trim().split("\n");
-                            if (lines.length >= 2) {
-                                screenRoot.weatherIcon = lines[0] || "";
-                                screenRoot.weatherTemp = lines[1] || "--°C";
+                            // Same trap as TopBar: trimming the whole payload first
+                            // swallows an empty icon line and shifts the temp out of
+                            // range, leaving the lock stuck on "--°C".
+                            let lines = (this.text || "").replace(/\n+$/, "").split("\n");
+                            if (lines.length >= 2 && lines[1].trim() !== "") {
+                                screenRoot.weatherIcon = lines[0].trim();
+                                screenRoot.weatherTemp = lines[1].trim();
                             }
                         }
                     }
@@ -995,6 +1011,28 @@ ShellRoot {
                             font.letterSpacing: 1.5
                             color: root.mauve
                             Layout.leftMargin: 18 * screenRoot.sc; Layout.bottomMargin: 4 * screenRoot.sc
+                        }
+
+                        Rectangle {
+                            Layout.fillWidth: true; Layout.preferredHeight: 48 * screenRoot.sc; Layout.leftMargin: 10 * screenRoot.sc; Layout.rightMargin: 10 * screenRoot.sc; radius: 12 * screenRoot.sc
+                            color: ma0.containsMouse ? Qt.rgba(root.teal.r, root.teal.g, root.teal.b, 0.1) : "transparent"
+                            scale: ma0.pressed ? 0.95 : (ma0.containsMouse ? 1.02 : 1.0)
+                            Behavior on color { ColorAnimation { duration: 200 } }
+                            Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack } }
+
+                            RowLayout {
+                                anchors.fill: parent; anchors.leftMargin: 16 * screenRoot.sc; anchors.rightMargin: 16 * screenRoot.sc; spacing: 0
+                                Text { text: "\u{F0004}"; font.family: "Iosevka Nerd Font"; font.pixelSize: 18 * screenRoot.sc; color: ma0.containsMouse ? root.teal : Qt.rgba(root.teal.r, root.teal.g, root.teal.b, 0.6); Behavior on color { ColorAnimation { duration: 200 } } }
+                                Item { Layout.fillWidth: true }
+                                Text { text: "Switch User"; font.family: "JetBrains Mono"; font.pixelSize: 15 * screenRoot.sc; font.weight: Font.Medium; color: ma0.containsMouse ? root.teal : Qt.rgba(root.teal.r, root.teal.g, root.teal.b, 0.6); Behavior on color { ColorAnimation { duration: 200 } } }
+                            }
+                            MouseArea {
+                                id: ma0; anchors.fill: parent; hoverEnabled: true;
+                                onClicked: {
+                                    screenRoot.powerMenuOpen = false;
+                                    switchUserProcess.running = true;
+                                }
+                            }
                         }
 
                         Rectangle {

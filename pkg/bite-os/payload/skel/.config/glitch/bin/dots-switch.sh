@@ -56,11 +56,14 @@ launch_ilyamiro_shell() {
     # His autostart runs his shell too, but exec-once doesn't re-run on hyprctl
     # reload. Launch it + the autostart helpers explicitly so the swap takes
     # effect immediately and the bar/binds behave like a fresh login.
-    # The 2026-06-14 upstream update renamed the entrypoint Shell.qml -> Main.qml
-    # and it runs under the `quickshell` binary name (not `qs`) — launch
-    # whichever entry the rice actually ships.
-    local qml="$HOME/.config/hypr/scripts/quickshell/Main.qml"
-    [[ -f "$qml" ]] || qml="$HOME/.config/hypr/scripts/quickshell/Shell.qml"
+    # Shell.qml is the REAL entrypoint: it instantiates Main{} + TopBar{} +
+    # Floating{}. Main.qml on its own is only the popup overlay — launching it
+    # gave a session with no bar and no floating widgets, and (because
+    # autostart.conf also starts Shell.qml) left two shells running at once,
+    # doubling every animation. Prefer Shell.qml, fall back to Main.qml only if
+    # a rice genuinely ships no Shell.qml.
+    local qml="$HOME/.config/hypr/scripts/quickshell/Shell.qml"
+    [[ -f "$qml" ]] || qml="$HOME/.config/hypr/scripts/quickshell/Main.qml"
     nohup quickshell -p "$qml" >/tmp/ilyamiro-qs.log 2>&1 &
     disown
     # Helpers from his hypr autostart.conf — fire-and-forget, fail silent if missing.

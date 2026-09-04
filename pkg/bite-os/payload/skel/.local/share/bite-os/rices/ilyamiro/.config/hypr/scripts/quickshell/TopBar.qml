@@ -539,11 +539,15 @@ Variants {
                 `]
                 stdout: StdioCollector {
                     onStreamFinished: {
-                        let lines = this.text.trim().split("\n");
-                        if (lines.length >= 3) {
-                            barWindow.weatherIcon = lines[0];
-                            barWindow.weatherTemp = lines[1];
-                            barWindow.weatherHex = lines[2] || mocha.yellow;
+                        // Do NOT trim() the whole payload before splitting: when the
+                        // icon line is empty the leading newline gets eaten, every
+                        // field shifts up one, the length check fails and the bar
+                        // stays pinned at its "--" placeholder forever.
+                        let lines = (this.text || "").replace(/\n+$/, "").split("\n");
+                        if (lines.length >= 2 && lines[1].trim() !== "") {
+                            barWindow.weatherIcon = lines[0].trim();
+                            barWindow.weatherTemp = lines[1].trim();
+                            barWindow.weatherHex  = (lines[2] || "").trim() || mocha.yellow;
                         }
                     }
                 }

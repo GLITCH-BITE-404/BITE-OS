@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  ◈ BITE-OS  ·  © 2026 GLITCH-BITE-404  ·  // THE SYSTEM BIT YOU
+#  https://github.com/GLITCH-BITE-404/BITE-OS  ·  GPLv3 — keep this notice
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# bite-icons-fix — repair blank / placeholder icons in the shell and launcher.
+#
+# THE BUG THIS EXISTS FOR:
+#   The rice exports QT_QPA_PLATFORMTHEME=qt6ct, which tells every Qt app —
+#   quickshell/caelestia included — to take its icon theme from qt6ct. If
+#   ~/.config/qt6ct/qt6ct.conf is missing or has no icon_theme key, qt6ct hands
+#   Qt *no* theme at all. QIcon::fromTheme() then fails for every generic
+#   freedesktop name (preferences-desktop-theme, preferences-system-network, …)
+#   and the shell draws its magenta placeholder square instead. Apps that ship
+#   their own icon still render, which is why only *some* icons go blank — it
+#   looks random, but it is not.
+#
+# Usage:
+#   bite-icons-fix              repair, then restart the running shell
+#   bite-icons-fix --check      report only, change nothing
+#   bite-icons-fix --no-restart repair but leave the shell alone
+#
+set -uo pipefail
+
+CHECK=0; RESTART=1
+for a in "$@"; do
+    case "$a" in
+        --check)      CHECK=1 ;;
+        --no-restart) RESTART=0 ;;
+        -h|--help)    sed -n '2,30p' "$0"; exit 0 ;;
+        *) echo "unknown option: $a" >&2; exit 2 ;;
+    esac
+done
+
+c_g=$'\e[32m'; c_y=$'\e[33m'; c_r=$'\e[31m'; c_d=$'\e[2m'; c_0=$'\e[0m'
+ok()   { printf '  %s✓%s %s\n' "$c_g" "$c_0" "$*"; }
+warn() { printf '  %s!%s %s\n' "$c_y" "$c_0" "$*"; }
+info() { printf '  %s·%s %s\n' "$c_d" "$c_0" "$*"; }
+
+ICON_ROOTS=("$HOME/.local/share/icons" "$HOME/.icons" /usr/share/icons)
+
+# A theme is usable only if it has an index.theme somewhere on the search path.
+theme_valid() {
+    local t="$1" r
+    [[ -z "$t" ]] && return 1
+    for r in "${ICON_ROOTS[@]}"; do
+        [[ -f "$r/$t/index.theme" ]] && return 0
+    done
+    return 1
+}
+
+# Prefer whatever GTK already uses so both toolkits agree; otherwise fall back
+# through themes that actually carry the generic freedesktop names.
+pick_theme() {
+    local gtk t
+    gtk="$(sed -n 's/^gtk-icon-theme-name=//p' "$HOME/.config/gtk-3.0/settings.ini" 2>/dev/null | tail -1)"
+    for t in "$gtk" Papirus-Dark Papirus breeze-dark breeze Adwaita hicolor; do
+        theme_valid "$t" && { echo "$t"; return 0; }
+    done
+    echo hicolor
+}
+
+THEME="$(pick_theme)"
+echo "==> Icon theme: $THEME"
+
+# ---- 1. the actual bug: qt5ct/qt6ct must name an icon theme -----------------
+for v in 5 6; do
+    conf="$HOME/.config/qt${v}ct/qt${v}ct.conf"
+    cur="$(sed -n 's/^icon_theme=//p' "$conf" 2>/dev/null | tail -1)"
+    if [[ "$cur" == "$THEME" ]]; then
+        ok "qt${v}ct already sets icon_theme=$THEME"
+        continue
+    fi
+    [[ "$CHECK" -eq 1 ]] && { warn "qt${v}ct icon_theme is '${cur:-<unset>}' (should be $THEME)"; continue; }
+    mkdir -p "$(dirname "$conf")"
+    if [[ ! -f "$conf" ]]; then
+        printf '[Appearance]\nicon_theme=%s\n' "$THEME" > "$conf"
+        ok "qt${v}ct.conf created with icon_theme=$THEME"
+    elif grep -q '^icon_theme=' "$conf"; then
+        sed -i "s|^icon_theme=.*|icon_theme=$THEME|" "$conf"
+        ok "qt${v}ct.conf icon_theme updated -> $THEME"
+    elif grep -q '^\[Appearance\]' "$conf"; then
+        sed -i "0,/^\[Appearance\]/s//[Appearance]\nicon_theme=$THEME/" "$conf"
+        ok "qt${v}ct.conf icon_theme added under [Appearance]"
+    else
+        printf '\n[Appearance]\nicon_theme=%s\n' "$THEME" >> "$conf"
+        ok "qt${v}ct.conf [Appearance] section appended"
+    fi
+done
+
+# ---- 2. stale icon caches make icons vanish after a package update ----------
+if command -v gtk-update-icon-cache >/dev/null; then
+    for r in "$HOME/.local/share/icons" "$HOME/.icons"; do
+        [[ -d "$r" ]] || continue
+        for d in "$r"/*/; do
+            [[ -f "$d/index.theme" ]] || continue
+            cache="$d/icon-theme.cache"
+            [[ -f "$cache" ]] && [[ -z "$(find "$d" -type f -newer "$cache" ! -name icon-theme.cache -print -quit 2>/dev/null)" ]] && continue
+            [[ "$CHECK" -eq 1 ]] && { warn "stale icon cache: $(basename "$d")"; continue; }
+            gtk-update-icon-cache -f -t -q "$d" 2>/dev/null && ok "rebuilt icon cache: $(basename "$d")"
+        done
+    done
+else
+    info "gtk-update-icon-cache not installed — skipping cache rebuild"
+fi
+
+# ---- 3. desktop entries the launcher reads ---------------------------------
+if [[ "$CHECK" -eq 0 ]] && command -v update-desktop-database >/dev/null; then
+    update-desktop-database "$HOME/.local/share/applications" 2>/dev/null && ok "desktop database refreshed"
+fi
+
+[[ "$CHECK" -eq 1 ]] && { echo "==> check only, nothing changed"; exit 0; }
+
+# ---- 4. Qt reads the platform theme once, at startup ------------------------
+if [[ "$RESTART" -eq 1 ]]; then
+    if pgrep -f "qs -c caelestia" >/dev/null; then
+        info "restarting caelestia shell so Qt picks up the theme"
+        caelestia shell -k >/dev/null 2>&1
+        sleep 1
+        setsid -f caelestia shell -d >/dev/null 2>&1
+        ok "caelestia shell restarted"
+    elif pgrep -f "scripts/quickshell/Shell.qml" >/dev/null; then
+        info "reloading the ilyamiro shell"
+        quickshell -p "$HOME/.config/hypr/scripts/quickshell/Shell.qml" ipc call main forceReload >/dev/null 2>&1
+        ok "ilyamiro shell reloaded"
+    else
+        warn "no shell running — icons will be correct at next launch"
+    fi
+else
+    info "shell left running; icons update on its next restart"
+fi
+
+echo "==> done"

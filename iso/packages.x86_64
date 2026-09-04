@@ -305,6 +305,7 @@ libxnvctrl
 # Fallback Intel Xorg driver for very old iGPUs (modern iGPUs use modesetting)
 
 # Broadcom wifi (proprietary blob for the cards linux-firmware doesn't cover)
+broadcom-wl-dkms
 
 # Headers so DKMS modules (nvidia-open-dkms, broadcom-wl-dkms) can build
 linux-cachyos-headers

@@ -9,9 +9,9 @@
 **A glitch-themed, performance-obsessed Linux distribution.**
 Built on the CachyOS base — riced to the teeth, engineered to never get in your way.
 
-`v1.0` · codename **dedsec** · build `20260820` · by **GLITCH-BITE-404**
+`v1.0` · codename **dedsec** · build `20260903` · by **GLITCH-BITE-404**
 
-[![Latest build](https://img.shields.io/badge/latest%20build-20260820-00ff78?style=for-the-badge)](#-download)
+[![Latest build](https://img.shields.io/badge/latest%20build-20260903-00ff78?style=for-the-badge)](#-download)
 [![TikTok](https://img.shields.io/badge/TikTok-@glitch__bite404-ff0050?style=for-the-badge&logo=tiktok)](https://www.tiktok.com/@glitch_bite404)
 ![Base](https://img.shields.io/badge/base-CachyOS%20%2F%20Arch-1793d1?style=for-the-badge&logo=archlinux)
 ![Shell](https://img.shields.io/badge/desktop-Hyprland%20%2B%20Quickshell-00ff78?style=for-the-badge)
@@ -23,13 +23,14 @@ Built on the CachyOS base — riced to the teeth, engineered to never get in you
 
 ---
 
-> ## ⬛ Latest version — build `20260820`
+> ## ⬛ Latest version — build `20260903`
 >
-> **This is the newest ISO and replaces every earlier upload.** Same BITE-OS,
-> with **[`bite-toys`](#-toys)** preinstalled — `bitecam`, `bitemask`, `bitebeat`
-> and `bitemuseum` — now baked in fresher: **`bitebeat` 1.2** with stage mode,
-> a **`bite-toys` hub that updates itself**, and a fastfetch fix (nerd-font
-> glyphs, corrected box alignment).
+> **This is the newest ISO and replaces every earlier upload.** A bug-fix build:
+> the weather widget now actually shows the weather, **you can pick which user to
+> log in as** at the greeter, the lock screen gained **Switch User**, the keyboard
+> layout list stopped corrupting itself, and blank/placeholder icons are fixed.
+> It also repairs a bug where a **fresh install booted with no top bar at all**.
+> Full list under **[What's new](#-whats-new-in-20260903)**.
 >
 > **[⤓ Download it here](#-download)** · already on an older build? Just press
 > `SUPER+U`, no reinstall needed.
@@ -203,21 +204,20 @@ The system maps directly to these custom core inputs for elite navigation:
 
 ## ◈ Download
 
-> ### ⬛ Latest build — `20260820`
-> This is the **current** ISO and supersedes every earlier upload. It's the same
-> BITE-OS plus **`bite-toys`**, the toy hub, with `bitecam`, `bitemask`,
-> `bitebeat` and `bitemuseum` preinstalled and ready as commands on first login.
-> Over the `20260805` build it adds `bitebeat` 1.2 (stage mode), a hub that can
-> update itself, and the fastfetch nerd-font / box-alignment fix. If you're
-> running an older build, you don't need to reinstall — `SUPER+U` pulls it in.
+> ### ⬛ Latest build — `20260903`
+> This is the **current** ISO and supersedes every earlier upload. Everything from
+> the `20260820` build (`bite-toys` and its toys preinstalled) plus a round of real
+> bug fixes — see **[What's new](#-whats-new-in-20260903)**. If you're already running
+> BITE-OS, most of these reach you with `SUPER+U`; the greeter, first-boot and
+> installer fixes need this ISO.
 
-> The ISO (~5.4 GiB) is hosted off-GitHub due to file-size limits.
+> The ISO (~5.5 GiB) is hosted off-GitHub due to file-size limits.
 
-**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_20260820/bite-os-1.0-x86_64.iso)**
+**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_202609/bite-os-1.0-x86_64.iso)**
 
-*(mirror / details page: [archive.org item](https://archive.org/details/bite-os-1.0-x86_64_20260820))*
+*(mirror / details page: [archive.org item](https://archive.org/details/bite-os-1.0-x86_64_202609))*
 
-`SHA256`: `c5c7f32c7dc9eafeb455140b1b2d72daf91b4b74d76c6f9f246dc538a0e3801f`
+`SHA256`: `de3c8e041c7717b82e54f9f2be3e047fecd96058ccae6a8d81f9472094f1bff4`
 
 Verify the download before flashing — anything that doesn't match this hash is not the ISO I built:
 
@@ -226,6 +226,44 @@ sha256sum bite-os-1.0-x86_64.iso
 ```
 
 This build ships **`bite-toys`** and its four toys preinstalled — see [Toys](#-toys).
+
+## ◈ What's new in 20260903
+
+A bug-fix build. Nothing was redesigned — things that were quietly broken now work.
+
+**Weather actually shows the weather.** The top bar, lock screen and calendar sat on
+`--°` regardless of conditions. Two faults stacked: half the weather icons had lost
+their nerd-font glyphs, and the parser called `.trim()` on the whole response before
+splitting it, so a blank icon line shifted every field out of place and the reading was
+discarded. Both fixed — and it no longer depends on an API key at all.
+
+**You can choose which user to log in as.** The greeter was locked to the last account
+that logged in, with no way to switch. Click the username (or press ↑/↓) to cycle
+accounts. Single-user installs look and behave exactly as before.
+
+**Lock screen: Switch User.** New entry in the power menu. It hands off to the display
+manager, so your session stays locked and intact behind the new greeter.
+
+**Keyboard layouts stopped eating themselves.** Adding a language could silently append
+a duplicate and leave a malformed entry that broke layout switching. The layout list is
+now normalised everywhere it's read or written.
+
+**Blank icons fixed.** Some system apps showed a placeholder square instead of an icon —
+it looked random but was deterministic: the rice sets `QT_QPA_PLATFORMTHEME=qt6ct`, and
+with no qt6ct config present Qt was handed no icon theme at all, so every generic icon
+name failed to resolve. Fresh installs now ship a correct config, and **`bite-icons-fix`**
+repairs it on an existing system (`bite-icons-fix --check` to inspect without changing
+anything).
+
+**A fresh install now boots with a top bar.** First-boot autostart launched the popup
+overlay instead of the shell entrypoint, so a brand-new install came up with no bar and
+no floating widgets until something restarted the shell.
+
+**caelestia rice: the browser key works.** It pointed at a browser that isn't installed,
+so the bind did nothing. It opens Firefox now.
+
+Links and credits across the project now point at **GLITCH-BITE-404** and the GitHub
+repo; the old handle's URLs were dead.
 
 ## ◈ Install
 

@@ -1305,7 +1305,7 @@ Item {
                                     Flow {
                                         Layout.fillWidth: true; spacing: root.s(6); Layout.topMargin: root.s(8)
                                         Repeater {
-                                            model: Config.language ? Config.language.split(",").filter(x => x.trim() !== "") : []
+                                            model: Config.language ? Config.language.split(",").map(x => x.trim()).filter(x => x !== "") : []
                                             Rectangle {
                                                 width: langChipLayout.implicitWidth + root.s(20); height: root.s(26); radius: root.s(13)
                                                 color: box3.isActive ? Qt.alpha(root.base, 0.2) : root.surface1
@@ -1330,7 +1330,7 @@ Item {
                                                 MouseArea {
                                                     id: chipMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                                                     onClicked: {
-                                                        let arr = Config.language.split(",").filter(x => x.trim() !== "");
+                                                        let arr = Config.language.split(",").map(x => x.trim()).filter(x => x !== "");
                                                         arr.splice(index, 1);
                                                         Config.language = arr.join(",");
                                                     }
@@ -1369,7 +1369,7 @@ Item {
                                     function langInputAccept(event) {
                                         if (langSearchModel.count > 0 && langListView.currentIndex >= 0) {
                                             let item = langSearchModel.get(langListView.currentIndex);
-                                            let arr = Config.language ? Config.language.split(",").filter(x => x.trim() !== "") : [];
+                                            let arr = Config.language ? Config.language.split(",").map(x => x.trim()).filter(x => x !== "") : [];
                                             if (!arr.includes(item.code)) { arr.push(item.code); Config.language = arr.join(","); }
                                         }
                                         text = ""; focus = false; event.accepted = true;
@@ -1417,7 +1417,7 @@ Item {
                                         MouseArea {
                                             id: sMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                                             onClicked: {
-                                                let arr = Config.language ? Config.language.split(",").filter(x => x.trim() !== "") : [];
+                                                let arr = Config.language ? Config.language.split(",").map(x => x.trim()).filter(x => x !== "") : [];
                                                 if (!arr.includes(model.code)) { arr.push(model.code); Config.language = arr.join(","); }
                                                 langInput.text = ""; langInput.focus = false;
                                             }

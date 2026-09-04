@@ -32,6 +32,19 @@ cp -r /usr/share/archiso/configs/releng "$PROFILE"
 cat "$PROFILE/packages.x86_64" "$DISTRO/iso/packages.x86_64" \
     | grep -vE '^\s*#|^\s*$' | sort -u > /tmp/bite-pkgs.txt
 
+# Drop releng-inherited packages that no longer resolve in our enabled repos.
+# Without this, a package Arch removes upstream aborts the whole build at
+# "target not found" with no way to override it from iso/packages.x86_64.
+if [ -f "$DISTRO/iso/packages.exclude" ]; then
+    grep -vE '^\s*#|^\s*$' "$DISTRO/iso/packages.exclude" | sort -u > /tmp/bite-excl.txt
+    if [ -s /tmp/bite-excl.txt ]; then
+        echo "==> Excluding: $(tr '\n' ' ' < /tmp/bite-excl.txt)"
+        comm -23 /tmp/bite-pkgs.txt /tmp/bite-excl.txt > /tmp/bite-pkgs.filtered
+        mv /tmp/bite-pkgs.filtered /tmp/bite-pkgs.txt
+    fi
+    rm -f /tmp/bite-excl.txt
+fi
+
 echo "==> Overlaying BITE-OS customisations"
 cp -rf "$DISTRO/iso/." "$PROFILE/"
 mv /tmp/bite-pkgs.txt "$PROFILE/packages.x86_64"

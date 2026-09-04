@@ -218,10 +218,11 @@ ShellRoot {
                     command: ["bash", "-c", '"' + scriptPath + '" --current-icon; "' + scriptPath + '" --current-temp']
                     stdout: StdioCollector {
                         onStreamFinished: {
-                            let lines = this.text.trim().split("\n");
-                            if (lines.length >= 2) {
-                                screenRoot.weatherIcon = lines[0] || "";
-                                screenRoot.weatherTemp = lines[1] || "--°C";
+                            // Same trim() trap as TopBar.
+                            let lines = (this.text || "").replace(/\n+$/, "").split("\n");
+                            if (lines.length >= 2 && lines[1].trim() !== "") {
+                                screenRoot.weatherIcon = lines[0].trim();
+                                screenRoot.weatherTemp = lines[1].trim();
                             }
                         }
                     }
