@@ -1,10 +1,10 @@
 {
-  "uiScale": 1.0,
+  "uiScale": 1,
   "openGuideAtStartup": true,
   "topbarHelpIcon": true,
   "workspaceCount": 8,
   "wallpaperDir": "",
-  "language": "us, ru",
+  "language": "us,ru,il",
   "kbOptions": "grp:alt_shift_toggle",
   "monitors": [],
   "keybinds": [
@@ -510,6 +510,9 @@
     },
     {
       "command": "~/.config/hypr/scripts/init.sh"
+    },
+    {
+      "command": "~/.config/hypr/scripts/wallpaper-restore.sh"
     },
     {
       "command": "~/.config/hypr/scripts/settings_watcher.sh &"

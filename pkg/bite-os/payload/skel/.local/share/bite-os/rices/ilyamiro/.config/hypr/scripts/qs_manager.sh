@@ -126,15 +126,29 @@ handle_wallpaper_prep() {
                 thumb="$THUMB_DIR/000_$filename"
                 [ -f "$THUMB_DIR/$filename" ] && rm -f "$THUMB_DIR/$filename"
                 if [ ! -f "$thumb" ]; then
-                    ffmpeg -y -ss 00:00:05 -i "$img" -vframes 1 \
+                    # Seek to a timestamp that actually exists. A hardcoded 5s
+                    # is past the end of short clips (a 5.03s WhatsApp video
+                    # yielded no frame), and the manifest used to be appended
+                    # even on failure — so the file was recorded as "done",
+                    # never retried, and stayed invisible in the picker forever.
+                    dur=$(ffprobe -v error -show_entries format=duration \
+                          -of default=nw=1:nk=1 "$img" 2>/dev/null)
+                    seek=$(awk -v d="${dur:-0}" 'BEGIN{ s=(d>10)?5:((d>2)?d/2:0); printf "%.2f", s }')
+                    ffmpeg -y -ss "$seek" -i "$img" -vframes 1 \
                         -threads 1 -f image2 -q:v 2 "$thumb" >/dev/null 2>&1
-                    echo "000_$filename" >> "$MANIFEST"
+                    # Last resort: very first frame.
+                    [ -s "$thumb" ] || ffmpeg -y -i "$img" -vframes 1 \
+                        -threads 1 -f image2 -q:v 2 "$thumb" >/dev/null 2>&1
+                    # Only mark done if a thumb really exists, else it never retries.
+                    [ -s "$thumb" ] && echo "000_$filename" >> "$MANIFEST" || rm -f "$thumb"
                 fi
             else
                 thumb="$THUMB_DIR/$filename"
                 if [ ! -f "$thumb" ]; then
-                    magick "$img" -resize x420 -quality 70 "$thumb"
-                    echo "$filename" >> "$MANIFEST"
+                    # Same rule as videos: a failed convert must not be recorded
+                    # as done, or the image is invisible until the cache is wiped.
+                    magick "$img" -resize x420 -quality 70 "$thumb" 2>/dev/null
+                    [ -s "$thumb" ] && echo "$filename" >> "$MANIFEST" || rm -f "$thumb"
                 fi
             fi
         done < <(comm -23 "$SRC_LIST" <(sed 's/^000_//' "$MANIFEST" | sort))
@@ -178,8 +192,8 @@ if [[ "$ACTION" == "open" || "$ACTION" == "toggle" ]]; then
         CURRENT_SRC=""
         if pgrep -a "mpvpaper" > /dev/null; then
             CURRENT_SRC=$(pgrep -a mpvpaper | grep -o "$SRC_DIR/[^' ]*" | head -n1)
-        elif command -v swww >/dev/null; then
-            CURRENT_SRC=$(swww query 2>/dev/null | grep -o "$SRC_DIR/[^ ]*" | head -n1)
+        elif command -v awww >/dev/null; then
+            CURRENT_SRC=$(awww query 2>/dev/null | grep -o "$SRC_DIR/[^ ]*" | head -n1)
         fi
 
         TARGET_THUMB=""

@@ -91,7 +91,12 @@ autobackup() {
         fi
     done
     printf '%s\n' "${MANAGED_DIRS[@]}" > "${dir}/manifest.txt"
-    say "$c_dim  autobackup: $dir ($copied dirs)$c_rst"
+    # NOTE: stderr, not stdout. The caller does park="$(autobackup ...)",
+    # so anything printed here is captured as part of the returned path.
+    # It used to land on stdout, producing a path built from this very
+    # message (escape codes and all) and mkdir'ing a 243MB junk copy of
+    # the backup on every single rice load.
+    say "$c_dim  autobackup: $dir ($copied dirs)$c_rst" >&2
     printf '%s' "$dir"
 }
 

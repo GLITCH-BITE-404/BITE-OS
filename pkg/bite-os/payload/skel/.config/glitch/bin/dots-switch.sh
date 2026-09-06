@@ -29,6 +29,38 @@ LOG="/tmp/dots-switch.log"
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >> "$LOG"; }
 
+# ─── single-instance guard ────────────────────────────────────────────────
+# Super+Ctrl+D is the panic bind, so it WILL get spammed. Without a lock each
+# press ran a full concurrent swap: N x (rice load + kill_any_shell + launch),
+# all interleaving. The kills raced the launches, so shells spawned faster than
+# they were reaped -> a stack of bars, two rices alive at once, and windows
+# sized against whichever shell won. Non-blocking: a swap already in flight
+# means extra presses are dropped, not queued (queueing would just replay the
+# same stampede a second later).
+# NOT flock: this script spawns 17 detached daemons, and every one of them
+# would inherit the lock fd and pin it for the whole session (the same trap
+# wallpaper.sh works around with `9>&-`). A pidfile written with noclobber
+# uses O_EXCL, so it's just as atomic and there is no fd to leak.
+SWAP_LOCK="${STATE_DIR}/dots-switch.lock"
+take_lock() { ( set -o noclobber; echo $$ > "$SWAP_LOCK" ) 2>/dev/null; }
+# A re-exec of this script from inside an already-locked run (the watchdog
+# rescue) carries the owner's pid so it doesn't block on the lock it is under.
+if [[ -n "${DOTS_LOCK_OWNER:-}" ]] && [[ "${DOTS_LOCK_OWNER}" == "$(cat "$SWAP_LOCK" 2>/dev/null)" ]]; then
+    log "re-entering under lock owned by $DOTS_LOCK_OWNER"
+elif ! take_lock; then
+    holder="$(cat "$SWAP_LOCK" 2>/dev/null)"
+    if [[ -n "$holder" ]] && kill -0 "$holder" 2>/dev/null; then
+        log "swap already in progress (pid $holder) — press ignored"
+        notify "Swap in progress" "Hold up — already switching rices."
+        exit 0
+    fi
+    # Holder is dead: a previous swap crashed mid-flight. Reclaim it.
+    log "stale swap lock from dead pid ${holder:-?} — reclaiming"
+    rm -f "$SWAP_LOCK"
+    take_lock || exit 0
+fi
+trap 'rm -f "$SWAP_LOCK"' EXIT
+
 notify() {
     notify-send -a "$APP" -i "applications-graphics" "$1" "$2" 2>/dev/null || true
 }
@@ -51,6 +83,13 @@ launch_caelestia_shell() {
     fi
     [[ -f "$HOME/.config/hypr/hypridle.conf" ]] && command -v hypridle >/dev/null && \
         setsid -f hypridle </dev/null >/dev/null 2>&1
+    # kill_any_shell now reaps these too, and they're exec-once in execs.conf,
+    # which hyprctl reload does NOT re-run — so bring them back on every swap.
+    # (Both are single-instance internally, so a double-start is harmless.)
+    for _h in mpvpaper-autopause.sh wallpaper-guard.sh; do
+        [[ -x "$HOME/.config/hypr/scripts/$_h" ]] && \
+            setsid -f "$HOME/.config/hypr/scripts/$_h" </dev/null >/dev/null 2>&1
+    done
 }
 launch_ilyamiro_shell() {
     # His autostart runs his shell too, but exec-once doesn't re-run on hyprctl
@@ -95,6 +134,24 @@ ilyamiro_alive() {
     pgrep -f "scripts/quickshell/(Main|Shell)\.qml" >/dev/null
 }
 
+# ─── readiness: has the shell actually PAINTED? ───────────────────────────
+# `nohup quickshell &` returns a live pid immediately, so an *_alive check
+# passes long before the bar exists. Spamming the swap bind then chained swap
+# after swap onto half-initialised shells — the session goes blurry and stops
+# taking input because an overlay layer is mapped but its shell isn't up yet.
+# A mapped layer surface is the real "it's on screen" signal.
+# hyprctl prints "namespace: <name>, pid: <n>" — anchor on the comma so
+# "quickshell" can't also match "quickshell-something".
+ilyamiro_ready()  { hyprctl layers 2>/dev/null | grep -q "namespace: quickshell,"; }
+caelestia_ready() { hyprctl layers 2>/dev/null | grep -q "namespace: caelestia-"; }
+shell_ready() {
+    case "$1" in
+        ilyamiro)  ilyamiro_ready  ;;
+        caelestia) caelestia_ready ;;
+        *) return 0 ;;
+    esac
+}
+
 # ─── kill the currently-running shell (whichever it is) ───────────────────
 # Tear down BOTH rices' helper processes so the new rice starts clean. Without
 # this, ilyamiro's focus_daemon/volume_listener/etc. linger when you swap to
@@ -123,6 +180,19 @@ kill_any_shell() {
     # Shared cliphist watchers (cheap to restart)
     pkill -f "wl-paste --type text --watch cliphist"  2>/dev/null
     pkill -f "wl-paste --type image --watch cliphist" 2>/dev/null
+    # Wallpaper daemons + their helpers. Missing these meant caelestia's
+    # wallpaper-guard/mpvpaper-autopause SURVIVED every swap into ilyamiro:
+    # autopause would SIGSTOP mpvpaper on fullscreen, and a STOPped process
+    # holds SIGTERM pending forever, so ilyamiro's picker could never kill it
+    # -> frozen video wallpaper + a stack of duplicate mpvpapers.
+    # CONT first so a frozen mpvpaper can actually receive TERM.
+    pkill -f "mpvpaper-autopause" 2>/dev/null
+    pkill -f "wallpaper-guard"    2>/dev/null
+    pkill -CONT -x mpvpaper 2>/dev/null
+    pkill -TERM -x mpvpaper 2>/dev/null
+    for _i in $(seq 1 10); do pgrep -x mpvpaper >/dev/null 2>&1 || break; sleep 0.1; done
+    pkill -KILL -x mpvpaper  2>/dev/null
+    pkill -TERM -x hyprpaper 2>/dev/null
     sleep 0.5
 }
 
@@ -132,6 +202,12 @@ restart_wallpaper() {
     # exec-once, so invoke it manually here every swap.
     if [[ -x "$HOME/.config/hypr/scripts/wallpaper.sh" ]]; then
         setsid -f "$HOME/.config/hypr/scripts/wallpaper.sh" restore </dev/null >/dev/null 2>&1
+    elif [[ -x "$HOME/.config/hypr/scripts/wallpaper-restore.sh" ]]; then
+        # ilyamiro ships no wallpaper.sh — its equivalent is wallpaper-restore.sh
+        # (awww-daemon paints nothing until something runs `awww img`). Without
+        # this branch a swap into ilyamiro left the desktop on whatever the old
+        # rice had painted.
+        setsid -f "$HOME/.config/hypr/scripts/wallpaper-restore.sh" </dev/null >/dev/null 2>&1
     fi
 }
 
@@ -144,6 +220,7 @@ spawn_watchdog() {
         rm -f "$WATCHDOG_PID_FILE"
     fi
     (
+        trap - EXIT   # inherited from the parent; must not delete a newer run's lock
         sleep 4    # give the shell a moment to actually start
         local check
         case "$target" in
@@ -210,6 +287,36 @@ swap_to() {
     sleep 0.8
     restart_wallpaper
 
+    # Keep the lock until the target shell is genuinely alive. Releasing at
+    # script exit let a press land while the new rice was still coming up,
+    # which is when a second swap does the most damage.
+    local waited=0
+    while (( waited < 150 )); do
+        shell_ready "$target" && break
+        sleep 0.1; waited=$((waited + 1))
+    done
+    if (( waited >= 150 )); then
+        log "step 6: ${target} shell did NOT paint within 15s (watchdog will decide)"
+    else
+        log "step 6: ${target} shell painted after $((waited / 10))s"
+    fi
+    # Settle window: the bar can be mapped while popups/binds are still wiring
+    # up, and releasing the lock the instant it appears let the next press
+    # chain a fresh swap onto a barely-live shell. Two seconds of quiet is the
+    # difference between "spam is ignored" and "spam melts the session".
+    sleep 2
+
+    # Swallow the swap chord's own trailing Super release.
+    # caelestia opens its launcher on Super RELEASE unless launcherInterrupted
+    # is set — but that flag lives in the shell process, so killing the shell
+    # mid-chord resets it to false. Releasing Super after the swap then looked
+    # like a bare Super tap and opened the launcher: a full-screen blurred
+    # drawer with an input grab, i.e. a frozen-looking session. Re-arm the flag
+    # on the fresh shell; the next real Super press clears it again.
+    if [[ "$target" == "caelestia" ]]; then
+        hyprctl dispatch global caelestia:launcherInterrupt >/dev/null 2>&1 || true
+    fi
+
     echo "$target" > "$ACTIVE_SHELL_FILE"
 
     # If we're not the rescue, spawn watchdog. Rescue swaps don't watchdog
@@ -232,9 +339,12 @@ case "$cmd" in
         swap_to "$cmd"
         ;;
     toggle)
+        # Call swap_to DIRECTLY. Re-execing "$0" here deadlocked against the
+        # lock this process already holds: the child saw a live holder (its own
+        # parent) and refused, so all four toggle binds silently did nothing.
         cur="$(cat "$ACTIVE_SHELL_FILE" 2>/dev/null || echo caelestia)"
-        if [[ "$cur" == "ilyamiro" ]]; then "$0" caelestia
-        else "$0" ilyamiro; fi
+        if [[ "$cur" == "ilyamiro" ]]; then swap_to caelestia
+        else swap_to ilyamiro; fi
         ;;
     status)
         printf 'active-shell: %s\n' "$(cat "$ACTIVE_SHELL_FILE" 2>/dev/null || echo '(none)')"

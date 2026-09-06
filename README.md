@@ -9,9 +9,9 @@
 **A glitch-themed, performance-obsessed Linux distribution.**
 Built on the CachyOS base — riced to the teeth, engineered to never get in your way.
 
-`v1.0` · codename **dedsec** · build `20260903` · by **GLITCH-BITE-404**
+`v1.0` · codename **dedsec** · build `20260906` · by **GLITCH-BITE-404**
 
-[![Latest build](https://img.shields.io/badge/latest%20build-20260903-00ff78?style=for-the-badge)](#-download)
+[![Latest build](https://img.shields.io/badge/latest%20build-20260906-00ff78?style=for-the-badge)](#-download)
 [![TikTok](https://img.shields.io/badge/TikTok-@glitch__bite404-ff0050?style=for-the-badge&logo=tiktok)](https://www.tiktok.com/@glitch_bite404)
 ![Base](https://img.shields.io/badge/base-CachyOS%20%2F%20Arch-1793d1?style=for-the-badge&logo=archlinux)
 ![Shell](https://img.shields.io/badge/desktop-Hyprland%20%2B%20Quickshell-00ff78?style=for-the-badge)
@@ -23,14 +23,13 @@ Built on the CachyOS base — riced to the teeth, engineered to never get in you
 
 ---
 
-> ## ⬛ Latest version — build `20260903`
+> ## ⬛ Latest version — build `20260906`
 >
-> **This is the newest ISO and replaces every earlier upload.** A bug-fix build:
-> the weather widget now actually shows the weather, **you can pick which user to
-> log in as** at the greeter, the lock screen gained **Switch User**, the keyboard
-> layout list stopped corrupting itself, and blank/placeholder icons are fixed.
-> It also repairs a bug where a **fresh install booted with no top bar at all**.
-> Full list under **[What's new](#-whats-new-in-20260903)**.
+> **This is the newest ISO and replaces every earlier upload.** A wallpaper and
+> desktop-stability build: the wallpaper picker **applies the picture you actually
+> chose**, **video wallpapers survive a reboot** instead of coming back as a frozen
+> frame, and rice switching stopped **stacking duplicate bars and shells** on top of
+> each other. Full list under **[What's new](#-whats-new-in-20260906)**.
 >
 > **[⤓ Download it here](#-download)** · already on an older build? Just press
 > `SUPER+U`, no reinstall needed.
@@ -204,20 +203,19 @@ The system maps directly to these custom core inputs for elite navigation:
 
 ## ◈ Download
 
-> ### ⬛ Latest build — `20260903`
+> ### ⬛ Latest build — `20260906`
 > This is the **current** ISO and supersedes every earlier upload. Everything from
-> the `20260820` build (`bite-toys` and its toys preinstalled) plus a round of real
-> bug fixes — see **[What's new](#-whats-new-in-20260903)**. If you're already running
-> BITE-OS, most of these reach you with `SUPER+U`; the greeter, first-boot and
-> installer fixes need this ISO.
+> the `20260903` build plus a wallpaper and desktop-stability pass — see
+> **[What's new](#-whats-new-in-20260906)**. If you're already running BITE-OS, most
+> of these reach you with `SUPER+U`; the first-boot and installer fixes need this ISO.
 
 > The ISO (~5.5 GiB) is hosted off-GitHub due to file-size limits.
 
-**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_202609/bite-os-1.0-x86_64.iso)**
+**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_20260906/bite-os-1.0-x86_64.iso)**
 
-*(mirror / details page: [archive.org item](https://archive.org/details/bite-os-1.0-x86_64_202609))*
+*(mirror / details page: [archive.org item](https://archive.org/details/bite-os-1.0-x86_64_20260906))*
 
-`SHA256`: `de3c8e041c7717b82e54f9f2be3e047fecd96058ccae6a8d81f9472094f1bff4`
+`SHA256`: `f8b867cef6816e06af0b54ce92934c8ff0fb2c0869cda30db12ce69ba43c2bc8`
 
 Verify the download before flashing — anything that doesn't match this hash is not the ISO I built:
 
@@ -226,6 +224,47 @@ sha256sum bite-os-1.0-x86_64.iso
 ```
 
 This build ships **`bite-toys`** and its four toys preinstalled — see [Toys](#-toys).
+
+## ◈ What's new in 20260906
+
+A wallpaper and desktop-stability build. Nothing was redesigned — things that had
+been quietly broken for a while now work.
+
+**The wallpaper picker applies the picture you pick.** Arch renamed the `swww`
+package to `awww`, and the picker was still calling `swww`. Because it kills the
+video wallpaper *before* painting the new one, choosing an image killed your video
+and then painted nothing — leaving whatever was on screen before, which looked like
+the picker ignoring you and reverting to the default. Every call now targets `awww`.
+
+**Video wallpapers survive a reboot.** The picker caches a still thumbnail for
+videos, so nothing on disk remembered the actual video path and every boot restored
+a frozen frame that only came alive if you re-picked it. The real source path is now
+recorded and replayed, so a video comes back as a video.
+
+**Video wallpapers stop duplicating.** Tearing down `mpvpaper` sent `SIGTERM` and
+immediately spawned a replacement without waiting, so the old process could outlive
+the new one. Worse, a paused (`SIGSTOP`ped) wallpaper can never act on `SIGTERM` at
+all, so it became an unkillable ghost. Teardown is now resume → terminate → wait →
+kill, and rapid clicks queue instead of stacking.
+
+**Switching rices stops stacking bars and shells.** The settings watcher had no
+single-instance guard and regenerated `autostart.conf` in place, so two copies could
+interleave and write every startup entry *twice* — including the shell and the
+watcher itself. Each login then started two of each, which doubled the file again:
+a compounding loop that ended in several bars drawn over each other. The watcher is
+now single-instance and generates the file atomically.
+
+**Spamming the rice-swap bind is safe.** Every press used to run a full concurrent
+swap, with kills racing launches. Swapping is now single-instance, waits for the new
+shell to actually paint rather than merely exist, and settles before releasing — so
+extra presses are dropped instead of melting the session. The `toggle` binds also
+resolve directly instead of re-invoking the script.
+
+**The swap chord no longer opens the launcher on top of you.** Caelestia opens its
+launcher on Super *release* unless a suppression flag is set — but that flag lives in
+the shell process, so killing the shell mid-chord reset it. Releasing Super after a
+swap then looked like a bare Super tap and opened a full-screen blurred drawer that
+grabbed input. The flag is re-armed on the fresh shell.
 
 ## ◈ What's new in 20260903
 

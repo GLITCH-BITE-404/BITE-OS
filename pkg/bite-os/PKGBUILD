@@ -10,7 +10,7 @@
 
 pkgname=bite-os
 pkgver=1.1
-pkgrel=19
+pkgrel=20
 pkgdesc="BITE-OS — identity, branding, rice system and tooling (CachyOS-based)"
 arch=('any')
 url="https://tiktok.com/@glitch_bite404"

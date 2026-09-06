@@ -22,6 +22,27 @@ mkdir -p "$CONF_DIR" "$TMPL_DIR" "$(dirname "$SETTINGS_FILE")" "$(dirname "$ENV_
 CACHE_DIR="$HOME/.cache/settings_watcher"
 mkdir -p "$CACHE_DIR"
 
+# ─── single-instance guard ────────────────────────────────────────────────
+# This is launched from BOTH autostart.conf and dots-switch.sh, so copies
+# accumulated. Concurrent copies then regenerated autostart.conf at the same
+# time — `cp template` + `jq >>` from two writers interleaves into a file with
+# every exec-once listed TWICE, including `quickshell` and this watcher itself.
+# Next login therefore started two shells and two watchers, which doubled the
+# file again: a compounding loop that ends in a stack of bars. Not flock — the
+# inotifywait children would inherit and pin the fd if this script died first.
+WATCH_LOCK="$CACHE_DIR/watcher.pid"
+_take_lock() { ( set -o noclobber; echo $$ > "$WATCH_LOCK" ) 2>/dev/null; }
+if ! _take_lock; then
+    _holder="$(cat "$WATCH_LOCK" 2>/dev/null)"
+    if [ -n "$_holder" ] && kill -0 "$_holder" 2>/dev/null; then
+        echo "settings_watcher already running (pid $_holder) — exiting"
+        exit 0
+    fi
+    rm -f "$WATCH_LOCK"
+    _take_lock || exit 0
+fi
+trap 'rm -f "$WATCH_LOCK"' EXIT INT TERM HUP
+
 compile_settings() {
     echo "Regenerating configurations from templates..."
 
@@ -80,15 +101,19 @@ compile_settings() {
 
     # 3. Regenerate autostart.conf
     echo "Regenerating autostart.conf..."
-    cp "$TMPL_DIR/autostart.conf.template" "$AUTOSTART_CONF"
+    # Built in a temp file and moved into place: an append-in-place build is
+    # what let two writers interleave into a doubled autostart.conf.
+    _AS_TMP="$(mktemp "${AUTOSTART_CONF}.XXXXXX")"
+    cp "$TMPL_DIR/autostart.conf.template" "$_AS_TMP"
 
     # Dump normal startup entries
-    jq -r '.startup[]? | "exec-once = \(.command)"' "$SETTINGS_FILE" >> "$AUTOSTART_CONF"
+    jq -r '.startup[]? | "exec-once = \(.command)"' "$SETTINGS_FILE" >> "$_AS_TMP"
 
     # Evaluate the guide boolean natively in jq and output the line ONLY if it resolves to true
     if [[ $(jq -r 'if (if type == "object" and has("openGuideAtStartup") then .openGuideAtStartup else true end) then "yes" else "no" end' "$SETTINGS_FILE") == "yes" ]]; then
-        echo "exec-once = bash -c 'sleep 1 && ~/.config/hypr/scripts/qs_manager.sh toggle guide'" >> "$AUTOSTART_CONF"
+        echo "exec-once = bash -c 'sleep 1 && ~/.config/hypr/scripts/qs_manager.sh toggle guide'" >> "$_AS_TMP"
     fi
+    mv -f "$_AS_TMP" "$AUTOSTART_CONF"
 
     # 4. Regenerate keybindings.conf
     echo "Regenerating keybindings.conf..."
