@@ -37,6 +37,9 @@ MANAGED_DIRS=(
     ".config/matugen"
     ".config/rofi"
     ".config/cava"
+    ".config/serpantinum"
+    ".local/share/serpantinum"
+    ".local/state/serpantinum"
 )
 
 mkdir -p "$ROOT" "$AUTOBACK" "$SRC"

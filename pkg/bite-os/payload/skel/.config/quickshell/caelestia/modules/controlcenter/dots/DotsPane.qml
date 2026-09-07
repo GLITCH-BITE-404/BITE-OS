@@ -18,7 +18,7 @@ Item {
     required property Session session
 
     property string activeShell: "caelestia"
-    readonly property bool ilyamiroActive: activeShell === "ilyamiro"
+    readonly property bool serpantinumActive: activeShell === "serpantinum"
     property bool initialised: false
     property bool swapping: false
 
@@ -77,7 +77,7 @@ Item {
 
             StyledText {
                 Layout.fillWidth: true
-                text: qsTr("Swap your entire desktop between caelestia and ilyamiro/nixos-configuration. Your current rice is auto-backed-up before every swap. Press Super+Ctrl+D anywhere to revert if anything breaks.")
+                text: qsTr("Swap your entire desktop between caelestia and serpantinum. Your current rice is auto-backed-up before every swap. Press Super+Ctrl+D anywhere to revert if anything breaks.")
                 wrapMode: Text.WordWrap
                 color: Colours.palette.m3onSurfaceVariant
                 font.pointSize: Tokens.font.size.normal
@@ -98,7 +98,7 @@ Item {
                 Rectangle {
                     width: 10; height: 10; radius: 5
                     color: root.swapping ? Colours.palette.m3secondary
-                         : root.ilyamiroActive ? Colours.palette.m3primary
+                         : root.serpantinumActive ? Colours.palette.m3primary
                                                 : Colours.palette.m3tertiary
                     SequentialAnimation on opacity {
                         running: root.swapping
@@ -130,10 +130,10 @@ Item {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 140
                     radius: Tokens.rounding.normal
-                    color: !root.ilyamiroActive ? Colours.palette.m3primaryContainer
+                    color: !root.serpantinumActive ? Colours.palette.m3primaryContainer
                                                 : Colours.palette.m3surfaceContainerHigh
-                    border.width: !root.ilyamiroActive ? 2 : 1
-                    border.color: !root.ilyamiroActive ? Colours.palette.m3primary
+                    border.width: !root.serpantinumActive ? 2 : 1
+                    border.color: !root.serpantinumActive ? Colours.palette.m3primary
                                                         : Colours.palette.m3outlineVariant
 
                     ColumnLayout {
@@ -145,23 +145,23 @@ Item {
                             text: qsTr("caelestia")
                             font.pointSize: Tokens.font.size.large
                             font.bold: true
-                            color: !root.ilyamiroActive ? Colours.palette.m3onPrimaryContainer
+                            color: !root.serpantinumActive ? Colours.palette.m3onPrimaryContainer
                                                         : Colours.palette.m3onSurface
                         }
                         StyledText {
                             text: qsTr("your personal rice")
                             font.pointSize: Tokens.font.size.small
-                            color: !root.ilyamiroActive ? Colours.palette.m3onPrimaryContainer
+                            color: !root.serpantinumActive ? Colours.palette.m3onPrimaryContainer
                                                         : Colours.palette.m3onSurfaceVariant
                             opacity: 0.85
                         }
                         Item { Layout.fillHeight: true }
                         StyledText {
-                            text: !root.ilyamiroActive ? qsTr("● active") : qsTr("click to switch")
+                            text: !root.serpantinumActive ? qsTr("● active") : qsTr("click to switch")
                             font.pointSize: Tokens.font.size.small
-                            color: !root.ilyamiroActive ? Colours.palette.m3primary
+                            color: !root.serpantinumActive ? Colours.palette.m3primary
                                                         : Colours.palette.m3onSurfaceVariant
-                            font.bold: !root.ilyamiroActive
+                            font.bold: !root.serpantinumActive
                         }
                     }
 
@@ -173,15 +173,15 @@ Item {
                     }
                 }
 
-                // Card: ilyamiro
+                // Card: serpantinum
                 Rectangle {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 140
                     radius: Tokens.rounding.normal
-                    color: root.ilyamiroActive ? Colours.palette.m3primaryContainer
+                    color: root.serpantinumActive ? Colours.palette.m3primaryContainer
                                                 : Colours.palette.m3surfaceContainerHigh
-                    border.width: root.ilyamiroActive ? 2 : 1
-                    border.color: root.ilyamiroActive ? Colours.palette.m3primary
+                    border.width: root.serpantinumActive ? 2 : 1
+                    border.color: root.serpantinumActive ? Colours.palette.m3primary
                                                         : Colours.palette.m3outlineVariant
 
                     ColumnLayout {
@@ -190,26 +190,26 @@ Item {
                         spacing: 4
 
                         StyledText {
-                            text: qsTr("ilyamiro")
+                            text: qsTr("serpantinum")
                             font.pointSize: Tokens.font.size.large
                             font.bold: true
-                            color: root.ilyamiroActive ? Colours.palette.m3onPrimaryContainer
+                            color: root.serpantinumActive ? Colours.palette.m3onPrimaryContainer
                                                         : Colours.palette.m3onSurface
                         }
                         StyledText {
-                            text: qsTr("nixos-configuration port")
+                            text: qsTr("wayland shell \u00b7 v2")
                             font.pointSize: Tokens.font.size.small
-                            color: root.ilyamiroActive ? Colours.palette.m3onPrimaryContainer
+                            color: root.serpantinumActive ? Colours.palette.m3onPrimaryContainer
                                                         : Colours.palette.m3onSurfaceVariant
                             opacity: 0.85
                         }
                         Item { Layout.fillHeight: true }
                         StyledText {
-                            text: root.ilyamiroActive ? qsTr("● active") : qsTr("click to switch")
+                            text: root.serpantinumActive ? qsTr("● active") : qsTr("click to switch")
                             font.pointSize: Tokens.font.size.small
-                            color: root.ilyamiroActive ? Colours.palette.m3primary
+                            color: root.serpantinumActive ? Colours.palette.m3primary
                                                         : Colours.palette.m3onSurfaceVariant
-                            font.bold: root.ilyamiroActive
+                            font.bold: root.serpantinumActive
                         }
                     }
 
@@ -217,7 +217,7 @@ Item {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
                         enabled: root.initialised && !root.swapping
-                        onClicked: root.pickShell("ilyamiro")
+                        onClicked: root.pickShell("serpantinum")
                     }
                 }
             }

@@ -31,12 +31,12 @@ reproduces the system. Base = CachyOS.
 ## 3. User environment (→ goes in ISO `/etc/skel`, so every user gets it)
 | Path | What |
 |---|---|
-| `~/.config/glitch/bin/` | `rice`, `dots-switch.sh`, `bite-os-healthcheck.sh`, `glitch-update.sh`, `glitch-power.sh`, `glitch-fetch.sh`, `blend-toggle.sh`, `install-glitch-os-system.sh` |
+| `~/.config/glitch/bin/` | `rice`, `dots-switch.sh`, `bite-os-healthcheck.sh`, `glitch-update.sh`, `glitch-power.sh`, `glitch-fetch.sh`, `install-glitch-os-system.sh` |
 | `~/.config/glitch/{icons,logos,plymouth,templates}` | brand assets, CREDITS.md |
 | `~/.config/hypr` + quickshell | the active rice config (rice-managed) |
 | `~/.config/{matugen,rofi,cava,foot,kitty,fastfetch,...}` | rice-managed dirs |
-| `~/.local/share/bite-os/rices/{caelestia,ilyamiro}` | the dots vault (both rices) |
-| `~/.local/share/bite-os/{splash,vault-src}` | splash + ilyamiro source |
+| `~/.local/share/bite-os/rices/{caelestia,serpantinum}` | the dots vault (both rices) |
+| `~/.local/share/bite-os/{splash,vault-src}` | splash + vault source |
 | `~/.config/systemd/user/bite-os-healthcheck.service` | first-boot self-repair (must be enabled in skel) |
 
 ## 4. Identity
@@ -49,7 +49,7 @@ reproduces the system. Base = CachyOS.
 - [ ] SDDM/Plymouth `.bak-*` dirs are cruft — exclude from the package.
 - [ ] `bite-os-rebrand` references `/usr/share/bite-os/fastfetch.jsonc` which
       doesn't exist — either add it or drop the line.
-- [ ] Decide: ship `caelestia-meta` (2nd dot) in the ISO, or ilyamiro-only.
+- [x] Rices shipped: `caelestia` (default) + `serpantinum`. ilyamiro removed 2026-09-07.
 
 ## Next: Step 2 — wrap sections 2+3 into a `bite-os` PKGBUILD; sections 1 feeds
 the ISO `packages.x86_64`. See PLAN.md.

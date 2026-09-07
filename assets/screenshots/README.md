@@ -4,7 +4,7 @@ Drop your best CLEAN riced-desktop shots here with these exact names so the
 main README gallery picks them up automatically:
 
   desktop-caelestia.png   — the caelestia rice (full desktop, no terminals)
-  desktop-ilyamiro.png    — the ilyamiro rice (after a dot-switch)
+  desktop-serpantinum.png — the serpantinum rice (after a dot-switch)
   glitch-mode.png         — SUPER+B glitch/LARP overlay in action
   installer.png           — the BITE-OS Calamares installer (optional)
 

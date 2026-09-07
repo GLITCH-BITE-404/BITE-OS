@@ -1,0 +1,10 @@
+.config/hypr
+.config/quickshell
+.config/caelestia
+.config/foot
+.config/matugen
+.config/rofi
+.config/cava
+.config/serpantinum
+.local/share/serpantinum
+.local/state/serpantinum

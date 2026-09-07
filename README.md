@@ -53,9 +53,9 @@ Built on the CachyOS base — riced to the teeth, engineered to never get in you
 
 <div align="center">
 
-| caelestia rice | ilyamiro rice |
+| caelestia rice | serpantinum rice |
 |:---:|:---:|
-| ![BITE-OS caelestia desktop](assets/screenshots/desktop-caelestia.png) | ![BITE-OS ilyamiro desktop](assets/screenshots/desktop-ilyamiro.png) |
+| ![BITE-OS caelestia desktop](assets/screenshots/desktop-caelestia.png) | ![BITE-OS serpantinum desktop](assets/screenshots/desktop-serpantinum.png) |
 | **Glitch dashboard** | **`// THE SYSTEM BIT YOU`** |
 | ![BITE-OS glitch dashboard](assets/screenshots/glitch-mode.png) | ![BITE-OS splash](assets/screenshots/bite-os-splash.png) |
 | **One-key self-update (`SUPER+U`)** | **Wallpaper / rice picker** |
@@ -71,7 +71,7 @@ BITE-OS isn't a reskin. It ships things stock Arch and CachyOS simply don't have
 
 > ⚠️ **Developer Note:** Unlike basic rice builds, most of the system UI has been completely reprogrammed, optimized, and natively pre-riced from the ground up for zero-latency execution.
 
-- **🦷 Dot-switch** — two *complete* desktops (`caelestia` + `ilyamiro`), swapped with **one keypress**. Every swap auto-backs-up your config, and a 30-second watchdog auto-reverts if anything breaks. You physically cannot get locked out.
+- **🦷 Dot-switch** — two *complete* desktops (`caelestia` + `serpantinum`), swapped with **one keypress**. Every swap auto-backs-up your config, and a 30-second watchdog auto-reverts if anything breaks. You physically cannot get locked out.
 - **⚙ Live GUI settings** — keybinds, language, weather, startup apps and dot-switching — all editable from an in-system panel. No text files. Configs recompile and reload instantly.
 - **🛠 Self-repair** — a health check runs at every login and rebuilds a wiped config automatically. The OS fixes itself.
 - **⬆ One-key update** — `SUPER+U` runs a full system update (kernel, apps, AUR, rice) that **keeps it BITE-OS** — branding is re-asserted on every upgrade, so it never decays into vanilla CachyOS.
@@ -191,7 +191,7 @@ The system maps directly to these custom core inputs for elite navigation:
 | `SUPER + T` | **Open Terminal** | Launches the pre-configured terminal environment instantly |
 | `SUPER + Q` | **Close Window** | Safely terminates the active focused window |
 | `SUPER + ALT + SPACE` | **Toggle Floating Mode** | Forces the active window into a floating layer |
-| `CTRL + SUPER + D` | **Hot-Swap Rice** | Toggles between the `caelestia` and `ilyamiro` dots profiles |
+| `CTRL + SUPER + D` | **Hot-Swap Rice** | Toggles between the `caelestia` and `serpantinum` dots profiles |
 | `SUPER + BACKSPACE` | **Hot-Swap Rice** | Same toggle — works from either rice |
 | `SUPER + ESCAPE` | **Hot-Swap Rice** | Same toggle — works from either rice |
 | `CTRL + ALT + BACKSPACE` | **Hot-Swap Rice** | Same toggle — works from either rice |

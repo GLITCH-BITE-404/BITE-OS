@@ -1,0 +1,513 @@
+{
+  "uiScale": 1,
+  "openGuideAtStartup": true,
+  "topbarHelpIcon": true,
+  "workspaceCount": 8,
+  "wallpaperDir": "",
+  "language": "us,ru,il",
+  "kbOptions": "grp:alt_shift_toggle",
+  "monitors": [],
+  "keybinds": [
+    {
+      "type": "bind",
+      "mods": "ALT",
+      "key": "F4",
+      "dispatcher": "exec",
+      "command": "hyprctl dispatch killactive"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod SHIFT_L",
+      "key": "F",
+      "dispatcher": "exec",
+      "command": "hyprctl dispatch togglefloating"
+    },
+    {
+      "type": "binde",
+      "mods": "$mainMod SHIFT_L",
+      "key": "left",
+      "dispatcher": "resizeactive",
+      "command": "-50 0"
+    },
+    {
+      "type": "binde",
+      "mods": "$mainMod SHIFT_L",
+      "key": "right",
+      "dispatcher": "resizeactive",
+      "command": "50 0"
+    },
+    {
+      "type": "binde",
+      "mods": "$mainMod SHIFT_L",
+      "key": "up",
+      "dispatcher": "resizeactive",
+      "command": "0 -50"
+    },
+    {
+      "type": "binde",
+      "mods": "$mainMod SHIFT_L",
+      "key": "down",
+      "dispatcher": "resizeactive",
+      "command": "0 50"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod CTRL",
+      "key": "left",
+      "dispatcher": "movewindow",
+      "command": "l"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod CTRL",
+      "key": "right",
+      "dispatcher": "movewindow",
+      "command": "r"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod CTRL",
+      "key": "up",
+      "dispatcher": "movewindow",
+      "command": "u"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod CTRL",
+      "key": "down",
+      "dispatcher": "movewindow",
+      "command": "d"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "left",
+      "dispatcher": "movefocus",
+      "command": "l"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "right",
+      "dispatcher": "movefocus",
+      "command": "r"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "up",
+      "dispatcher": "movefocus",
+      "command": "u"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "down",
+      "dispatcher": "movefocus",
+      "command": "d"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "RETURN",
+      "dispatcher": "exec",
+      "command": "kitty"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "F",
+      "dispatcher": "exec",
+      "command": "firefox"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "E",
+      "dispatcher": "exec",
+      "command": "nautilus"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "R",
+      "dispatcher": "exec",
+      "command": "serpantinum reload"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "C",
+      "dispatcher": "exec",
+      "command": "serpantinum msg toggle clipboard"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "P",
+      "dispatcher": "exec",
+      "command": "serpantinum msg toggle movies"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "D",
+      "dispatcher": "exec",
+      "command": "serpantinum msg toggle launcher"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod SHIFT_L",
+      "key": "S",
+      "dispatcher": "exec",
+      "command": "serpantinum launch start"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "Q",
+      "dispatcher": "exec",
+      "command": "serpantinum msg toggle music"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "B",
+      "dispatcher": "exec",
+      "command": "serpantinum msg toggle battery"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "W",
+      "dispatcher": "exec",
+      "command": "serpantinum msg toggle wallpaper"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "S",
+      "dispatcher": "exec",
+      "command": "serpantinum msg toggle calendar"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "N",
+      "dispatcher": "exec",
+      "command": "serpantinum msg toggle network"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "V",
+      "dispatcher": "exec",
+      "command": "serpantinum msg toggle volume"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "H",
+      "dispatcher": "exec",
+      "command": "serpantinum msg toggle guide"
+    },
+    {
+      "type": "bindl",
+      "mods": "",
+      "key": "XF86MonBrightnessDown",
+      "dispatcher": "exec",
+      "command": "serpantinum brightness lower"
+    },
+    {
+      "type": "bindl",
+      "mods": "",
+      "key": "XF86MonBrightnessUp",
+      "dispatcher": "exec",
+      "command": "serpantinum brightness raise"
+    },
+    {
+      "type": "bindl",
+      "mods": "",
+      "key": "Print",
+      "dispatcher": "exec",
+      "command": "serpantinum screenshot"
+    },
+    {
+      "type": "bindl",
+      "mods": "SHIFT_L",
+      "key": "Print",
+      "dispatcher": "exec",
+      "command": "serpantinum screenshot --edit"
+    },
+    {
+      "type": "bindl",
+      "mods": "$mainMod",
+      "key": "Print",
+      "dispatcher": "exec",
+      "command": "serpantinum screenshot --full"
+    },
+    {
+      "type": "bindl",
+      "mods": "$mainMod SHIFT_L",
+      "key": "Print",
+      "dispatcher": "exec",
+      "command": "serpantinum screenshot --full --edit"
+    },
+    {
+      "type": "bindl",
+      "mods": "",
+      "key": "XF86PowerOff",
+      "dispatcher": "exec",
+      "command": "serpantinum lock"
+    },
+    {
+      "type": "bindel",
+      "mods": "$mainMod",
+      "key": "L",
+      "dispatcher": "exec",
+      "command": "serpantinum lock"
+    },
+    {
+      "type": "bindl",
+      "mods": "$mainMod",
+      "key": "SPACE",
+      "dispatcher": "exec",
+      "command": "playerctl play-pause"
+    },
+    {
+      "type": "bindl",
+      "mods": "",
+      "key": "XF86AudioPause",
+      "dispatcher": "exec",
+      "command": "playerctl play-pause"
+    },
+    {
+      "type": "bindl",
+      "mods": "",
+      "key": "XF86AudioPlay",
+      "dispatcher": "exec",
+      "command": "playerctl play-pause"
+    },
+    {
+      "type": "bindl",
+      "mods": "",
+      "key": "xf86AudioMicMute",
+      "dispatcher": "exec",
+      "command": "serpantinum volume mic-toggle"
+    },
+    {
+      "type": "bindl",
+      "mods": "",
+      "key": "xf86audiomute",
+      "dispatcher": "exec",
+      "command": "serpantinum volume mute-toggle"
+    },
+    {
+      "type": "bindel",
+      "mods": "",
+      "key": "xf86audiolowervolume",
+      "dispatcher": "exec",
+      "command": "serpantinum volume lower"
+    },
+    {
+      "type": "bindel",
+      "mods": "",
+      "key": "xf86audioraisevolume",
+      "dispatcher": "exec",
+      "command": "serpantinum volume raise"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "1",
+      "dispatcher": "workspace",
+      "command": "1"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "2",
+      "dispatcher": "workspace",
+      "command": "2"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "3",
+      "dispatcher": "workspace",
+      "command": "3"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "4",
+      "dispatcher": "workspace",
+      "command": "4"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "5",
+      "dispatcher": "workspace",
+      "command": "5"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "6",
+      "dispatcher": "workspace",
+      "command": "6"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "7",
+      "dispatcher": "workspace",
+      "command": "7"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "8",
+      "dispatcher": "workspace",
+      "command": "8"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "9",
+      "dispatcher": "workspace",
+      "command": "9"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "0",
+      "dispatcher": "workspace",
+      "command": "10"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod SHIFT",
+      "key": "1",
+      "dispatcher": "movetoworkspace",
+      "command": "1"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod SHIFT",
+      "key": "2",
+      "dispatcher": "movetoworkspace",
+      "command": "2"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod SHIFT",
+      "key": "3",
+      "dispatcher": "movetoworkspace",
+      "command": "3"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod SHIFT",
+      "key": "4",
+      "dispatcher": "movetoworkspace",
+      "command": "4"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod SHIFT",
+      "key": "5",
+      "dispatcher": "movetoworkspace",
+      "command": "5"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod SHIFT",
+      "key": "6",
+      "dispatcher": "movetoworkspace",
+      "command": "6"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod SHIFT",
+      "key": "7",
+      "dispatcher": "movetoworkspace",
+      "command": "7"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod SHIFT",
+      "key": "8",
+      "dispatcher": "movetoworkspace",
+      "command": "8"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod SHIFT",
+      "key": "9",
+      "dispatcher": "movetoworkspace",
+      "command": "9"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod SHIFT",
+      "key": "0",
+      "dispatcher": "movetoworkspace",
+      "command": "10"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "TAB",
+      "dispatcher": "exec",
+      "command": "~/.config/hypr/scripts/focus_next_monitor.sh"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod CTRL",
+      "key": "D",
+      "dispatcher": "exec",
+      "command": "bash ~/.config/glitch/bin/dots-switch.sh caelestia"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "U",
+      "dispatcher": "exec",
+      "command": "$terminal -e bite-os-update"
+    }
+  ],
+  "startup": [
+    {
+      "command": "hypridle"
+    },
+    {
+      "command": "serpantinumd start"
+    },
+    {
+      "command": "~/.config/hypr/scripts/init.sh"
+    },
+    {
+      "command": "~/.config/hypr/scripts/settings_watcher.sh &"
+    },
+    {
+      "command": "playerctld"
+    },
+    {
+      "command": "wl-paste --type text --watch cliphist store"
+    },
+    {
+      "command": "wl-paste --type image --watch cliphist store"
+    },
+    {
+      "command": "~/.config/hypr/scripts/update_notifier.sh"
+    },
+    {
+      "command": "systemctl --user enable --now easyeffects"
+    },
+    {
+      "command": "~/.config/hypr/scripts/serp-settings-sync.sh"
+    }
+  ]
+}

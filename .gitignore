@@ -7,8 +7,12 @@ repo/x86_64/
 
 # built packages
 pkg/**/*.pkg.tar.*
-pkg/**/src/
-pkg/**/pkg/
+# NB: these must stay ONE level deep (pkg/<name>/src). A `pkg/**/src/` glob
+# also matched pkg/bite-os/payload/skel/.../rices/serpantinum/.local/share/
+# serpantinum/src -- silently excluding the entire serpantinum shell (404
+# files) from the repo, so a fresh clone could not build the ISO with it.
+pkg/*/src/
+pkg/*/pkg/
 # vendored upstream source tarballs (makepkg re-fetches them)
 pkg/**/*.tar.gz
 

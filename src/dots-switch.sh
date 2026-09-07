@@ -3,10 +3,10 @@
 #  ◈ BITE-OS  ·  © 2026 GLITCH-BITE-404  ·  // THE SYSTEM BIT YOU
 #  https://github.com/GLITCH-BITE-404/BITE-OS  ·  GPLv3 — keep this notice
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# dots-switch — swap between caelestia and ilyamiro rices end-to-end.
+# dots-switch — swap between caelestia and serpantinum rices end-to-end.
 #
 #   dots-switch.sh caelestia    swap to your personal rice
-#   dots-switch.sh ilyamiro     swap to ilyamiro's rice (with watchdog)
+#   dots-switch.sh serpantinum  swap to the serpantinum rice (with watchdog)
 #   dots-switch.sh toggle       flip to whichever isn't active
 #   dots-switch.sh status       print current shell + rice
 #
@@ -22,7 +22,7 @@ set -uo pipefail
 APP="BITE-OS"
 STATE_DIR="${HOME}/.local/state/bite-os"
 mkdir -p "$STATE_DIR"
-ACTIVE_SHELL_FILE="${STATE_DIR}/active-shell"     # caelestia | ilyamiro
+ACTIVE_SHELL_FILE="${STATE_DIR}/active-shell"     # caelestia | serpantinum
 WATCHDOG_PID_FILE="${STATE_DIR}/watchdog.pid"
 WATCHDOG_TIMEOUT=30
 LOG="/tmp/dots-switch.log"
@@ -41,6 +41,10 @@ log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >> "$LOG"; }
 # would inherit the lock fd and pin it for the whole session (the same trap
 # wallpaper.sh works around with `9>&-`). A pidfile written with noclobber
 # uses O_EXCL, so it's just as atomic and there is no fd to leak.
+notify() {
+    notify-send -a "$APP" -i "applications-graphics" "$1" "$2" 2>/dev/null || true
+}
+
 SWAP_LOCK="${STATE_DIR}/dots-switch.lock"
 take_lock() { ( set -o noclobber; echo $$ > "$SWAP_LOCK" ) 2>/dev/null; }
 # A re-exec of this script from inside an already-locked run (the watchdog
@@ -61,9 +65,6 @@ elif ! take_lock; then
 fi
 trap 'rm -f "$SWAP_LOCK"' EXIT
 
-notify() {
-    notify-send -a "$APP" -i "applications-graphics" "$1" "$2" 2>/dev/null || true
-}
 
 # ─── shell-specific launchers ──────────────────────────────────────────────
 launch_caelestia_shell() {
@@ -91,47 +92,46 @@ launch_caelestia_shell() {
             setsid -f "$HOME/.config/hypr/scripts/$_h" </dev/null >/dev/null 2>&1
     done
 }
-launch_ilyamiro_shell() {
-    # His autostart runs his shell too, but exec-once doesn't re-run on hyprctl
-    # reload. Launch it + the autostart helpers explicitly so the swap takes
-    # effect immediately and the bar/binds behave like a fresh login.
-    # Shell.qml is the REAL entrypoint: it instantiates Main{} + TopBar{} +
-    # Floating{}. Main.qml on its own is only the popup overlay — launching it
-    # gave a session with no bar and no floating widgets, and (because
-    # autostart.conf also starts Shell.qml) left two shells running at once,
-    # doubling every animation. Prefer Shell.qml, fall back to Main.qml only if
-    # a rice genuinely ships no Shell.qml.
-    local qml="$HOME/.config/hypr/scripts/quickshell/Shell.qml"
-    [[ -f "$qml" ]] || qml="$HOME/.config/hypr/scripts/quickshell/Main.qml"
-    nohup quickshell -p "$qml" >/tmp/ilyamiro-qs.log 2>&1 &
-    disown
-    # Helpers from his hypr autostart.conf — fire-and-forget, fail silent if missing.
+launch_serpantinum_shell() {
+    # serpantinum ships its own daemon (serpantinumd) which owns the quickshell
+    # process; it lives in the rice-managed tree, so call it by absolute path
+    # rather than relying on ~/.local/bin being on PATH at swap time.
+    local sbin="$HOME/.local/share/serpantinum/bin/serpantinumd"
+    if [[ -x "$sbin" ]]; then
+        nohup "$sbin" start >/tmp/serpantinum.log 2>&1 &
+        disown
+    fi
+    # Shared helpers from autostart. NOTE: no volume_listener and no focustime
+    # daemon here — serpantinum draws its own OSD and has no focustime widget,
+    # so both were dropped from this rice's settings.json startup list.
     [[ -f "$HOME/.config/hypr/hypridle.conf" ]] && command -v hypridle >/dev/null && \
         setsid -f hypridle </dev/null >/dev/null 2>&1
     command -v playerctld  >/dev/null && { setsid -f playerctld </dev/null >/dev/null 2>&1; }
-    command -v awww-daemon >/dev/null && { setsid -f awww-daemon </dev/null >/dev/null 2>&1; }
+    # NO awww-daemon here: serpantinum draws its own wallpaper layer
+    # (wallpaper-bg) and handles video natively via MediaPlayer/VideoOutput.
+    # Running awww + mpvpaper underneath it meant decoding a video that
+    # serpantinum's layer completely covered -- pure wasted CPU.
     if command -v wl-paste >/dev/null && command -v cliphist >/dev/null; then
         setsid -f bash -c 'wl-paste --type text  --watch cliphist store' </dev/null >/dev/null 2>&1
         setsid -f bash -c 'wl-paste --type image --watch cliphist store' </dev/null >/dev/null 2>&1
     fi
     [[ -x "$HOME/.config/hypr/scripts/settings_watcher.sh" ]] && \
         setsid -f "$HOME/.config/hypr/scripts/settings_watcher.sh" </dev/null >/dev/null 2>&1
-    [[ -x "$HOME/.config/hypr/scripts/volume_listener.sh"  ]] && \
-        setsid -f "$HOME/.config/hypr/scripts/volume_listener.sh"  </dev/null >/dev/null 2>&1
     [[ -x "$HOME/.config/hypr/scripts/update_notifier.sh"  ]] && \
         setsid -f "$HOME/.config/hypr/scripts/update_notifier.sh"  </dev/null >/dev/null 2>&1
-    [[ -f "$HOME/.config/hypr/scripts/quickshell/focustime/focus_daemon.py" ]] && command -v python3 >/dev/null && \
-        setsid -f python3 "$HOME/.config/hypr/scripts/quickshell/focustime/focus_daemon.py" </dev/null >/dev/null 2>&1
+    [[ -x "$HOME/.config/hypr/scripts/serp-settings-sync.sh" ]] && \
+        setsid -f "$HOME/.config/hypr/scripts/serp-settings-sync.sh" </dev/null >/dev/null 2>&1
 }
 
 # ─── alive checks (proc name, not just any qs) ────────────────────────────
 caelestia_alive() {
     pgrep -f "qs -c caelestia" >/dev/null
 }
-ilyamiro_alive() {
-    # Matches both the current layout (quickshell -p .../Main.qml) and the
-    # pre-update one (qs -p .../Shell.qml).
-    pgrep -f "scripts/quickshell/(Main|Shell)\.qml" >/dev/null
+serpantinum_alive() {
+    # Its quickshell runs out of the rice-managed share tree, which is a
+    # different path from ilyamiro's scripts/quickshell -- so these two alive
+    # checks can never match each other's process.
+    pgrep -f "share/serpantinum/src/quickshell" >/dev/null || pgrep -f "serpantinumd" >/dev/null
 }
 
 # ─── readiness: has the shell actually PAINTED? ───────────────────────────
@@ -142,12 +142,12 @@ ilyamiro_alive() {
 # A mapped layer surface is the real "it's on screen" signal.
 # hyprctl prints "namespace: <name>, pid: <n>" — anchor on the comma so
 # "quickshell" can't also match "quickshell-something".
-ilyamiro_ready()  { hyprctl layers 2>/dev/null | grep -q "namespace: quickshell,"; }
 caelestia_ready() { hyprctl layers 2>/dev/null | grep -q "namespace: caelestia-"; }
+serpantinum_ready() { hyprctl layers 2>/dev/null | grep -q "namespace: quickshell,"; }
 shell_ready() {
     case "$1" in
-        ilyamiro)  ilyamiro_ready  ;;
         caelestia) caelestia_ready ;;
+        serpantinum) serpantinum_ready ;;
         *) return 0 ;;
     esac
 }
@@ -164,6 +164,28 @@ kill_any_shell() {
     # stayed ilyamiro-styled no matter which rice was active.
     pkill -x quickshell 2>/dev/null
     pkill -f "caelestia shell" 2>/dev/null
+    # serpantinum: ask its own CLI to stop first (it reaps its focus daemon and
+    # pidfile cleanly), then belt-and-braces on the daemon + its quickshell.
+    [[ -x "$HOME/.local/share/serpantinum/bin/serpantinum" ]] && \
+        "$HOME/.local/share/serpantinum/bin/serpantinum" kill >/dev/null 2>&1
+    pkill -f "serpantinumd" 2>/dev/null
+    pkill -f "share/serpantinum/src/quickshell" 2>/dev/null
+    # Every helper serpantinum spawns out of its script dir (focus_daemon.py,
+    # current_focus.sh, brightness.sh watch, the watchers/*.sh). Matching the
+    # directory catches them all, including ones added by future versions.
+    pkill -f "share/serpantinum/src/scripts/" 2>/dev/null
+    pkill -f "share/serpantinum/src/quickshell/watchers/" 2>/dev/null
+    # serpantinum leaks watcher children that outlive the daemon: one
+    # inotifywait on .../serpantinum/brightness per `serpantinum reload`, plus
+    # ones on .cache/serpantinum/recording. Upstream 2.1.1 claims to have fixed
+    # orphaned inotifywaits; it did not. Reap them by their watch paths.
+    pkill -f "inotifywait.*serpantinum" 2>/dev/null
+    pkill -f "run/user/.*/serpantinum" 2>/dev/null
+    # BITE-OS settings mirror -- rice-specific, must not outlive the swap.
+    pkill -f "serp-settings-sync.sh" 2>/dev/null
+    # A pending "update available" notify-send blocks waiting for a click and
+    # would survive into another rice.
+    pkill -f "notify-send.*[Uu]pdate available" 2>/dev/null
     # ilyamiro-specific helpers (current Main.qml layout + old Shell.qml one)
     pkill -f "scripts/quickshell/Shell.qml" 2>/dev/null
     pkill -f "scripts/quickshell/Main.qml" 2>/dev/null
@@ -197,6 +219,15 @@ kill_any_shell() {
 }
 
 restart_wallpaper() {
+    # serpantinum paints its own wallpaper layer (wallpaper-bg) and handles
+    # video itself, so running the BITE-OS wallpaper scripts for it re-spawns
+    # mpvpaper underneath a surface that already covers it -- a hidden video
+    # decode burning CPU for nothing. Only caelestia needs this.
+    # Takes the TARGET as $1 -- ACTIVE_SHELL_FILE isn't written until later in
+    # swap_to, so reading it here would test the rice we're leaving.
+    if [[ "${1:-}" == "serpantinum" ]]; then
+        return 0
+    fi
     # Both rices benefit from your existing wallpaper script (we patched
     # ilyamiro's autostart to call it). But hyprctl reload doesn't re-run
     # exec-once, so invoke it manually here every swap.
@@ -224,8 +255,8 @@ spawn_watchdog() {
         sleep 4    # give the shell a moment to actually start
         local check
         case "$target" in
-            ilyamiro)  check=ilyamiro_alive ;;
             caelestia) check=caelestia_alive ;;
+            serpantinum) check=serpantinum_alive ;;
             *) exit 0 ;;
         esac
         local elapsed=4
@@ -280,12 +311,12 @@ swap_to() {
     log "step 4: launch ${target} shell"
     case "$target" in
         caelestia) launch_caelestia_shell ;;
-        ilyamiro)  launch_ilyamiro_shell  ;;
+        serpantinum) launch_serpantinum_shell ;;
     esac
 
     log "step 5: settle + restart wallpaper"
     sleep 0.8
-    restart_wallpaper
+    restart_wallpaper "$target"
 
     # Keep the lock until the target shell is genuinely alive. Releasing at
     # script exit let a press land while the new rice was still coming up,
@@ -325,8 +356,8 @@ swap_to() {
         spawn_watchdog "$target"
     fi
 
-    if [[ "$target" == "ilyamiro" ]]; then
-        notify "Now in ilyamiro rice" "ESCAPE BACK: Super+Escape, Super+Ctrl+D, Super+Shift+C, or Super+Backspace. Or open his launcher and type 'caelestia'."
+    if [[ "$target" == "serpantinum" ]]; then
+        notify "Now in serpantinum rice" "ESCAPE BACK: Super+Escape or Super+Ctrl+D for caelestia."
     else
         notify "Now in caelestia rice" "Your personal rice is restored. Super+Escape to swap again."
     fi
@@ -335,7 +366,7 @@ swap_to() {
 
 cmd="${1:-status}"
 case "$cmd" in
-    caelestia|ilyamiro)
+    caelestia|serpantinum)
         swap_to "$cmd"
         ;;
     toggle)
@@ -343,14 +374,18 @@ case "$cmd" in
         # lock this process already holds: the child saw a live holder (its own
         # parent) and refused, so all four toggle binds silently did nothing.
         cur="$(cat "$ACTIVE_SHELL_FILE" 2>/dev/null || echo caelestia)"
-        if [[ "$cur" == "ilyamiro" ]]; then swap_to caelestia
-        else swap_to ilyamiro; fi
+        # Two rices: caelestia (stable) <-> serpantinum. ilyamiro was removed
+        # 2026-09-07; anything unexpected lands on caelestia.
+        case "$cur" in
+            serpantinum) swap_to caelestia   ;;
+            *)           swap_to serpantinum ;;
+        esac
         ;;
     status)
         printf 'active-shell: %s\n' "$(cat "$ACTIVE_SHELL_FILE" 2>/dev/null || echo '(none)')"
         printf 'active-rice : %s\n' "$(~/.config/glitch/bin/rice current)"
         printf 'caelestia alive: %s\n' "$(caelestia_alive && echo yes || echo no)"
-        printf 'ilyamiro  alive: %s\n' "$(ilyamiro_alive  && echo yes || echo no)"
+        printf 'serpantinum alive: %s\n' "$(serpantinum_alive && echo yes || echo no)"
         printf 'watchdog: %s\n' "$([[ -f "$WATCHDOG_PID_FILE" ]] && cat "$WATCHDOG_PID_FILE" || echo '(none)')"
         ;;
     help|--help|-h|"")

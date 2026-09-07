@@ -222,11 +222,6 @@ Item {
                         rootPane: sidebarFlickable.rootPane
                     }
 
-                    IlyamiroBlendSection {
-                        id: ilyamiroBlendSection
-
-                        rootPane: sidebarFlickable.rootPane
-                    }
 
                     FontsSection {
                         id: fontsSection

@@ -13,3 +13,4 @@ qtengine-git
 ttf-rubik-vf
 swaylock-effects-git
 vscodium-bin
+wl-gammarelay-rs
