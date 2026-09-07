@@ -9,9 +9,9 @@
 **A glitch-themed, performance-obsessed Linux distribution.**
 Built on the CachyOS base — riced to the teeth, engineered to never get in your way.
 
-`v1.0` · codename **dedsec** · build `20260906` · by **GLITCH-BITE-404**
+`v1.0` · codename **dedsec** · build `20260907` · by **GLITCH-BITE-404**
 
-[![Latest build](https://img.shields.io/badge/latest%20build-20260906-00ff78?style=for-the-badge)](#-download)
+[![Latest build](https://img.shields.io/badge/latest%20build-20260907-00ff78?style=for-the-badge)](#-download)
 [![TikTok](https://img.shields.io/badge/TikTok-@glitch__bite404-ff0050?style=for-the-badge&logo=tiktok)](https://www.tiktok.com/@glitch_bite404)
 ![Base](https://img.shields.io/badge/base-CachyOS%20%2F%20Arch-1793d1?style=for-the-badge&logo=archlinux)
 ![Shell](https://img.shields.io/badge/desktop-Hyprland%20%2B%20Quickshell-00ff78?style=for-the-badge)
@@ -23,13 +23,14 @@ Built on the CachyOS base — riced to the teeth, engineered to never get in you
 
 ---
 
-> ## ⬛ Latest version — build `20260906`
+> ## ⬛ Latest version — build `20260907`
 >
-> **This is the newest ISO and replaces every earlier upload.** A wallpaper and
-> desktop-stability build: the wallpaper picker **applies the picture you actually
-> chose**, **video wallpapers survive a reboot** instead of coming back as a frozen
-> frame, and rice switching stopped **stacking duplicate bars and shells** on top of
-> each other. Full list under **[What's new](#-whats-new-in-20260906)**.
+> **This is the newest ISO and replaces every earlier upload.** The second desktop
+> is now **serpantinum** — a Qt6/QuickShell shell with a movable-widget desktop,
+> live audio visualiser and a built-in settings GUI — replacing the ilyamiro rice.
+> It ships with a **BITE-OS tab** for saving and swapping rices and a **Keybinds
+> tab** that edits your shortcuts from the GUI. Full list under
+> **[What's new](#-whats-new-in-20260907)**.
 >
 > **[⤓ Download it here](#-download)** · already on an older build? Just press
 > `SUPER+U`, no reinstall needed.
@@ -203,19 +204,19 @@ The system maps directly to these custom core inputs for elite navigation:
 
 ## ◈ Download
 
-> ### ⬛ Latest build — `20260906`
+> ### ⬛ Latest build — `20260907`
 > This is the **current** ISO and supersedes every earlier upload. Everything from
-> the `20260903` build plus a wallpaper and desktop-stability pass — see
-> **[What's new](#-whats-new-in-20260906)**. If you're already running BITE-OS, most
-> of these reach you with `SUPER+U`; the first-boot and installer fixes need this ISO.
+> the `20260906` build, plus the move from ilyamiro to **serpantinum** as the second
+> desktop — see **[What's new](#-whats-new-in-20260907)**. The rice swap needs this
+> ISO; `SUPER+U` won't bring it to an older install.
 
-> The ISO (~5.5 GiB) is hosted off-GitHub due to file-size limits.
+> The ISO (~5.6 GiB) is hosted off-GitHub due to file-size limits.
 
-**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_20260906/bite-os-1.0-x86_64.iso)**
+**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_20260907/bite-os-1.0-x86_64.iso)**
 
-*(mirror / details page: [archive.org item](https://archive.org/details/bite-os-1.0-x86_64_20260906))*
+*(mirror / details page: [archive.org item](https://archive.org/details/bite-os-1.0-x86_64_20260907))*
 
-`SHA256`: `f8b867cef6816e06af0b54ce92934c8ff0fb2c0869cda30db12ce69ba43c2bc8`
+`SHA256`: `28a84e561e60df9aeb745ee030da1bc1898f7600c02e24801476774399024801`
 
 Verify the download before flashing — anything that doesn't match this hash is not the ISO I built:
 
@@ -224,6 +225,51 @@ sha256sum bite-os-1.0-x86_64.iso
 ```
 
 This build ships **`bite-toys`** and its four toys preinstalled — see [Toys](#-toys).
+
+## ◈ What's new in 20260907
+
+The second desktop changed. **ilyamiro is gone; serpantinum replaces it.** BITE-OS
+still ships two complete desktops — **caelestia** (default) and **serpantinum** —
+swapped with one keypress, same as before.
+
+**serpantinum 2.1.2 is the new second rice.** A Qt6/QuickShell shell with a
+movable-widget desktop, a live audio visualiser, weather, clipboard, an equaliser
+and its own settings GUI. It handles video wallpapers itself, so the old
+`awww` + `mpvpaper` stack no longer runs underneath it decoding a video into a
+surface nothing can see.
+
+**Two BITE-OS tabs in its settings.** A **BITE-OS** tab saves the current rice into
+the vault, rolls back the last swap, and switches between rices. A **Keybinds** tab
+lists every shortcut and lets you edit the modifiers, key and command in place —
+it writes `settings.json`, so Hyprland regenerates and reloads on its own. Every
+write is snapshotted and refuses to commit invalid JSON, because that file owns
+every shortcut you have.
+
+**Your look now saves itself.** Widget positions live in a different place from the
+rest of the settings, so a rice swap used to revert them. Both are mirrored into
+the vault as you change them — move a widget, swap rices, come back, it's there.
+
+**Workspace switching works on stock Hyprland.** Upstream sends Lua
+(`hl.dsp.focus(...)`) to `hyprctl`, which only works with its author's own
+Lua-based Hyprland config; plain hyprlang answers `Invalid dispatcher` and nothing
+moves. The keybinds, the bar's workspace pills and the CLI all use native
+dispatchers now.
+
+**The shell's updater can't wipe your install.** It ran `curl | bash` of upstream's
+installer, which removes `quickshell-git` (caelestia needs it too), wipes the SDDM
+theme and overwrites your kitty/cava/fastfetch configs. It now runs the BITE-OS
+updater, the same thing `SUPER+U` does, and the upstream update check and telemetry
+are off.
+
+**Media buttons tell you the truth.** Skip/previous ignored what the player actually
+supports, so a dead click looked like broken software. They dim when the player
+can't honour them — greyed out means nothing queued, not a bug.
+
+**quickshell rebuilt for Qt 6.11.2.** The shipped build was compiled in May against
+an older Qt. Quickshell links Qt's private API, which has no stable ABI, so on a
+current system **neither** shell would start — it failed with an undefined-symbol
+error. Rebuilt from the same pinned commit against the current Qt, so caelestia
+still sees the API it expects.
 
 ## ◈ What's new in 20260906
 
