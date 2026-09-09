@@ -1,0 +1,14 @@
+[SddmGreeterTheme]
+Name=BITE-OS Fluid
+Description=BITE-OS greeter with Serpantinum motion language
+Author=glitchbite404
+License=
+Type=sddm-theme
+Version=0.1
+Website=
+Screenshot=screenshot.png
+MainScript=Main.qml
+ConfigFile=theme.conf
+Theme-Id=bite-os-fluid
+Theme-API=2.0
+QtVersion=6

@@ -10,7 +10,7 @@
 
 pkgname=bite-os
 pkgver=1.1
-pkgrel=21
+pkgrel=23
 pkgdesc="BITE-OS — identity, branding, rice system and tooling (CachyOS-based)"
 arch=('any')
 url="https://tiktok.com/@glitch_bite404"
@@ -39,8 +39,10 @@ install="bite-os.install"
 #   payload/hooks/      -> /usr/share/libalpm/hooks/   (zz-bite-os-*.hook, paths -> /usr/bin)
 #   payload/branding/   -> /usr/share/bite-os/         (os-release, lsb-release, issue)
 #   payload/plymouth/   -> /usr/share/plymouth/themes/ (bite-os, glitch-os)
-#   payload/sddm-theme/ -> /usr/share/sddm/themes/bite-os/
-#   payload/sddm-conf/  -> /etc/sddm.conf.d/10-bite-os.conf
+#   payload/sddm-theme/       -> /usr/share/sddm/themes/bite-os/
+#   payload/sddm-theme-fluid/ -> /usr/share/sddm/themes/bite-os-fluid/  (default)
+#   payload/sddm-conf/        -> /etc/sddm.conf.d/10-bite-os.conf
+#   payload/sddm-service-conf/-> /usr/lib/systemd/system/sddm.service.d/
 #   payload/skel/       -> /etc/skel/        (.config/glitch, .config/hypr, the rices
 #                                             vault, the healthcheck service, etc.)
 
@@ -84,8 +86,18 @@ package() {
     install -d "$pkgdir/usr/share/plymouth/themes"
     cp -a plymouth/.   "$pkgdir/usr/share/plymouth/themes/"
     install -d "$pkgdir/usr/share/sddm/themes"
-    cp -a sddm-theme   "$pkgdir/usr/share/sddm/themes/bite-os"
+    cp -a sddm-theme       "$pkgdir/usr/share/sddm/themes/bite-os"
+    # bite-os-fluid is the DEFAULT greeter (10-bite-os.conf points here). The
+    # original bite-os theme ships alongside it as a one-word fallback: change
+    # Current= in /etc/sddm.conf.d/10-bite-os.conf and log out.
+    cp -a sddm-theme-fluid "$pkgdir/usr/share/sddm/themes/bite-os-fluid"
     install -Dm644 sddm-conf/10-bite-os.conf "$pkgdir/etc/sddm.conf.d/10-bite-os.conf"
+
+    # bite-os-fluid reads /proc for its CPU/RAM gauges via QML XMLHttpRequest;
+    # Qt6 gates file:// reads behind this env var. Vendor dir, so a local
+    # /etc/systemd/system/sddm.service.d/ override still wins.
+    install -Dm644 sddm-service-conf/10-bite-os-qml-file-read.conf \
+        "$pkgdir/usr/lib/systemd/system/sddm.service.d/10-bite-os-qml-file-read.conf"
 
     # NOTE: the system default cursor (/usr/share/icons/default/index.theme) is
     # OWNED by the `default-cursors` package — shipping it here is a pacman file

@@ -24,8 +24,10 @@ reproduces the system. Base = CachyOS.
 | `/etc/pacman.d/hooks/zz-bite-os-fastfetch.hook` | runs fix-fastfetch post-update |
 | `/usr/share/bite-os/{os-release,lsb-release,issue}` | branding source files |
 | `/usr/share/plymouth/themes/bite-os` + `glitch-os` | boot splash themes |
-| `/usr/share/sddm/themes/bite-os` | login theme |
+| `/usr/share/sddm/themes/bite-os` | original login theme (fallback) |
+| `/usr/share/sddm/themes/bite-os-fluid` | fluid login theme (**default**) |
 | `/etc/sddm.conf.d/10-bite-os.conf` | points SDDM at the theme |
+| `/usr/lib/systemd/system/sddm.service.d/10-bite-os-qml-file-read.conf` | lets the fluid greeter read /proc for its CPU/RAM gauges |
 | `/etc/os-release`, `/etc/lsb-release`, `/etc/issue` | (copies of /usr/share/bite-os/*) |
 
 ## 3. User environment (→ goes in ISO `/etc/skel`, so every user gets it)
