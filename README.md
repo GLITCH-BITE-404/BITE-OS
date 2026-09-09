@@ -226,6 +226,55 @@ sha256sum bite-os-1.0-x86_64.iso
 
 This build ships **`bite-toys`** and its four toys preinstalled — see [Toys](#-toys).
 
+## ◈ What's new in 20260909
+
+**The login screen is new.** `bite-os-fluid` replaces the old greeter as the
+default. The original theme still ships beside it — change one word in
+`/etc/sddm.conf.d/10-bite-os.conf` and you're back on it.
+
+**It moves like the shell does.** The motion is lifted from serpantinum's overlay
+family — the screenshot region-select, the quickactions panel, the network and
+volume popups — not from its lock screen. That means `OutExpo` over 350–600ms,
+geometry that glides instead of fading, and animations that are switched *off*
+during direct manipulation so nothing chases a moving layout. A region-select box
+follows your mouse and Tab between the account, the password, the session and the
+power buttons, dimming everything outside it and reading out its own size.
+
+**The password field is a bottle.** Hidden characters float as dots inside the
+liquid, riding the wave. Press reveal and they surface left to right, one at a
+time: the dot swells into a bubble, rises, pops clear of the box, and a green
+character drifts back down onto the surface. Turn reveal off and the box is washed
+out by the same five-layer bezier wipe that opens the `SUPER+L` lock screen. Delete
+a character and the bottle tips right — the character slides down the liquid to the
+low lip and falls off the edge. Hold backspace and it stays tipped until you stop.
+Leave it alone with liquid in it and soap bubbles drift up at random intervals.
+
+**It tells you about the machine before you log in.** Liquid-fill gauges for CPU,
+RAM, the time (the fill is how much of the day has gone) and the keyboard layout.
+The greeter has no process API, so CPU and RAM come from `/proc/stat` and
+`/proc/meminfo` read through QML's `XMLHttpRequest` — Qt6 blocks `file://` reads
+outright, so a `sddm.service.d` drop-in sets `QML_XHR_ALLOW_FILE_READ=1`. Without
+it those two gauges read `n/a` and nothing else changes.
+
+**Switching account and session is direct.** Click your name and the avatar shrinks
+while a compact account list opens over the top — it's a separate layer, so nothing
+below it moves. Arrows either side of the session name cycle sessions, and a
+settings panel behind the gear covers reveal style and speed, the ambient effects,
+a lite mode that kills every continuous repaint, and the gauges and dimming.
+
+**Keyboard layouts come from your system, not an assumption.** They're read from
+`/etc/vconsole.conf`, then xorg's `00-keyboard.conf`, then `/etc/default/keyboard`
+— first file that answers wins — so the gauge shows whatever the machine is
+actually configured for, along with the key combination that toggles it. If none of
+them answer it shows `--` rather than inventing a layout.
+
+Two things worth knowing. SDDM's `SessionModel` returns `undefined` for
+`Qt.DisplayRole`; the session name lives at `Qt.UserRole + 4`, and using the
+obvious one leaves the label blank. And SDDM's `KeyboardModel` is an X11/XKB
+component — on a Wayland greeter it reports `enabled=false` with zero layouts, so
+no theme can switch layouts through it. XKB's own group toggle still works,
+underneath SDDM entirely.
+
 ## ◈ What's new in 20260907
 
 The second desktop changed. **ilyamiro is gone; serpantinum replaces it.** BITE-OS
