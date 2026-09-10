@@ -1431,7 +1431,7 @@ Rectangle {
 
                             Text {
                                 anchors.centerIn: parent
-                                text: "⚙"
+                                text: ""
                                 font.family: root.mono
                                 font.pixelSize: root.s(14)
                                 color: root.settingsOpen ? root.cAccent : root.cText
@@ -1973,7 +1973,7 @@ Rectangle {
                     anchors.right: parent.right
                     anchors.rightMargin: root.s(28)
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "tab ▸ move   ↵ ▸ select   F5 ▸ burp"
+                    text: "tab ▸ move   ⏎ ▸ select   F5 ▸ burp"
                     font.family: root.mono
                     font.pixelSize: root.s(12)
                     color: root.cOverlay

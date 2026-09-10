@@ -181,11 +181,18 @@ Rectangle {
             anchors.centerIn: parent
             spacing: barWindow ? barWindow.s(sysMonWidgetRoot.isCompact ? 3 : 4) : (sysMonWidgetRoot.isCompact ? 3 : 4)
 
+            // The liquid fill is drawn BEHIND this row, so once it rises past
+            // the vertical centre a light glyph sits on a light fill and
+            // becomes unreadable -- which looked like a broken/missing glyph.
+            // Flip to a dark ink while the fill is behind the text.
             Text {
                 text: icon
                 font.family: ThemeBackend.fontFamily
                 font.pixelSize: barWindow ? barWindow.s(sysMonWidgetRoot.isCompact ? 13.5 : 14.5) : (sysMonWidgetRoot.isCompact ? 13.5 : 14.5)
-                color: sysMonWidgetRoot.isCompact ? ThemeBackend.text : ThemeBackend.subtext0
+                color: pillRoot.fillRatio > 0.46
+                       ? ThemeBackend.crust
+                       : (sysMonWidgetRoot.isCompact ? ThemeBackend.text : ThemeBackend.subtext0)
+                Behavior on color { ColorAnimation { duration: 220 } }
                 anchors.verticalCenter: parent.verticalCenter
             }
 
@@ -194,7 +201,8 @@ Rectangle {
                 font.family: ThemeBackend.fontFamily
                 font.pixelSize: barWindow ? barWindow.s(sysMonWidgetRoot.isCompact ? 12 : 13) : (sysMonWidgetRoot.isCompact ? 12 : 13)
                 font.bold: true
-                color: ThemeBackend.text
+                color: pillRoot.fillRatio > 0.46 ? ThemeBackend.crust : ThemeBackend.text
+                Behavior on color { ColorAnimation { duration: 220 } }
                 anchors.verticalCenter: parent.verticalCenter
             }
         }
