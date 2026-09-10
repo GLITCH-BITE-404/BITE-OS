@@ -176,34 +176,47 @@ Rectangle {
             }
         }
 
-        Row {
-            id: baseContentRow
-            anchors.centerIn: parent
-            spacing: barWindow ? barWindow.s(sysMonWidgetRoot.isCompact ? 3 : 4) : (sysMonWidgetRoot.isCompact ? 3 : 4)
+        // Light copy of the row, clipped to the part of the pill ABOVE the
+        // liquid; waveClipBox below draws the dark copy inside the liquid.
+        // Unclipped, the light glyph kept drawing underneath the dark one, and
+        // the icon's 0.75-alpha dark overlay turned into a muddy mid-tone on
+        // the fill -- which looked like a missing glyph.
+        Item {
+            id: aboveClipBox
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: Math.max(0, pillRoot.height - (waveClipBox.visible ? waveClipBox.height : 0))
+            clip: true
 
-            // The liquid fill is drawn BEHIND this row, so once it rises past
-            // the vertical centre a light glyph sits on a light fill and
-            // becomes unreadable -- which looked like a broken/missing glyph.
-            // Flip to a dark ink while the fill is behind the text.
-            Text {
-                text: icon
-                font.family: ThemeBackend.fontFamily
-                font.pixelSize: barWindow ? barWindow.s(sysMonWidgetRoot.isCompact ? 13.5 : 14.5) : (sysMonWidgetRoot.isCompact ? 13.5 : 14.5)
-                color: pillRoot.fillRatio > 0.46
-                       ? ThemeBackend.crust
-                       : (sysMonWidgetRoot.isCompact ? ThemeBackend.text : ThemeBackend.subtext0)
-                Behavior on color { ColorAnimation { duration: 220 } }
-                anchors.verticalCenter: parent.verticalCenter
-            }
+            Item {
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: pillRoot.height
 
-            Text {
-                text: textVal
-                font.family: ThemeBackend.fontFamily
-                font.pixelSize: barWindow ? barWindow.s(sysMonWidgetRoot.isCompact ? 12 : 13) : (sysMonWidgetRoot.isCompact ? 12 : 13)
-                font.bold: true
-                color: pillRoot.fillRatio > 0.46 ? ThemeBackend.crust : ThemeBackend.text
-                Behavior on color { ColorAnimation { duration: 220 } }
-                anchors.verticalCenter: parent.verticalCenter
+                Row {
+                    id: baseContentRow
+                    anchors.centerIn: parent
+                    spacing: barWindow ? barWindow.s(sysMonWidgetRoot.isCompact ? 3 : 4) : (sysMonWidgetRoot.isCompact ? 3 : 4)
+
+                    Text {
+                        text: icon
+                        font.family: ThemeBackend.fontFamily
+                        font.pixelSize: barWindow ? barWindow.s(sysMonWidgetRoot.isCompact ? 13.5 : 14.5) : (sysMonWidgetRoot.isCompact ? 13.5 : 14.5)
+                        color: sysMonWidgetRoot.isCompact ? ThemeBackend.text : ThemeBackend.subtext0
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+
+                    Text {
+                        text: textVal
+                        font.family: ThemeBackend.fontFamily
+                        font.pixelSize: barWindow ? barWindow.s(sysMonWidgetRoot.isCompact ? 12 : 13) : (sysMonWidgetRoot.isCompact ? 12 : 13)
+                        font.bold: true
+                        color: ThemeBackend.text
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                }
             }
         }
 
