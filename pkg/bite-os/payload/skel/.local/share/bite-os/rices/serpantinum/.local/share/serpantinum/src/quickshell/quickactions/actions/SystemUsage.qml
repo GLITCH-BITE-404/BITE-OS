@@ -225,67 +225,83 @@ Item {
             }
         }
 
+        // ── BITE-OS modification ──────────────────────────────────────────
+        // Light copy of the card text, clipped to the part ABOVE the liquid;
+        // waveClipBox draws the dark copy inside it. Unclipped, the light text
+        // kept drawing underneath the dark copy and ghosted every value that
+        // sat in the liquid.
         Item {
-            anchors.fill: parent
-            anchors.margins: root.s(12)
+            id: aboveClipBox
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: Math.max(0, ls.height - (waveClipBox.visible ? waveClipBox.height : 0))
+            clip: true
 
-            IconButton {
-                id: iconPill
-                anchors.top: parent.top
-                anchors.left: parent.left
-                size: Math.round(root.s(28))
-                cornerRadius: Math.round(root.s(14))
-                accentColor: root.alpha(root.cSurface1, 0.6)
-                textColor: root.cSubtext0
-                buttonIcon: ls.icon
-                iconFontSize: Math.round(root.s(16))
-                enabled: false
-            }
+            Item {
+                x: root.s(12)
+                y: root.s(12)
+                width: ls.width - root.s(24)
+                height: ls.height - root.s(24)
 
-            Row {
-                anchors.verticalCenter: iconPill.verticalCenter
-                anchors.right: parent.right
-                spacing: root.s(4)
+                IconButton {
+                    id: iconPill
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    size: Math.round(root.s(28))
+                    cornerRadius: Math.round(root.s(14))
+                    accentColor: root.alpha(root.cSurface1, 0.6)
+                    textColor: root.cSubtext0
+                    buttonIcon: ls.icon
+                    iconFontSize: Math.round(root.s(16))
+                    enabled: false
+                }
 
-                Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    font.family: ThemeBackend.fontFamily
-                    font.weight: Font.DemiBold
-                    font.pixelSize: root.s(13)
-                    color: root.alpha(root.cSubtext0, 0.7)
-                    text: ls.midText
-                    visible: ls.midText !== ""
+                Row {
+                    anchors.verticalCenter: iconPill.verticalCenter
+                    anchors.right: parent.right
+                    spacing: root.s(4)
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        font.family: ThemeBackend.fontFamily
+                        font.weight: Font.DemiBold
+                        font.pixelSize: root.s(13)
+                        color: root.alpha(root.cSubtext0, 0.7)
+                        text: ls.midText
+                        visible: ls.midText !== ""
+                    }
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        font.family: ThemeBackend.fontFamily
+                        font.weight: Font.DemiBold
+                        font.pixelSize: root.s(13)
+                        color: root.cSubtext0
+                        text: ls.title
+                    }
                 }
 
                 Text {
-                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.bottom: parent.bottom
+                    anchors.left: parent.left
+                    anchors.bottomMargin: root.s(2)
                     font.family: ThemeBackend.fontFamily
                     font.weight: Font.DemiBold
-                    font.pixelSize: root.s(13)
+                    font.pixelSize: root.s(15)
                     color: root.cSubtext0
-                    text: ls.title
+                    text: ls.subText
                 }
-            }
 
-            Text {
-                anchors.bottom: parent.bottom
-                anchors.left: parent.left
-                anchors.bottomMargin: root.s(2)
-                font.family: ThemeBackend.fontFamily
-                font.weight: Font.DemiBold
-                font.pixelSize: root.s(15)
-                color: root.cSubtext0
-                text: ls.subText
-            }
-
-            Text {
-                anchors.bottom: parent.bottom
-                anchors.right: parent.right
-                font.family: ThemeBackend.fontFamily
-                font.weight: Font.Black
-                font.pixelSize: root.s(24)
-                color: root.cText
-                text: ls.valueText
+                Text {
+                    anchors.bottom: parent.bottom
+                    anchors.right: parent.right
+                    font.family: ThemeBackend.fontFamily
+                    font.weight: Font.Black
+                    font.pixelSize: root.s(24)
+                    color: root.cText
+                    text: ls.valueText
+                }
             }
         }
 
@@ -299,11 +315,12 @@ Item {
             visible: ls.value > 0
 
             Item {
-                anchors.bottom: parent.bottom
-                anchors.left: parent.left
-                anchors.right: parent.right
-                height: ls.height
-                anchors.margins: root.s(12)
+                // BITE-OS: same geometry as the light copy. Upstream bottom-anchored a
+                // full-height box here, which put top-anchored content 24px too high.
+                x: root.s(12)
+                y: root.s(12) - (ls.height - waveClipBox.height)
+                width: ls.width - root.s(24)
+                height: ls.height - root.s(24)
 
                 IconButton {
                     id: filledIconPill
@@ -403,7 +420,9 @@ Item {
             
             value: root.ramUsage
             colorFill: Qt.lighter(root.cMauve, 1.15)
-            icon: "\uF538"
+            // BITE-OS: U+F538 (Font Awesome 5 "memory") is in no Nerd Font and drew a
+            // blank box; U+F035B is Material Design "memory", in every Nerd Font.
+            icon: "󰍛"
             title: I18n.t("quickactions.systemusage.ram")
             valueText: root.ramUsedGb.toFixed(1) + "G"
         }

@@ -1026,7 +1026,7 @@ Item {
                             model: [
                                 { id: "pen", icon: "\uF040" },
                                 { id: "brush", icon: "\uF1FC" },
-                                { id: "fill", icon: "\uF576" },
+                                { id: "fill", icon: "󰉦" },  // BITE-OS: U+F576 (FA5 fill-drip) is in no Nerd Font; MDI format-color-fill
                                 { id: "eraser", icon: "\uF12D" }
                             ]
 
