@@ -253,7 +253,8 @@ Leave it alone with liquid in it and soap bubbles drift up at random intervals.
 RAM, the time (the fill is how much of the day has gone) and the keyboard layout.
 The greeter has no process API, so CPU and RAM come from `/proc/stat` and
 `/proc/meminfo` read through QML's `XMLHttpRequest` — Qt6 blocks `file://` reads
-outright, so a `sddm.service.d` drop-in sets `QML_XHR_ALLOW_FILE_READ=1`. Without
+outright, so `GreeterEnvironment=QML_XHR_ALLOW_FILE_READ=1` in the SDDM config
+hands it to the greeter. Without
 it those two gauges read `n/a` and nothing else changes.
 
 **Switching account and session is direct.** Click your name and the avatar shrinks
@@ -270,10 +271,12 @@ them answer it shows `--` rather than inventing a layout.
 
 Two things worth knowing. SDDM's `SessionModel` returns `undefined` for
 `Qt.DisplayRole`; the session name lives at `Qt.UserRole + 4`, and using the
-obvious one leaves the label blank. And SDDM's `KeyboardModel` is an X11/XKB
-component — on a Wayland greeter it reports `enabled=false` with zero layouts, so
-no theme can switch layouts through it. XKB's own group toggle still works,
-underneath SDDM entirely.
+obvious one leaves the label blank. And SDDM's `KeyboardModel` (X11/XKB) reports
+`enabled=false` with zero layouts when the greeter runs in test mode inside a
+Wayland session, so the theme falls back to reading the config files and XKB's own
+group toggle. On the real X11 greeter it may expose layouts directly; the theme
+uses them when it does. And SDDM reads its config once, when the daemon starts —
+changing the theme needs a reboot, not a logout.
 
 ## ◈ What's new in 20260907
 
