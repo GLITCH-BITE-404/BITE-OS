@@ -21,7 +21,36 @@ Item {
     transform: Translate { y: slideY }
     Behavior on opacity { NumberAnimation { duration: 250 } }
 
-    property real updateTransitionProgress: Updater.updateAvailable ? 1.0 : 0.0
+    // ── BITE-OS modification ───────────────────────────────────────────
+    // The panel used to key off Updater (serpantinum's own version), which on
+    // BITE-OS can never be acted on. It now reports BITE-OS, read from the
+    // same update.json that update_notifier.sh raises its notification from,
+    // so the guide and the notification can never disagree. The panel stays
+    // open either way, so the BITE-OS Update button is always reachable.
+    property string biteLocal: ""
+    property string biteRemote: ""
+    property bool   biteUpdate: false
+    property bool   biteChecked: false
+
+    Process {
+        id: biteUpdateProc
+        running: false
+        command: ["bash", "-c",
+            "cat \"${XDG_STATE_HOME:-$HOME/.local/state}/bite-os/update.json\" 2>/dev/null || echo '{}'"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    let u = JSON.parse(this.text || "{}");
+                    aboutTabRoot.biteLocal   = u.local  || "";
+                    aboutTabRoot.biteRemote  = u.remote || "";
+                    aboutTabRoot.biteUpdate  = u.available === true;
+                    aboutTabRoot.biteChecked = (u.checked || 0) > 0;
+                } catch (e) { aboutTabRoot.biteChecked = false; }
+            }
+        }
+    }
+
+    property real updateTransitionProgress: 1.0
     Behavior on updateTransitionProgress {
         NumberAnimation {
             duration: 450
@@ -36,10 +65,11 @@ Item {
     }
 
     onVisibleChanged: {
-        if (visible) activateTab();
+        if (visible) { activateTab(); biteUpdateProc.running = true; }
     }
 
     Component.onCompleted: {
+        biteUpdateProc.running = true;
         if (visible) activateTab();
     }
 
@@ -197,7 +227,10 @@ Item {
                         Text {
                             Layout.alignment: Qt.AlignLeft
                             Layout.bottomMargin: rootObj.s(4)
-                            text: "Update available v" + Updater.remoteVersion
+                            text: aboutTabRoot.biteUpdate
+                                  ? ("Update available  " + aboutTabRoot.biteRemote)
+                                  : (aboutTabRoot.biteChecked ? "BITE-OS is up to date"
+                                                              : "checking for updates…")
                             font.family: ThemeBackend.fontFamily
                             font.weight: Font.Bold
                             font.pixelSize: rootObj.s(18)
@@ -258,72 +291,67 @@ Item {
                 ColumnLayout {
                     Layout.fillWidth: true
                     Layout.preferredWidth: 1
-                    spacing: rootObj.s(8)
+                    spacing: rootObj.s(6)
 
-                    Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: hwColumn.implicitHeight + rootObj.s(8)
-                        radius: ThemeBackend.clampedBorderRadius
-                        color: Qt.alpha(ThemeBackend.surface0, 0.55)
-                        border.width: 0
+                    Repeater {
+                        id: hwRepeater
+                        model: [
+                            { icon: "󰌢", label: I18n.t("guide.about.hardware.device_name"), value: (typeof SystemInfo !== "undefined" && SystemInfo.hostname !== "") ? SystemInfo.hostname : I18n.t("guide.about.unknown") },
+                            { icon: "󰻠", label: I18n.t("guide.about.hardware.processor"), value: (typeof SystemInfo !== "undefined" && SystemInfo.cpuModel !== "") ? SystemInfo.cpuModel + (SystemInfo.cpuCores > 0 ? " (" + SystemInfo.cpuCores + ")" : "") : I18n.t("guide.about.unknown") },
+                            { icon: "󰢮", label: I18n.t("guide.about.hardware.graphics"), value: (typeof SystemInfo !== "undefined" && SystemInfo.gpuModel !== "") ? SystemInfo.gpuModel : I18n.t("guide.about.unknown") },
+                            { icon: "󰍛", label: I18n.t("guide.about.hardware.memory"), value: (typeof SystemInfo !== "undefined" && SystemInfo.totalRamGb > 0) ? SystemInfo.totalRamGb + " GB" : I18n.t("guide.about.unknown") },
+                            { icon: "󰋊", label: I18n.t("guide.about.hardware.disk_capacity"), value: (typeof SystemInfo !== "undefined" && SystemInfo.diskTotalGb > 0) ? SystemInfo.diskUsedGb + " / " + SystemInfo.diskTotalGb + " GB" : I18n.t("guide.about.unknown") }
+                        ]
 
-                        ColumnLayout {
-                            id: hwColumn
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.top: parent.top
-                            anchors.margins: rootObj.s(4)
-                            spacing: 0
+                        Rectangle {
+                            required property var modelData
+                            required property int index
 
-                            Repeater {
-                                id: hwRepeater
-                                model: [
-                                    { label: I18n.t("guide.about.hardware.device_name"), value: (typeof SystemInfo !== "undefined" && SystemInfo.hostname !== "") ? SystemInfo.hostname : I18n.t("guide.about.unknown") },
-                                    { label: I18n.t("guide.about.hardware.processor"), value: (typeof SystemInfo !== "undefined" && SystemInfo.cpuModel !== "") ? SystemInfo.cpuModel + (SystemInfo.cpuCores > 0 ? " (" + SystemInfo.cpuCores + ")" : "") : I18n.t("guide.about.unknown") },
-                                    { label: I18n.t("guide.about.hardware.graphics"), value: (typeof SystemInfo !== "undefined" && SystemInfo.gpuModel !== "") ? SystemInfo.gpuModel : I18n.t("guide.about.unknown") },
-                                    { label: I18n.t("guide.about.hardware.memory"), value: (typeof SystemInfo !== "undefined" && SystemInfo.totalRamGb > 0) ? SystemInfo.totalRamGb + " GB" : I18n.t("guide.about.unknown") },
-                                    { label: I18n.t("guide.about.hardware.disk_capacity"), value: (typeof SystemInfo !== "undefined" && SystemInfo.diskTotalGb > 0) ? SystemInfo.diskUsedGb + " / " + SystemInfo.diskTotalGb + " GB" : I18n.t("guide.about.unknown") }
-                                ]
+                            Layout.fillWidth: true
+                            implicitHeight: rowHwLayout.implicitHeight + rootObj.s(20)
+                            radius: ThemeBackend.borderRadius
+                            color: Qt.alpha(ThemeBackend.surface0, 0.4)
+                            border.width: 0
 
-                                ColumnLayout {
+                            RowLayout {
+                                id: rowHwLayout
+                                anchors.left: parent.left
+                                anchors.leftMargin: rootObj.s(14)
+                                anchors.right: parent.right
+                                anchors.rightMargin: rootObj.s(14)
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: rootObj.s(12)
+
+                                IconButton {
+                                    enabled: false
+                                    size: rootObj.s(32)
+                                    Layout.preferredWidth: rootObj.s(32)
+                                    Layout.preferredHeight: rootObj.s(32)
+                                    Layout.alignment: Qt.AlignVCenter
+                                    cornerRadius: ThemeBackend.borderRadius
+                                    buttonIcon: modelData.icon
+                                    iconFontSize: rootObj.s(16)
+                                    accentColor: ThemeBackend.surface0
+                                    textColor: "#ffffff"
+                                }
+
+                                Text {
+                                    text: modelData.label
+                                    font.family: ThemeBackend.fontFamily
+                                    font.pixelSize: rootObj.s(12)
+                                    color: ThemeBackend.text
+                                    Layout.preferredWidth: rootObj.s(105)
+                                    elide: Text.ElideRight
+                                }
+
+                                Text {
+                                    text: modelData.value
+                                    font.family: ThemeBackend.fontFamily
+                                    font.pixelSize: rootObj.s(12)
+                                    color: ThemeBackend.subtext0
                                     Layout.fillWidth: true
-                                    spacing: 0
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        Layout.preferredHeight: rootObj.s(44)
-                                        Layout.leftMargin: rootObj.s(14)
-                                        Layout.rightMargin: rootObj.s(14)
-                                        spacing: rootObj.s(12)
-
-                                        Text {
-                                            text: modelData.label
-                                            font.family: ThemeBackend.fontFamily
-                                            font.pixelSize: rootObj.s(12)
-                                            color: ThemeBackend.text
-                                            Layout.preferredWidth: rootObj.s(105)
-                                            elide: Text.ElideRight
-                                        }
-
-                                        Text {
-                                            text: modelData.value
-                                            font.family: ThemeBackend.fontFamily
-                                            font.pixelSize: rootObj.s(12)
-                                            color: ThemeBackend.subtext0
-                                            Layout.fillWidth: true
-                                            horizontalAlignment: Text.AlignRight
-                                            elide: Text.ElideRight
-                                        }
-                                    }
-
-                                    Rectangle {
-                                        Layout.fillWidth: true
-                                        Layout.leftMargin: rootObj.s(14)
-                                        Layout.rightMargin: rootObj.s(14)
-                                        Layout.preferredHeight: 1
-                                        color: Qt.alpha(ThemeBackend.surface1, 0.4)
-                                        visible: index < hwRepeater.count - 1
-                                    }
+                                    horizontalAlignment: Text.AlignRight
+                                    elide: Text.ElideRight
                                 }
                             }
                         }
@@ -333,72 +361,69 @@ Item {
                 ColumnLayout {
                     Layout.fillWidth: true
                     Layout.preferredWidth: 1
-                    spacing: rootObj.s(8)
+                    spacing: rootObj.s(6)
 
-                    Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: sysColumn.implicitHeight + rootObj.s(8)
-                        radius: ThemeBackend.clampedBorderRadius
-                        color: Qt.alpha(ThemeBackend.surface0, 0.55)
-                        border.width: 0
+                    Repeater {
+                        id: sysRepeater
+                        model: [
+                            { icon: "⛁", label: I18n.t("guide.about.system.os_name"), value: (typeof SystemInfo !== "undefined" && SystemInfo.osName !== "") ? SystemInfo.osName : I18n.t("guide.about.system.default_os") },
+                            { icon: "󰌽", label: I18n.t("guide.about.system.kernel_version"), value: (typeof SystemInfo !== "undefined" && SystemInfo.kernelVersion !== "") ? SystemInfo.kernelVersion : I18n.t("guide.about.unknown") },
+                            { icon: "󰧨", label: I18n.t("guide.about.system.desktop"), value: (typeof SystemInfo !== "undefined" && SystemInfo.desktopEnv !== "") ? SystemInfo.desktopEnv : I18n.t("guide.about.unknown") },
+                            { icon: "󰆍", label: I18n.t("guide.about.system.shell"), value: (typeof SystemInfo !== "undefined" && SystemInfo.shell !== "") ? SystemInfo.shell : I18n.t("guide.about.unknown") },
+                            { icon: "󰔛", label: I18n.t("guide.about.system.uptime"), value: (typeof SystemInfo !== "undefined" && SystemInfo.uptime !== "") ? SystemInfo.uptime : I18n.t("guide.about.unknown") },
+                            // BITE-OS: the distro's own version, next to the system facts
+                            { icon: "", label: "BITE-OS", value: aboutTabRoot.biteLocal !== "" ? aboutTabRoot.biteLocal : I18n.t("guide.about.unknown") }
+                        ]
 
-                        ColumnLayout {
-                            id: sysColumn
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.top: parent.top
-                            anchors.margins: rootObj.s(4)
-                            spacing: 0
+                        Rectangle {
+                            required property var modelData
+                            required property int index
 
-                            Repeater {
-                                id: sysRepeater
-                                model: [
-                                    { label: I18n.t("guide.about.system.os_name"), value: (typeof SystemInfo !== "undefined" && SystemInfo.osName !== "") ? SystemInfo.osName : I18n.t("guide.about.system.default_os") },
-                                    { label: I18n.t("guide.about.system.kernel_version"), value: (typeof SystemInfo !== "undefined" && SystemInfo.kernelVersion !== "") ? SystemInfo.kernelVersion : I18n.t("guide.about.unknown") },
-                                    { label: I18n.t("guide.about.system.desktop"), value: (typeof SystemInfo !== "undefined" && SystemInfo.desktopEnv !== "") ? SystemInfo.desktopEnv : I18n.t("guide.about.unknown") },
-                                    { label: I18n.t("guide.about.system.shell"), value: (typeof SystemInfo !== "undefined" && SystemInfo.shell !== "") ? SystemInfo.shell : I18n.t("guide.about.unknown") },
-                                    { label: I18n.t("guide.about.system.uptime"), value: (typeof SystemInfo !== "undefined" && SystemInfo.uptime !== "") ? SystemInfo.uptime : I18n.t("guide.about.unknown") }
-                                ]
+                            Layout.fillWidth: true
+                            implicitHeight: rowSysLayout.implicitHeight + rootObj.s(20)
+                            radius: ThemeBackend.borderRadius
+                            color: Qt.alpha(ThemeBackend.surface0, 0.4)
+                            border.width: 0
 
-                                ColumnLayout {
+                            RowLayout {
+                                id: rowSysLayout
+                                anchors.left: parent.left
+                                anchors.leftMargin: rootObj.s(14)
+                                anchors.right: parent.right
+                                anchors.rightMargin: rootObj.s(14)
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: rootObj.s(12)
+
+                                IconButton {
+                                    enabled: false
+                                    size: rootObj.s(32)
+                                    Layout.preferredWidth: rootObj.s(32)
+                                    Layout.preferredHeight: rootObj.s(32)
+                                    Layout.alignment: Qt.AlignVCenter
+                                    cornerRadius: ThemeBackend.borderRadius
+                                    buttonIcon: modelData.icon
+                                    iconFontSize: rootObj.s(16)
+                                    accentColor: ThemeBackend.surface0
+                                    textColor: "#ffffff"
+                                }
+
+                                Text {
+                                    text: modelData.label
+                                    font.family: ThemeBackend.fontFamily
+                                    font.pixelSize: rootObj.s(12)
+                                    color: ThemeBackend.text
+                                    Layout.preferredWidth: rootObj.s(105)
+                                    elide: Text.ElideRight
+                                }
+
+                                Text {
+                                    text: modelData.value
+                                    font.family: ThemeBackend.fontFamily
+                                    font.pixelSize: rootObj.s(12)
+                                    color: ThemeBackend.subtext0
                                     Layout.fillWidth: true
-                                    spacing: 0
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        Layout.preferredHeight: rootObj.s(44)
-                                        Layout.leftMargin: rootObj.s(14)
-                                        Layout.rightMargin: rootObj.s(14)
-                                        spacing: rootObj.s(12)
-
-                                        Text {
-                                            text: modelData.label
-                                            font.family: ThemeBackend.fontFamily
-                                            font.pixelSize: rootObj.s(12)
-                                            color: ThemeBackend.text
-                                            Layout.preferredWidth: rootObj.s(105)
-                                            elide: Text.ElideRight
-                                        }
-
-                                        Text {
-                                            text: modelData.value
-                                            font.family: ThemeBackend.fontFamily
-                                            font.pixelSize: rootObj.s(12)
-                                            color: ThemeBackend.subtext0
-                                            Layout.fillWidth: true
-                                            horizontalAlignment: Text.AlignRight
-                                            elide: Text.ElideRight
-                                        }
-                                    }
-
-                                    Rectangle {
-                                        Layout.fillWidth: true
-                                        Layout.leftMargin: rootObj.s(14)
-                                        Layout.rightMargin: rootObj.s(14)
-                                        Layout.preferredHeight: 1
-                                        color: Qt.alpha(ThemeBackend.surface1, 0.4)
-                                        visible: index < sysRepeater.count - 1
-                                    }
+                                    horizontalAlignment: Text.AlignRight
+                                    elide: Text.ElideRight
                                 }
                             }
                         }

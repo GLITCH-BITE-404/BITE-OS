@@ -161,8 +161,9 @@ Item {
     // Upstream checks for serpantinum updates on startup and hourly, and the
     // resulting notification leads to the About page's update button. On
     // BITE-OS that path is destructive (see AboutTab.qml), and this rice is
-    // pinned to 2.1.2 deliberately. Both timers are disabled; updates go
-    // through the BITE-OS updater (Super+U) instead.
+    // pinned to the upstream version it ships (src/version.txt) on purpose.
+    // Both timers are disabled; updates go through the BITE-OS updater
+    // (Super+U) instead.
     Timer {
         id: startupTimer
         interval: 500

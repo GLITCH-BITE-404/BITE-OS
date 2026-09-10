@@ -476,6 +476,13 @@
       "key": "U",
       "dispatcher": "exec",
       "command": "$terminal -e bite-os-update"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "A",
+      "dispatcher": "exec",
+      "command": "serpantinum msg toggle autohide"
     }
   ],
   "startup": [

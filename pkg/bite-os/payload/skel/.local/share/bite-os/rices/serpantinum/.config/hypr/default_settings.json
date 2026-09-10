@@ -483,6 +483,13 @@
       "key": "D",
       "dispatcher": "exec",
       "command": "bash ~/.config/glitch/bin/dots-switch.sh caelestia"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "A",
+      "dispatcher": "exec",
+      "command": "serpantinum msg toggle autohide"
     }
   ],
   "startup": [

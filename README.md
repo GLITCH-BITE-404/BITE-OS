@@ -226,6 +226,27 @@ sha256sum bite-os-1.0-x86_64.iso
 
 This build ships **`bite-toys`** and its four toys preinstalled — see [Toys](#-toys).
 
+## ◈ What's new in 20260910
+
+**serpantinum is updated to 2.1.4 — without losing the BITE-OS changes.** Upstream's
+updater is still disabled (it re-runs `install.sh`, which removes `quickshell-git`,
+wipes the SDDM theme and overwrites the rice), so this update was a three-way merge
+instead: the new upstream as the base, every BITE-OS patch re-applied on top. Of the
+23 files BITE-OS changes, 11 were untouched upstream and carried over as-is, 10 merged
+automatically, and two were rebuilt by hand around upstream's restructuring — including
+the About page's update button, which still routes to the BITE-OS updater rather than
+upstream's installer. Every added line was checked back against the merged result.
+
+**New from upstream:** a dock (with its own settings tab), the fix for the edge panel
+that could be dragged off screen, notification sounds, Portuguese, bar autohide
+(`SUPER+A`), and a round of dock, launcher, bluetooth, Wi-Fi-after-suspend and config
+race-condition fixes.
+
+**The system-monitor pills read cleanly again.** They draw their liquid fill behind the
+text, and the light copy of the text was never clipped to the part above the liquid —
+so inside the fill a 75%-opaque dark icon sat on top of a light one and turned into a
+smudge that looked like a missing glyph. Each half now gets one ink.
+
 ## ◈ What's new in 20260909
 
 **The login screen is new.** `bite-os-fluid` replaces the old greeter as the

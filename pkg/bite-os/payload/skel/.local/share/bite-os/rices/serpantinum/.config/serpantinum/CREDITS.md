@@ -23,12 +23,14 @@ Copyright (C) 2026 Illia Miroshnichenko (@ilyamiro)
 https://github.com/ilyamiro/serpantinum
 
 Licensed under the **GNU Affero General Public License v3** (or later).
-The shell in `~/.local/share/serpantinum/` is upstream's work, used unmodified;
-its LICENSE.md ships with it and must be kept intact.
+The shell in `~/.local/share/serpantinum/` is upstream's work, **modified** by
+BITE-OS: every change is marked `BITE-OS modification` in the source, and the
+BITE-OS and Keybinds settings tabs are BITE-OS additions. Its LICENSE.md ships
+with it and must be kept intact.
 
 Serpantinum's own credits: the material SDDM theme is by Darkall44/Qylock —
 note that BITE-OS does NOT install that theme, keeping its own SDDM theme.
 
 ## Version
 
-serpantinum 2.1.2 · integrated into BITE-OS 2026-09-07
+serpantinum 2.1.4 · integrated into BITE-OS 2026-09-07, updated 2026-09-10

@@ -122,6 +122,13 @@ PanelWindow {
                 return;
             }
 
+            if (cmd === "autohide" || targetWidget === "autohide") {
+                let bar = Config.getSetting("bar", {});
+                bar.autohide = !bar.autohide;
+                Config.setSetting("bar", bar);
+                return;
+            }
+
             let effectivelyActive = masterWindow.targetActive;
 
             if (cmd === "close") {
@@ -289,6 +296,13 @@ PanelWindow {
     property var widgetCache: ({})
     property var componentCache: ({})
     property var _allWidgetNames: ["battery", "network", "volume", "guide", "calendar", "wallpaper", "music", "movies", "notifications", "system"]
+
+    // BITE-OS: preloading every widget at boot instantiated the 1200x750 guide,
+    // the wallpaper picker and the 1427-line system panel whether or not they
+    // were ever opened. executeSwitch() already calls ensureWidgetItem(), so
+    // anything left out here is simply built on first open (~50-310ms, once).
+    // Add names back if a specific widget feels sluggish on first use.
+    property var _preloadWidgetNames: []
     property int _preloadIndex: 0
 
     function widgetNameForItem(item) {
@@ -335,14 +349,14 @@ PanelWindow {
         interval: 150
         repeat: true
         onTriggered: {
-            if (masterWindow._preloadIndex >= masterWindow._allWidgetNames.length) {
+            if (masterWindow._preloadIndex >= masterWindow._preloadWidgetNames.length) {
                 preloadStaggerTimer.stop();
                 return;
             }
             if (masterWindow.currentActive !== "hidden") {
                 return;
             }
-            preloadWidget(masterWindow._allWidgetNames[masterWindow._preloadIndex]);
+            preloadWidget(masterWindow._preloadWidgetNames[masterWindow._preloadIndex]);
             masterWindow._preloadIndex++;
         }
     }
