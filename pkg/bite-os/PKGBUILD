@@ -10,7 +10,7 @@
 
 pkgname=bite-os
 pkgver=1.1
-pkgrel=27
+pkgrel=29
 pkgdesc="BITE-OS — identity, branding, rice system and tooling (CachyOS-based)"
 arch=('any')
 url="https://tiktok.com/@glitch_bite404"
@@ -20,7 +20,12 @@ license=('GPL3')
 depends=(
     'hyprland' 'quickshell-git' 'sddm' 'plymouth' 'matugen' 'awww'
     'fastfetch' 'kitty' 'nwg-dock-hyprland' 'xdg-desktop-portal-hyprland'
-    'caelestia-shell' 'caelestia-cli' 'jq' 'curl' 'playerctl' 'swayosd'
+    # The caelestia rice's shell QML is merged onto 2.4.0 and needs that exact
+    # plugin generation. caelestia-shell/libcava are in IgnorePkg on installed
+    # systems; requiring these versions makes Super+U upgrade them IN STEP with
+    # the rice (pacman upgrades an ignored package when a dependency needs it).
+    'caelestia-shell>=2.4.0' 'libcava>=1.0.0' 'qt6-m3shapes-git'
+    'caelestia-cli' 'jq' 'curl' 'playerctl' 'swayosd'
     'cliphist' 'wl-clip-persist' 'bibata-cursor-git' 'hypridle'
     # bite-toys hub + the bundled toys (bitebeat / bitecam / bitemuseum):
     'ffmpeg' 'python' 'python-numpy' 'python-pillow' 'qt6-declarative'
@@ -55,6 +60,9 @@ package() {
     install -m755 bin/bite-os-fix-boot       "$pkgdir/usr/bin/"
     install -m755 bin/bite-os-fix-fastfetch  "$pkgdir/usr/bin/"
     install -m755 bin/bite-os-update         "$pkgdir/usr/bin/"
+    # /etc/skel only reaches NEW accounts; this brings each release into
+    # existing homes, updating only files the user never touched
+    install -m755 bin/bite-os-rice-update    "$pkgdir/usr/bin/"
     install -m755 bin/bite-toys              "$pkgdir/usr/bin/"
 
     # --- bundled toys: the offline half of the bite-toys hub catalog ---
@@ -78,6 +86,9 @@ package() {
     install -m644 branding/issue       "$pkgdir/usr/share/bite-os/"
     install -m644 branding/AUTHORSHIP  "$pkgdir/usr/share/bite-os/"
     install -m644 branding/bite-os-repo.conf "$pkgdir/usr/share/bite-os/"
+    # every skel version ever shipped (tools/gen-skel-hashes.sh, run by
+    # build-all.sh) -- bite-os-rice-update's "did the user touch this?" test
+    install -m644 branding/skel-hashes-past.tsv "$pkgdir/usr/share/bite-os/"
 
     # --- boot splash + login themes ---
     # NOTE: the dest dir MUST be created first — `cp -a plymouth/. <dir>/` fails if

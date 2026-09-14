@@ -33,3 +33,7 @@ pkg/**/*.tar.gz
 *~
 *.pre-*
 *-preopt
+
+# python bytecode (toys run from source)
+__pycache__/
+*.pyc

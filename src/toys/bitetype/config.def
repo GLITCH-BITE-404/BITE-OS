@@ -1,0 +1,61 @@
+# Text you typed correctly, and the body text everywhere else
+text=#cdd6f4
+
+# Words not yet typed, labels, hints
+dim=#45475a
+
+# Highlights: the caret, the active mode, your WPM
+accent=#cba6f7
+
+# Characters you got wrong
+error=#f38ba8
+
+# Confirmations, like "saved"
+good=#a6e3a1
+
+# How many words a RACE test deals you
+# @range 5-500
+words=40
+
+# Keystroke and click sounds
+# @choices on,off
+sfx=on
+
+# How loud the sounds are. Empty follows the shell's own sfx volume.
+# @range 0.0-1.0
+sfx_volume=
+
+# Word list, one word per line. Empty uses the bundled list.
+wordlist=
+
+# Your own keystroke sound (a .wav). Empty borrows serpantinum's.
+type_sound=
+
+# Your own click sound (a .wav). Empty borrows serpantinum's.
+click_sound=
+
+# Character-level effects: hit flashes, miss glitches, breathing caret
+# @choices on,off
+effects=on
+
+# The faint drip behind everything
+# @choices on,off
+rain=on
+
+# Which figlet font ^f and the banner snippet use
+figlet_font=standard
+
+# What a freshly typed character does: resolve out of noise, just flash a
+# colour, or nothing at all
+# @choices flash,scramble,off
+type_effect=flash
+
+# In CODE, press Enter and it indents the next line for you. Turn this off
+# to type every space yourself (Tab toggles it live too).
+# @choices on,off
+auto_indent=on
+
+# In CODE, reject a wrong key instead of letting it advance you. Off means
+# you can type anything (and spam your way to the end).
+# @choices on,off
+code_strict=off

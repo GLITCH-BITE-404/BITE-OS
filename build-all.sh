@@ -87,6 +87,17 @@ command -v paru    >/dev/null || { echo "${c_r}missing paru (needed for AUR pkgs
 command -v mkarchiso >/dev/null || { echo "${c_r}missing archiso — sudo pacman -S archiso${c_0}" >&2; exit 1; }
 ok "makepkg, paru, mkarchiso found"
 
+# --- 2b. fingerprints for bite-os-rice-update --------------------------------
+# Super+U on an EXISTING install only updates rice files the user never touched,
+# judged against every version BITE-OS ever shipped. A missing or stale
+# skel-hashes-past.tsv makes it treat everything as a user edit (nothing
+# updates), so regenerate it on every build, from git history + old packages.
+step "Fingerprinting every skel file version BITE-OS has shipped"
+bash tools/gen-skel-hashes.sh "$HOME/BITE-OS/repo/x86_64" \
+    || { echo "${c_r}gen-skel-hashes failed — existing installs couldn't get rice updates${c_0}" >&2; exit 1; }
+[ -s pkg/bite-os/payload/branding/skel-hashes-past.tsv ] && ok "skel-hashes-past.tsv written" \
+    || { echo "${c_r}skel-hashes-past.tsv missing or empty${c_0}" >&2; exit 1; }
+
 # --- 3. build the local repo (as this user) -----------------------------------
 step "Building local [bite-os] repo (bite-os pkg + AUR incl. vscodium-bin — this is the slow part)"
 bash repo/build-repo.sh

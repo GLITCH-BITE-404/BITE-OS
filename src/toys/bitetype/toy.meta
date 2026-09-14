@@ -1,0 +1,11 @@
+name=bitetype
+version=2.0
+desc=Type-test, free-write, mangle text, and type tiny programs you can run
+category=tool
+author=GLITCH-BITE-404
+exec=run
+preview=--preview
+deps=figlet
+usage=bitetype   ·   F1-F4 modes, ^c quits
+keys=F1:RACE typing test|F2:ZEN free writing|F3:FORGE text tools|F4:CODE type a program and run it|Tab:new test (RACE)|^l:clear (ZEN)|^s:save what you wrote (ZEN)|^u ^l ^t:UPPER lower Title|^r:reverse|^e:l33t|^n:rot13|^s:sort lines|^d:dedupe|^w:trim|^f:figlet|^b:base64|^h:hide the guide (CODE)|^e:open the knobs (CODE)|^p:play the code (CODE)|^n:next snippet (CODE)|^c:quit
+about=Four tools behind one screen, all wearing the launcher's coat -- the frame resolves out of noise when it opens, every keystroke clicks with the sample the launcher types with, the caret breathes, and the WPM counter glides toward the truth instead of snapping to it. RACE deals you random words and colours them per character, flashing accent on each hit, glitching the glyph when you miss, and drawing your speed as a live sparkline underneath. ZEN takes everything away but the text and a word count, and ^s drops it in your Documents. FORGE is the junk drawer: upper, lower, Title, reverse, l33t, rot13, sort, dedupe, trim, figlet and base64, one chord each. CODE is the good one -- it shows you a seven-line program as a ghost you type over, hides the guide when you want to prove you know it, and then runs what you typed so you watch your own matrix rain or starfield take over the screen. Every snippet carries knobs, so you can open a slider panel, retune the speed, colour and density, and play it again without retyping a character. Python and bash both, and you can drop your own snippets in the snippets folder.

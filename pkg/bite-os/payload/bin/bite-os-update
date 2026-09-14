@@ -50,8 +50,19 @@ echo "   official packages with updates: ${C_BOLD}${PENDING}${C_RESET}"
 [ -n "$AURHELPER" ] && echo "   AUR will also be checked via: ${C_BOLD}${AURHELPER}${C_RESET}"
 echo
 
+# The rices, widgets and scripts live in /etc/skel, which only reaches NEW
+# accounts. bite-os-rice-update brings a release into this home and only
+# updates files you never touched (see its header). Runs as you, not root.
+rice_update() {
+    command -v bite-os-rice-update >/dev/null 2>&1 || return 0
+    echo
+    bite-os-rice-update || true
+}
+
 if [ "${PENDING:-0}" -eq 0 ] && [ -z "$AURHELPER" ]; then
     echo "${C_CYAN}Your system is already up to date.${C_RESET}"
+    # a rice update that never got applied still gets applied
+    rice_update
     echo; read -rp "Press Enter to close..."; exit 0
 fi
 

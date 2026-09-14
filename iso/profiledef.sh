@@ -8,7 +8,15 @@ iso_name="bite-os"
 iso_label="BITE_OS_$(date --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y%m)"
 iso_publisher="BITE-OS <https://tiktok.com/@glitch_bite404>"
 iso_application="BITE-OS Live / Install Medium"
-iso_version="1.0"
+# Derived from the bite-os package so the ISO filename can never disagree with
+# what is installed inside it -- the 1.0-vs-1.1-22 drift that shipped once.
+# ../pkg/bite-os/PKGBUILD resolves from both iso/ and the copied .build-profile/.
+_bite_pkgbuild="$(dirname "${BASH_SOURCE[0]}")/../pkg/bite-os/PKGBUILD"
+if [[ -f "$_bite_pkgbuild" ]]; then
+    iso_version="$(awk -F= '/^pkgver=/{v=$2} /^pkgrel=/{r=$2} END{print v"."r}' "$_bite_pkgbuild")"
+else
+    iso_version="1.1.0"   # fallback: never fail the build over a version string
+fi
 install_dir="arch"
 buildmodes=('iso')
 bootmodes=('bios.syslinux.mbr' 'bios.syslinux.eltorito'

@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  ◈ BITE-OS — rice updater  ·  © 2026 GLITCH-BITE-404  ·  // THE SYSTEM BIT YOU
+#  https://github.com/GLITCH-BITE-404/BITE-OS  ·  GPLv3 — keep this notice
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# The bite-os package ships the rices, widgets and scripts into /etc/skel,
+# which only ever reaches NEW user accounts. This brings a new release into an
+# EXISTING home without clobbering anything the user made. One rule:
+#
+#   only update files the user never touched.
+#
+#   your copy matches a version BITE-OS shipped before  -> update it (backed up)
+#   your copy is different (you edited it)               -> keep it, report it
+#   new file in this release                             -> add it
+#   file BITE-OS shipped before but you deleted          -> stay deleted
+#   nothing is ever removed
+#
+# Safety rails:
+#   * live rice dirs (~/.config/hypr, quickshell, ...) are only touched when
+#     your active rice is the rice /etc/skel ships as active -- a serpantinum
+#     update must never land on a live caelestia setup. The vault copies under
+#     ~/.local/share/bite-os/rices/<rice>/ are always handled by the same rule.
+#   * never writes through a symlink (e.g. dirs linked into ~/caelestia)
+#   * refuses to run as root
+#
+#   bite-os-rice-update [--dry-run]
+# Test overrides: BITE_SKEL (default /etc/skel), BITE_HASHES_PAST.
+
+set -uo pipefail
+
+SKEL="${BITE_SKEL:-/etc/skel}"
+PAST="${BITE_HASHES_PAST:-/usr/share/bite-os/skel-hashes-past.tsv}"
+DRY=false; [ "${1:-}" = "--dry-run" ] && DRY=true
+
+C_RESET=$'\e[0m'; C_CYAN=$'\e[38;2;0;255;204m'; C_DIM=$'\e[2m'; C_PEACH=$'\e[38;2;250;179;135m'
+
+[ "$(id -u)" -eq 0 ] && { echo "bite-os-rice-update: run it as your user, not root"; exit 1; }
+[ -d "$SKEL" ] || { echo "no $SKEL — nothing to update"; exit 0; }
+command -v git >/dev/null || { echo "git not installed — skipping rice update"; exit 0; }
+
+TS="$(date +%Y%m%d-%H%M%S)"
+BACKUP="$HOME/.local/share/bite-os/update-backups/$TS"
+LOGDIR="$HOME/.local/state/bite-os"; mkdir -p "$LOGDIR"
+LOG="$LOGDIR/rice-update-$TS.log"
+
+# the rice tool's managed dirs (keep in sync with ~/.config/glitch/bin/rice)
+MANAGED=(.config/hypr .config/quickshell .config/caelestia .config/foot .config/matugen
+         .config/rofi .config/cava .config/serpantinum .local/share/serpantinum .local/state/serpantinum)
+
+skel_active="$(cat "$SKEL/.local/share/bite-os/rices/.active" 2>/dev/null || true)"
+user_active="$(cat "$HOME/.local/share/bite-os/rices/.active" 2>/dev/null || true)"
+live_ok=false
+[ -n "$skel_active" ] && [ "$skel_active" = "$user_active" ] && live_ok=true
+
+is_managed_live() {
+    local p="$1" d
+    for d in "${MANAGED[@]}"; do [[ "$p" == "$d"/* ]] && return 0; done
+    return 1
+}
+
+# every (hash, path) BITE-OS ever shipped -> "you never touched this" test
+declare -A SHIPPED
+if [ -f "$PAST" ]; then
+    while IFS=$'\t' read -r h p; do SHIPPED["$h	$p"]=1; done < "$PAST"
+fi
+
+# "You deleted it" is judged from what THIS home had at the last run, never
+# from history: a path some release shipped is not proof this user ever got it
+# (a 1.1-23 home never had files first shipped in 1.1-27, and skipping those
+# broke the settings popup). First run: missing files are simply added.
+SEEN_FILE="$LOGDIR/rice-update-seen.txt"
+declare -A SEEN
+first_run=true
+if [ -f "$SEEN_FILE" ]; then
+    first_run=false
+    while IFS= read -r p; do SEEN["$p"]=1; done < "$SEEN_FILE"
+fi
+
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+# Unreadable files (e.g. mode 600 in /etc/skel) can't be copied by a normal
+# user anyway -- leave them out rather than let one abort the whole batch.
+( cd "$SKEL" && find . -type f -readable -printf '%P\n' | LC_ALL=C sort ) > "$TMP/list"
+unreadable="$(cd "$SKEL" && find . -type f ! -readable | wc -l)"
+# Fail SAFE: a failed or partial batch would misalign every hash with every
+# path below, so abort with nothing changed instead.
+# Absolute paths + --no-filters: inside some git checkout, relative
+# --stdin-paths resolve from the repo top and .gitattributes could alter the
+# hash; neither may ever change a fingerprint.
+if ! sed "s|^|$SKEL/|" "$TMP/list" | git hash-object --no-filters --stdin-paths > "$TMP/new" \
+   || [ "$(wc -l < "$TMP/new")" -ne "$(wc -l < "$TMP/list")" ]; then
+    echo "bite-os-rice-update: could not fingerprint $SKEL — nothing was changed"
+    exit 0
+fi
+
+updated=0 added=0 kept=0 same=0 deleted=0 notlive=0 linked=0
+: > "$LOG"
+
+while IFS=$'\t' read -r nh p; do
+    case "$p" in
+        .local/share/bite-os/rices/.active|.local/share/bite-os/rices/.saves.log|\
+        .local/share/bite-os/rices/_replaced/*|.local/share/bite-os/rices/_autobackup/*) continue ;;
+    esac
+    if is_managed_live "$p" && ! $live_ok; then
+        notlive=$((notlive + 1)); echo "not-live-rice  $p" >> "$LOG"; continue
+    fi
+    dst="$HOME/$p"
+    # never write through a symlinked file or directory
+    parent="$(dirname "$dst")"
+    if [ -L "$dst" ] || { [ -e "$parent" ] && [ "$(realpath -m "$parent")" != "$(realpath -ms "$parent")" ]; }; then
+        linked=$((linked + 1)); echo "symlinked      $p" >> "$LOG"; continue
+    fi
+    if [ ! -e "$dst" ]; then
+        if [ -n "${SEEN[$p]:-}" ]; then
+            deleted=$((deleted + 1)); echo "you-deleted    $p" >> "$LOG"; continue
+        fi
+        $DRY || { mkdir -p "$parent" && cp --preserve=mode,timestamps "$SKEL/$p" "$dst"; }
+        added=$((added + 1)); echo "added          $p" >> "$LOG"; continue
+    fi
+    uh="$(git hash-object --no-filters "$dst" 2>/dev/null)"
+    if [ "$uh" = "$nh" ]; then same=$((same + 1)); continue; fi
+    if [ -n "${SHIPPED["$uh	$p"]:-}" ]; then
+        if ! $DRY; then
+            mkdir -p "$BACKUP/$(dirname "$p")" && cp --preserve=mode,timestamps "$dst" "$BACKUP/$p" \
+                && cp --preserve=mode,timestamps "$SKEL/$p" "$dst"
+        fi
+        updated=$((updated + 1)); echo "updated        $p" >> "$LOG"
+    else
+        kept=$((kept + 1)); echo "kept-yours     $p" >> "$LOG"
+    fi
+done < <(paste "$TMP/new" "$TMP/list")
+
+# remember which shipped files this home has now, so a later run can tell a
+# deliberate delete from a file the user simply never received
+if ! $DRY; then
+    while IFS= read -r p; do [ -e "$HOME/$p" ] && printf '%s\n' "$p"; done < "$TMP/list" > "$SEEN_FILE.tmp" \
+        && mv -f "$SEEN_FILE.tmp" "$SEEN_FILE"
+fi
+
+$DRY && echo "${C_DIM}(dry run — nothing was changed)${C_RESET}"
+$first_run && ! $DRY && echo "${C_DIM}(first rice update on this account: files you never had were added)${C_RESET}"
+echo "${C_CYAN}==> Rice update${C_RESET}"
+echo "   updated: $updated   added: $added   already current: $same"
+echo "   kept your edits: $kept   stayed deleted: $deleted"
+$live_ok || echo "   ${C_PEACH}live rice dirs left alone ($notlive files): you're on '${user_active:-?}', this release ships '${skel_active:-?}' as active — its vault copy was still updated${C_RESET}"
+[ "$linked" -gt 0 ] && echo "   skipped $linked symlinked paths"
+[ "$updated" -gt 0 ] && ! $DRY && echo "   ${C_DIM}old versions backed up in ${BACKUP/$HOME/\~}${C_RESET}"
+echo "   ${C_DIM}full list: ${LOG/$HOME/\~}${C_RESET}"
+if ! $DRY && $live_ok && [ $((updated + added)) -gt 0 ]; then
+    echo "   restart the shell to load it: Super+Shift+R"
+fi
+exit 0

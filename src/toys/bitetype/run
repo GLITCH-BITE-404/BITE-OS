@@ -1,0 +1,894 @@
+#!/usr/bin/env python3
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  ◈ BITE-OS  ·  © 2026 GLITCH-BITE-404  ·  // THE SYSTEM BIT YOU
+#  https://github.com/GLITCH-BITE-404/BITE-OS  ·  GPLv3 — keep this notice
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""bitetype — a writing playground with the launcher's feel, in the terminal.
+
+  RACE   random words, live WPM + accuracy, per-character colour
+  ZEN    nothing but the text and a word count
+  FORGE  do things to text: case, reverse, l33t, rot13, figlet, base64
+  CODE   type a tiny program with a guide, tweak its knobs, then run it
+"""
+import os, sys, time, random, termios, tty, select, shutil, subprocess, base64, math, glob
+
+# ─── settings (the hub hands these in as TOY_<KEY>) ──────────────────────────
+def env(k, d):  return os.environ.get("TOY_" + k, d)
+def envf(k, d):
+    try: return float(env(k, str(d)))
+    except ValueError: return d
+def envi(k, d):
+    try: return int(float(env(k, str(d))))
+    except ValueError: return d
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+
+def hexrgb(h, fb=(200, 200, 200)):
+    h = (h or "").strip().lstrip("#")
+    if len(h) != 6: return fb
+    try: return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+    except ValueError: return fb
+
+C_TEXT   = hexrgb(env("TEXT",   "#cdd6f4"), (205, 214, 244))
+C_DIM    = hexrgb(env("DIM",    "#45475a"), (69, 71, 90))
+C_ACCENT = hexrgb(env("ACCENT", "#cba6f7"), (203, 166, 247))
+C_ERROR  = hexrgb(env("ERROR",  "#f38ba8"), (243, 139, 168))
+C_GOOD   = hexrgb(env("GOOD",   "#a6e3a1"), (166, 227, 161))
+C_BLACK  = (0, 0, 0)
+N_WORDS  = max(5, min(500, envi("WORDS", 40)))
+SFX_ON   = env("SFX", "on").lower() not in ("off", "0", "false", "no")
+def _shell_sfx():
+    """Match the shell exactly: the launcher plays type.wav through
+    Sounds.playSfx, which is pw-play --volume=<general.sfxVolume / 100>.
+    Defaulting to 0.35 made the identical sample play at a third the level,
+    which is why it did not sound like the launcher."""
+    try:
+        import json
+        with open(os.path.expanduser("~/.config/serpantinum/settings.json"),
+                  encoding="utf-8") as f:
+            g = json.load(f).get("general", {})
+        if g.get("muteSfx") is True: return 0.0
+        return max(0.0, min(1.0, float(g.get("sfxVolume", 100)) / 100.0))
+    except Exception:
+        return 1.0
+
+SFX_VOL  = max(0.0, min(1.0, envf("SFX_VOLUME", _shell_sfx())))
+FX_ON    = env("EFFECTS", "on").lower() not in ("off", "0", "false", "no")
+RAIN_ON  = env("RAIN", "on").lower() not in ("off", "0", "false", "no")
+FIG_FONT = env("FIGLET_FONT", "standard")
+# how a freshly typed character behaves: scramble (resolves out of noise),
+# flash (colour only), or off
+TYPE_FX  = env("TYPE_EFFECT", "flash").lower()
+AUTO_IND = env("AUTO_INDENT", "on").lower() not in ("off", "0", "false", "no")
+# strict: a wrong key is rejected instead of advancing you, so you cannot hold
+# a key down and "finish" the program without typing it
+# off by default: type whatever you type, wrong characters and all. Turn it
+# on to have wrong keys rejected instead of inserted.
+CODE_STRICT = env("CODE_STRICT", "off").lower() in ("on", "1", "true", "yes")
+
+SERP = os.path.expanduser("~/.local/share/serpantinum/src/assets/sounds")
+def _snd(key, default):
+    p = env(key, "") or default
+    return p if p and os.path.isfile(p) else ""
+WAV_TYPE  = _snd("TYPE_SOUND",  os.path.join(SERP, "reusables/input/type.wav"))
+WAV_CLICK = _snd("CLICK_SOUND", os.path.join(SERP, "reusables/clickbutton/click.wav"))
+
+# ─── colour + screen primitives ──────────────────────────────────────────────
+ESC = "\x1b"
+def fg(c):  return f"{ESC}[38;2;{c[0]};{c[1]};{c[2]}m"
+def bg(c):  return f"{ESC}[48;2;{c[0]};{c[1]};{c[2]}m"
+RESET, BOLD = f"{ESC}[0m", f"{ESC}[1m"
+GLITCH = "!<>-_\\/[]{}—=+*^?#________"
+
+def mix(a, b, t):
+    t = max(0.0, min(1.0, t))
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+def ease_out(t):  return 1 - (1 - t) ** 3
+
+# ─── sound: fire and forget, never block a keystroke ─────────────────────────
+DN = subprocess.DEVNULL
+def play(path, vol=1.0):
+    if not (SFX_ON and path): return
+    try:
+        subprocess.Popen(["pw-play", f"--volume={SFX_VOL*vol:.3f}", path],
+                         stdout=DN, stderr=DN, start_new_session=True)
+    except Exception: pass
+def tick():  play(WAV_TYPE)
+def click(): play(WAV_CLICK, 1.2)
+
+# ─── words ───────────────────────────────────────────────────────────────────
+def load_words():
+    p = env("WORDLIST", "") or os.path.join(HERE, "words.txt")
+    try:
+        with open(p, encoding="utf-8") as f:
+            w = [x.strip() for x in f if x.strip()]
+        if len(w) > 20: return w
+    except OSError: pass
+    return ["the","and","for","that","with","this","from","have","were","they"]
+WORDS = load_words()
+
+# ─── snippets ────────────────────────────────────────────────────────────────
+class Snippet:
+    def __init__(self, path):
+        self.path = path
+        self.name = os.path.basename(path)
+        self.lang = "python"
+        self.knobs = []            # (NAME, lo, hi, step)
+        body = []
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("#!"):
+                    meta = line[2:].strip()
+                    if meta.startswith("name:"): self.name = meta[5:].strip()
+                    elif meta.startswith("lang:"): self.lang = meta[5:].strip()
+                    elif meta.startswith("knob"):
+                        p = meta.split()
+                        if len(p) >= 5:
+                            self.knobs.append((p[1], float(p[2]), float(p[3]), float(p[4])))
+                else:
+                    body.append(line.rstrip("\n"))
+        while body and not body[0].strip(): body.pop(0)
+        self.code = "\n".join(body).rstrip()
+
+def load_snippets():
+    out = []
+    for p in sorted(glob.glob(os.path.join(HERE, "snippets", "*"))):
+        if os.path.isfile(p) and not p.endswith(".pyc"):
+            try: out.append(Snippet(p))
+            except Exception: pass
+    return out
+SNIPPETS = load_snippets()
+
+# ─── terminal ────────────────────────────────────────────────────────────────
+class Term:
+    def __enter__(self):
+        self.fd = sys.stdin.fileno()
+        self.old = termios.tcgetattr(self.fd)
+        tty.setraw(self.fd)
+        sys.stdout.write(f"{ESC}[?1049h{ESC}[?25l")
+        sys.stdout.flush()
+        return self
+    def __exit__(self, *a): self.restore()
+    def restore(self):
+        sys.stdout.write(f"{ESC}[?25h{ESC}[?1049l{RESET}")
+        sys.stdout.flush()
+        termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
+    def suspend(self):
+        """Hand the terminal back so a snippet can draw on a clean screen."""
+        sys.stdout.write(f"{ESC}[?25h{ESC}[?1049l{RESET}"); sys.stdout.flush()
+        termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
+    def resume(self):
+        tty.setraw(self.fd)   # cbreak during playback, raw again for the UI
+        sys.stdout.write(f"{ESC}[?1049h{ESC}[?25l{ESC}[2J"); sys.stdout.flush()
+
+    # os.read on the raw fd, never sys.stdin.read: sys.stdin keeps its own
+    # buffer, so select() on the fd can say "nothing there" while the rest of
+    # an escape sequence is already buffered. That made every F-key vanish.
+    def _raw(self, timeout):
+        if not select.select([self.fd], [], [], timeout)[0]: return None
+        try: data = os.read(self.fd, 1)
+        except OSError: return None
+        if not data: return None
+        try: return data.decode("utf-8")
+        except UnicodeDecodeError:
+            extra = b""
+            for _ in range(3):
+                if not select.select([self.fd], [], [], 0.002)[0]: break
+                extra += os.read(self.fd, 1)
+                try: return (data + extra).decode("utf-8")
+                except UnicodeDecodeError: continue
+            return None
+
+    def key(self, timeout=0.0):
+        b = self._raw(timeout)
+        if b is None: return None
+        if b != ESC: return b
+        nxt = self._raw(0.004)
+        if nxt is None: return "ESC"
+        if nxt == "O":
+            c = self._raw(0.004)
+            return {"P":"F1","Q":"F2","R":"F3","S":"F4"}.get(c)
+        if nxt == "[":
+            rest = ""
+            while True:
+                c = self._raw(0.004)
+                if c is None: break
+                rest += c
+                if c.isalpha() or c == "~": break
+            return {"A":"UP","B":"DOWN","C":"RIGHT","D":"LEFT",
+                    "11~":"F1","12~":"F2","13~":"F3","14~":"F4",
+                    "1P":"F1","1Q":"F2","1R":"F3","1S":"F4"}.get(rest)
+        return None
+
+def size():
+    s = shutil.get_terminal_size((100, 30))
+    return max(40, s.columns), max(12, s.lines)
+
+def vislen(s):
+    n, i = 0, 0
+    while i < len(s):
+        if s[i] == ESC:
+            while i < len(s) and s[i] != "m": i += 1
+        else: n += 1
+        i += 1
+    return n
+
+def wrap(text, width):
+    out = []
+    for para in text.split("\n"):
+        if not para: out.append(""); continue
+        cur = ""
+        for wd in para.split(" "):
+            if len(cur) + len(wd) + 1 > width: out.append(cur); cur = wd
+            else: cur = wd if not cur else cur + " " + wd
+        out.append(cur)
+    return out
+
+# ─── text transforms ─────────────────────────────────────────────────────────
+def rot13(t):
+    o = []
+    for c in t:
+        if "a" <= c <= "z": o.append(chr((ord(c)-97+13) % 26 + 97))
+        elif "A" <= c <= "Z": o.append(chr((ord(c)-65+13) % 26 + 65))
+        else: o.append(c)
+    return "".join(o)
+def leet(t):
+    m = {"a":"4","e":"3","i":"1","o":"0","s":"5","t":"7","g":"9","b":"8"}
+    return "".join(m.get(c.lower(), c) for c in t)
+def dedupe(t):
+    seen, out = set(), []
+    for l in t.split("\n"):
+        if l not in seen: seen.add(l); out.append(l)
+    return "\n".join(out)
+def figlet(t):
+    if not shutil.which("figlet"): return t
+    try:
+        r = subprocess.run(["figlet", "-f", FIG_FONT, "-w", str(size()[0]-6), t[:60]],
+                           capture_output=True, text=True, timeout=3)
+        return r.stdout.rstrip("\n") or t
+    except Exception: return t
+
+# ─── the app ─────────────────────────────────────────────────────────────────
+class App:
+    MODES = ("RACE", "ZEN", "FORGE", "CODE")
+
+    def __init__(self):
+        self.mode = 0
+        self.running = True
+        self.born = time.time()
+        self.t = 0.0
+        self.mode_at = time.time()      # drives the mode-change wipe
+        self.note, self.note_at = "", 0.0
+        # race
+        self.target = ""; self.typed = ""
+        self.started = 0.0
+        self.wpm = self.wpm_shown = 0.0
+        self.acc = 100.0
+        self.streak = 0
+        self.hit_at = {}                # index -> when it was typed (settle fx)
+        self.err_at = {}                # index -> when it was missed (glitch fx)
+        self.spark = []
+        self.new_race()
+        # zen / forge
+        self.zen = ""; self.forge = ""
+        self.zen_at = []        # one timestamp per zen char
+        self.last_err = -9.0    # drives the line shake
+        # code
+        self.snip_i = 0
+        self.code = ""
+        self.ghost = True
+        self.knobs_open = False
+        self.auto_indent = AUTO_IND
+        self.code_err = -9.0
+        self.code_hit = {}
+        self.knob_i = 0
+        self.knob_vals = {}
+        self.load_snippet(0)
+        # background rain
+        w, h = size()
+        self.rain = [random.randint(0, h) for _ in range(w)]
+
+    # ── race ────────────────────────────────────────────────────────────────
+    def new_race(self):
+        self.target = " ".join(random.choice(WORDS) for _ in range(N_WORDS))
+        self.typed = ""; self.started = 0.0
+        self.wpm = self.wpm_shown = 0.0; self.acc = 100.0
+        self.streak = 0; self.hit_at.clear(); self.err_at.clear()
+        self.spark = []; self.mode_at = time.time()
+
+    def feed(self, ch):
+        if len(self.typed) >= len(self.target): return
+        if not self.started: self.started = time.time()
+        i = len(self.typed)
+        if ch == self.target[i]:
+            self.streak += 1; self.hit_at[i] = self.t
+        else:
+            self.streak = 0; self.err_at[i] = self.t; self.last_err = self.t
+        self.typed += ch
+        tick(); self.recalc()
+        if len(self.typed) >= len(self.target):
+            self.say(f"done · {self.wpm:.0f} wpm · {self.acc:.0f}% — Tab for another")
+
+    def recalc(self):
+        correct = sum(1 for i, c in enumerate(self.typed) if c == self.target[i])
+        self.acc = 100.0 if not self.typed else correct / len(self.typed) * 100.0
+        mins = (time.time() - self.started) / 60.0 if self.started else 0
+        self.wpm = (correct / 5.0) / mins if mins > 0 else 0.0
+
+    # ── code ────────────────────────────────────────────────────────────────
+    def load_snippet(self, i):
+        if not SNIPPETS:
+            self.code = ""; return
+        self.snip_i = i % len(SNIPPETS)
+        s = SNIPPETS[self.snip_i]
+        self.code = ""
+        self.code_hit = {}
+        self.code_err = -9.0
+        self.knob_vals = {}
+        for name, lo, hi, step in s.knobs:
+            self.knob_vals[name] = self.knob_default(s, name)
+        self.knob_i = 0
+        self.mode_at = time.time()
+
+    @property
+    def snip(self): return SNIPPETS[self.snip_i] if SNIPPETS else None
+
+    def knob_default(self, s, name):
+        """Read the knob's starting value out of the snippet's assignment line."""
+        for line in s.code.split("\n"):
+            if line.startswith(tuple(k[0] for k in s.knobs)) and "=" in line:
+                names = [x.strip() for x in line.split("=")[0].split(",")]
+                vals  = [x.strip() for x in line.split("=", 1)[1].split(",")]
+                if name in names:
+                    try: return float(vals[names.index(name)])
+                    except (ValueError, IndexError): return 0.0
+        return 0.0
+
+    def knobbed(self, src):
+        s = self.snip
+        if not s or not s.knobs: return src
+        names = [k[0] for k in s.knobs]
+        out = []
+        for line in src.split("\n"):
+            head = line.split("=")[0]
+            if "=" in line and all(n in head for n in names):
+                vals = []
+                for n in names:
+                    v = self.knob_vals.get(n, 0.0)
+                    vals.append(str(int(v)) if float(v).is_integer() else f"{v:g}")
+                out.append(", ".join(names) + " = " + ", ".join(vals))
+            else:
+                out.append(line)
+        return "\n".join(out)
+
+    def code_with_knobs(self):
+        """The typed code, with the knobs line rewritten to the current values."""
+        s = self.snip
+        src = self.code if self.code.strip() else s.code
+        if not s or not s.knobs: return src
+        names = [k[0] for k in s.knobs]
+        out = []
+        for line in src.split("\n"):
+            head = line.split("=")[0]
+            if "=" in line and all(n in head for n in names):
+                vals = []
+                for n in names:
+                    v = self.knob_vals.get(n, 0.0)
+                    vals.append(str(int(v)) if float(v).is_integer() else f"{v:g}")
+                out.append(", ".join(names) + " = " + ", ".join(vals))
+            else:
+                out.append(line)
+        return "\n".join(out)
+
+    def code_done(self):
+        """Typed code counts as finished when it matches the target, ignoring
+        trailing whitespace on each line (auto-indent adds some)."""
+        s = self.snip
+        if not s: return False
+        a = [l.rstrip() for l in self.code.split("\n")]
+        b = [l.rstrip() for l in s.code.split("\n")]
+        while a and not a[-1]: a.pop()
+        while b and not b[-1]: b.pop()
+        return a == b
+
+    def play_code(self, term, force_original=False):
+        s = self.snip
+        if not s: return
+        # Running half-typed code just throws a SyntaxError past you too fast
+        # to read. Until yours compiles, play the reference so ^p always shows
+        # something -- and say which one is running.
+        mine = self.code_done()
+        if not mine and not force_original:
+            self.say("finish typing it first — ^o previews the original")
+            return
+        src = self.code_with_knobs() if mine else self.knobbed(s.code)
+        ext = ".sh" if s.lang == "bash" else ".py"
+        tmp = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "bitetype-play" + ext)
+        try:
+            with open(tmp, "w", encoding="utf-8") as f: f.write(src)
+        except OSError as e:
+            self.say(f"could not write: {e}"); return
+        cmd = ["bash", tmp] if s.lang == "bash" else [sys.executable, tmp]
+        if s.lang == "python" and "sys.argv[1]" in src: cmd.append(FIG_FONT)
+
+        # Playback runs in cbreak, not raw: output post-processing stays on so
+        # a snippet printing "\n" still returns the carriage, while input stays
+        # unbuffered so ANY key can stop it. subprocess.run() gave no way out
+        # at all -- you had to sit through all 140 frames.
+        term.suspend()
+        stopped = False
+        try:
+            sys.stdout.write(f"{ESC}[2J{ESC}[H{ESC}[2;3H")
+            sys.stdout.write(fg(C_DIM) + "any key stops it" + RESET)
+            sys.stdout.flush(); time.sleep(0.45)
+            sys.stdout.write(f"{ESC}[2J{ESC}[H"); sys.stdout.flush()
+            tty.setcbreak(term.fd)
+            proc = subprocess.Popen(cmd)
+            deadline = time.time() + 40
+            while True:
+                if proc.poll() is not None: break
+                if time.time() > deadline:
+                    proc.terminate(); stopped = True; break
+                if select.select([term.fd], [], [], 0.05)[0]:
+                    try: os.read(term.fd, 64)
+                    except OSError: pass
+                    proc.terminate()
+                    try: proc.wait(timeout=2)
+                    except subprocess.TimeoutExpired: proc.kill()
+                    stopped = True
+                    break
+            rc = proc.returncode
+            if not stopped and rc not in (0, -2, -15, 130):
+                sys.stdout.write("\n\n  it errored above — any key to go back ")
+                sys.stdout.flush()
+                select.select([sys.stdin], [], [], 30)
+                try: os.read(term.fd, 16)
+                except OSError: pass
+        except KeyboardInterrupt:
+            # ^C stops the snippet, never the toy
+            try: proc.terminate()
+            except Exception: pass
+            stopped = True
+        except Exception as e:
+            sys.stdout.write(f"\n{e}\n"); sys.stdout.flush(); time.sleep(2.0)
+        finally:
+            term.resume()
+            if stopped:
+                self.say("stopped")
+            else:
+                self.say("played yours · ^e knobs · ^p again" if mine
+                         else "played the original · ^e knobs · ^o again")
+
+    # ── misc ────────────────────────────────────────────────────────────────
+    def say(self, m): self.note, self.note_at = m, time.time()
+
+    def transform(self, fn, label):
+        try:
+            self.forge = fn(self.forge); self.say(label); click()
+        except Exception as e:
+            self.say(f"{label} failed: {e}")
+
+    def set_mode(self, m):
+        if m == self.mode: return
+        self.mode = m; self.mode_at = time.time(); click()
+        if m == 0: self.new_race()
+
+    # ── render ──────────────────────────────────────────────────────────────
+    def draw(self):
+        w, h = size()
+        if len(self.rain) != w: self.rain = [random.randint(0, h) for _ in range(w)]
+        L = []                                   # one entry per screen line
+        intro = ease_out(min(1.0, (time.time() - self.born) / 0.5))
+        wipe  = ease_out(min(1.0, (time.time() - self.mode_at) / 0.28))
+
+        def P(c, t=1.0):                          # colour, faded by the intro
+            return fg(mix(C_BLACK, c, intro * t))
+
+        # header ---------------------------------------------------------
+        pills = []
+        for i, m in enumerate(self.MODES):
+            on = i == self.mode
+            pills.append(f"{P(C_ACCENT if on else C_DIM)}{BOLD if on else ''}"
+                         f"[F{i+1} {m}]{RESET}")
+        left = " ".join(pills)
+        self.wpm_shown += (self.wpm - self.wpm_shown) * 0.14
+        if self.mode == 1:
+            right = f"{P(C_ACCENT)}{BOLD}{len(self.zen.split())}{RESET}{P(C_DIM)} words{RESET}"
+        elif self.mode == 2:
+            right = f"{P(C_DIM)}{len(self.forge)} chars{RESET}"
+        elif self.mode == 3:
+            s = self.snip
+            done = len(self.code) >= len(s.code) if s else False
+            right = (f"{P(C_GOOD if done else C_DIM)}{len(self.code)}/{len(s.code) if s else 0}"
+                     f"{RESET}{P(C_DIM)} · {s.name if s else '-'} · {s.lang if s else ''}{RESET}")
+        else:
+            n = max(0, len(self.target) - len(self.typed))
+            streak_c = mix(C_TEXT, C_GOOD, min(1.0, self.streak / 25.0))
+            right = (f"{P(C_ACCENT)}{BOLD}{self.wpm_shown:>3.0f}{RESET}{P(C_DIM)} wpm  {RESET}"
+                     f"{P(streak_c)}{self.acc:>3.0f}%{RESET}{P(C_DIM)} acc  {n:>3} left{RESET}")
+        L.append(" " + left + " " * max(1, w - vislen(left) - vislen(right) - 2) + right)
+        L.append(P(C_DIM) + " " + "─" * (w - 2) + RESET)
+
+        body_h = h - 4
+        if   self.mode == 0: body = self.race_lines(w, body_h, P)
+        elif self.mode == 1: body = self.zen_lines(w, body_h, P)
+        elif self.mode == 2: body = self.forge_lines(w, body_h, P)
+        else:                body = self.code_lines(w, body_h, P)
+
+        # mode wipe: reveal the body left-to-right on a switch
+        if wipe < 1.0:
+            cut = int(w * wipe)
+            body = [ln if vislen(ln) <= cut else self.cut(ln, cut) for ln in body]
+        L.extend(body[:body_h])
+        while len(L) < h - 1: L.append("")
+
+        note = self.note if time.time() - self.note_at < 3.5 else ""
+        hints = {0: "F1-F4 mode · Tab new test · ^c quit",
+                 1: "F1-F4 mode · ^l clear · ^s save · ^c quit",
+                 2: "F1-F4 mode · ^u ^l ^t ^r ^e ^n ^s ^d ^w ^f ^b · ^k clear · ^c quit",
+                 3: "F1-F4 mode · ^h guide · Tab indent · ^e knobs · ^p play yours · ^o original · ^n next"}[self.mode]
+        L.append(P(C_GOOD)+" "+note[:w-2]+RESET if note else P(C_DIM)+" "+hints[:w-2]+RESET)
+
+        # paint: home + per-line erase, never a full clear — that is what
+        # made the old version flicker on every keystroke.
+        out = [f"{ESC}[H"]
+        rows = L[:h]
+        for i, ln in enumerate(rows):
+            # no newline after the final row: emitting one scrolls the screen
+            # up by a line every single frame.
+            out.append(ln + f"{ESC}[K" + ("\r\n" if i < len(rows) - 1 else ""))
+        out.append(f"{ESC}[J")
+        sys.stdout.write("".join(out)); sys.stdout.flush()
+
+    def cut(self, s, n):
+        """Truncate to n visible cells, keeping escape sequences intact."""
+        out, seen, i = [], 0, 0
+        while i < len(s) and seen < n:
+            if s[i] == ESC:
+                j = i
+                while j < len(s) and s[j] != "m": j += 1
+                out.append(s[i:j+1]); i = j + 1
+            else:
+                out.append(s[i]); seen += 1; i += 1
+        return "".join(out) + RESET
+
+    def rain_bg(self, w, h, P):
+        """A very faint drip behind everything. Cheap: one cell per column."""
+        if not (RAIN_ON and FX_ON): return {}
+        cells = {}
+        for x in range(0, w, 3):
+            if random.random() < 0.08: self.rain[x] = (self.rain[x] + 1) % max(1, h)
+            y = self.rain[x] % max(1, h)
+            cells[(y, x)] = fg(mix(C_BLACK, C_DIM, 0.55)) + random.choice(GLITCH) + RESET
+        return cells
+
+    def race_lines(self, w, h, P):
+        margin = 3
+        width = w - margin * 2
+        lines, cur = [], ""
+        for wd in self.target.split(" "):
+            if len(cur) + len(wd) + 1 > width: lines.append(cur); cur = wd
+            else: cur = wd if not cur else cur + " " + wd
+        if cur: lines.append(cur)
+
+        starts, acc = [], 0
+        for ln in lines: starts.append(acc); acc += len(ln) + 1
+        cur_line = 0
+        for i, st in enumerate(starts):
+            if len(self.typed) >= st: cur_line = i
+        first = max(0, cur_line - 1)
+        show = lines[first:first + 6]
+
+        out = [""] * 2
+        for li, ln in enumerate(show):
+            base = starts[first + li]
+            row = " " * margin
+            for i, ch in enumerate(ln):
+                gi = base + i
+                if gi < len(self.typed):
+                    ok = self.typed[gi] == ch
+                    if not ok:
+                        # the original: a short glyph flicker, nothing louder
+                        age = self.t - self.err_at.get(gi, -9)
+                        if FX_ON and age < 0.35:
+                            row += P(C_ERROR) + random.choice(GLITCH)
+                        else:
+                            row += P(C_ERROR) + (ch if ch != " " else "_")
+                    else:
+                        age = self.t - self.hit_at.get(gi, -9)
+                        if FX_ON and TYPE_FX != "off" and age < 0.22:
+                            k = age / 0.22
+                            glyph = ch
+                            if TYPE_FX == "scramble" and k < 0.45:
+                                glyph = random.choice(GLITCH)   # resolves into place
+                            row += (fg(mix(C_ACCENT, C_TEXT, k)) + (BOLD if k < 0.5 else "")
+                                    + glyph + RESET)
+                        else:
+                            row += P(C_TEXT) + ch
+                elif gi == len(self.typed):
+                    pulse = 0.55 + 0.45 * math.sin(self.t * 9)
+                    row += (bg(mix(C_BLACK, C_ACCENT, pulse)) + fg(C_BLACK) + BOLD
+                            + (ch if ch != " " else " ") + RESET)
+                elif gi == len(self.typed) + 1 and FX_ON:
+                    row += fg(mix(C_DIM, C_TEXT, 0.35)) + ch + RESET   # next-up glow
+                else:
+                    row += P(C_DIM) + ch
+            out.append(row + RESET)
+
+        out.append("")
+        if not self.started:
+            out.append(" " * margin + P(C_DIM) + "start typing" + RESET)
+        else:
+            self.spark.append(self.wpm)
+            if len(self.spark) > w - margin * 2: self.spark.pop(0)
+            combo = ""
+            if self.streak >= 8:
+                combo = ("  " + fg(mix(C_GOOD, C_ACCENT, min(1.0, self.streak / 60)))
+                         + BOLD + f"x{self.streak}" + RESET)
+            out.append(" " * margin + self.sparkline(self.spark, P) + combo)
+        return out
+
+    def sparkline(self, vals, P):
+        if len(vals) < 2: return ""
+        bars = "▁▂▃▄▅▆▇█"
+        hi = max(max(vals), 1.0)
+        s = "".join(bars[min(7, int(v / hi * 7))] for v in vals[-120:])
+        return P(C_ACCENT, 0.75) + s + RESET
+
+    def zen_lines(self, w, h, P):
+        out = [""]
+        if not self.zen:
+            pulse = 0.5 + 0.5 * math.sin(self.t * 6)
+            out.append("   " + bg(mix(C_BLACK, C_ACCENT, pulse)) + " " + RESET)
+            out.append(""); out.append("   " + P(C_DIM) + "just write" + RESET)
+            return out
+
+        # Wrap while carrying each character's real index, so the fade can be
+        # keyed off when that exact character was typed. The previous version
+        # computed the index arithmetically and got it wrong, which is why
+        # nothing ever animated here.
+        rows, row, col = [], [], 0
+        limit = w - 6
+        for gi, ch in enumerate(self.zen):
+            if ch == "\n":
+                rows.append(row); row, col = [], 0; continue
+            if col >= limit:
+                rows.append(row); row, col = [], 0
+            row.append((gi, ch)); col += 1
+        rows.append(row)
+
+        for r in rows[-(h - 3):]:
+            line = "   "
+            for gi, ch in r:
+                age = self.t - self.zen_at[gi] if gi < len(self.zen_at) else 9
+                if FX_ON and age < 0.6:
+                    k = age / 0.6
+                    glyph = ch
+                    if TYPE_FX == "scramble" and k < 0.3 and not ch.isspace():
+                        glyph = random.choice(GLITCH)
+                    line += fg(mix(C_ACCENT, C_TEXT, k)) + glyph + RESET
+                else:
+                    line += P(C_TEXT) + ch
+            out.append(line + RESET)
+        pulse = 0.5 + 0.5 * math.sin(self.t * 7)
+        if out: out[-1] += bg(mix(C_BLACK, C_ACCENT, pulse)) + " " + RESET
+        return out
+
+    def forge_lines(self, w, h, P):
+        out = [""]
+        if not self.forge:
+            out.append("   " + P(C_DIM) + "FORGE — type or paste text here, then a chord below rewrites it" + RESET)
+            out.append("")
+            out.append("   " + P(C_DIM) + "e.g. type  bite os  then ^u for BITE OS, or ^f for big ASCII letters" + RESET)
+        else:
+            for ln in wrap(self.forge, w - 6)[:h - 4]:
+                out.append("   " + P(C_TEXT) + ln + RESET)
+        out.append("")
+        keys = [("^u","UPPER"),("^l","lower"),("^t","Title"),("^r","reverse"),("^e","l33t"),
+                ("^n","rot13"),("^s","sort"),("^d","dedupe"),("^w","trim"),("^f","figlet")]
+        out.append("   " + "  ".join(f"{P(C_ACCENT)}{k}{RESET}{P(C_DIM)}·{n}{RESET}"
+                                     for k, n in keys))
+        return out
+
+    def code_lines(self, w, h, P):
+        s = self.snip
+        if not s: return ["", "   " + P(C_DIM) + "no snippets found" + RESET]
+        out = [""]
+        tgt = s.code
+        typed = self.code
+        # the program, ghosted ahead of the caret
+        for li, tline in enumerate(tgt.split("\n")[:h - 6]):
+            base = sum(len(x) + 1 for x in tgt.split("\n")[:li])
+            row = "   "
+            for i, ch in enumerate(tline):
+                gi = base + i
+                if gi < len(typed):
+                    ok = typed[gi] == ch
+                    if ok:
+                        age = self.t - self.code_hit.get(gi, -9)
+                        if FX_ON and TYPE_FX != "off" and age < 0.22:
+                            k = age / 0.22
+                            row += (fg(mix(C_ACCENT, C_TEXT, k))
+                                    + (BOLD if k < 0.5 else "") + ch + RESET)
+                        else:
+                            row += P(C_TEXT) + ch
+                    else:
+                        # what you wrote, not what you should have written
+                        row += P(C_ERROR) + (typed[gi] if typed[gi].isprintable() else "?")
+                elif gi == len(typed):
+                    pulse = 0.6 + 0.4 * math.sin(self.t * 7)
+                    row += bg(mix(C_BLACK, C_ACCENT, pulse)) + fg(C_BLACK) + (ch or " ") + RESET
+                else:
+                    row += (P(C_DIM) + ch) if self.ghost else " "
+            out.append(row + RESET)
+        out.append("")
+        # knobs
+        if self.knobs_open and s.knobs:
+            for i, (name, lo, hi_, st) in enumerate(s.knobs):
+                v = self.knob_vals.get(name, 0)
+                sel = i == self.knob_i
+                frac = 0 if hi_ == lo else (v - lo) / (hi_ - lo)
+                bar = "─" * int(frac * 18)
+                out.append("   " + (P(C_ACCENT) if sel else P(C_DIM)) +
+                           f"{'▸' if sel else ' '} {name:<8}" +
+                           P(C_ACCENT if sel else C_DIM) + f"{bar:<18}" +
+                           P(C_TEXT if sel else C_DIM) + f" {v:g}" + RESET)
+            out.append("   " + P(C_DIM) + "↑↓ pick · ←→ change · ^e close · ^p play" + RESET)
+        else:
+            if self.code_done():
+                out.append("   " + P(C_GOOD) + "yours compiles — ^p runs it" + RESET)
+            else:
+                out.append("   " + P(C_DIM) + "type it out · ^h hides the guide · "
+                           + "^o previews the original" + RESET)
+        return out
+
+    # ── input ───────────────────────────────────────────────────────────────
+    def key(self, k, term):
+        if k is None: return
+        if k in ("\x03", "ESC"): self.running = False; return
+        if k in ("F1", "F2", "F3", "F4"):
+            self.set_mode(int(k[1]) - 1); return
+
+        if self.mode == 0:
+            if k == "\t": self.new_race(); click(); return
+            if k in ("\x7f", "\b"):
+                self.typed = self.typed[:-1]; self.recalc(); return
+            if len(k) == 1 and k.isprintable(): self.feed(k)
+            return
+
+        if self.mode == 1:
+            if k == "\x0c": self.zen = ""; self.zen_at = []; click(); self.say("cleared"); return
+            if k == "\x13": self.save_zen(); return
+            if k in ("\x7f", "\b"):
+                self.zen = self.zen[:-1]
+                if self.zen_at: self.zen_at.pop()
+                return
+            if k == "\r": self.zen += "\n"; self.zen_at.append(self.t); tick(); return
+            if k.isprintable(): self.zen += k; self.zen_at.append(self.t); tick()
+            return
+
+        if self.mode == 2:
+            table = {
+                "\x15": (str.upper, "UPPER"), "\x0c": (str.lower, "lower"),
+                "\x14": (str.title, "Title"), "\x12": (lambda t: t[::-1], "reversed"),
+                "\x05": (leet, "l33t"),       "\x0e": (rot13, "rot13"),
+                "\x13": (lambda t: "\n".join(sorted(t.split("\n"))), "sorted"),
+                "\x04": (dedupe, "deduped"),
+                "\x17": (lambda t: "\n".join(x.strip() for x in t.split("\n")), "trimmed"),
+                "\x06": (figlet, "figlet"),
+                "\x02": (lambda t: base64.b64encode(t.encode()).decode(), "base64"),
+            }
+            if k in table: fn, lb = table[k]; self.transform(fn, lb); return
+            if k == "\x0b": self.forge = ""; click(); self.say("cleared"); return
+            if k in ("\x7f", "\b"): self.forge = self.forge[:-1]; return
+            if k == "\r": self.forge += "\n"; tick(); return
+            if k.isprintable(): self.forge += k; tick()
+            return
+
+        # CODE
+        s = self.snip
+        if k == "\x0e":                                  # ^n next snippet
+            self.load_snippet(self.snip_i + 1); click(); self.code = ""; self.code_hit = {}
+            self.say(f"{self.snip.name} · {self.snip.lang}"); return
+        if k == "\x07":                                  # ^g toggle guide (alt)
+            self.ghost = not self.ghost; click(); return
+        if k == "\x08":                                  # ^h toggle guide
+            self.ghost = not self.ghost; click()
+            self.say("guide " + ("on" if self.ghost else "off")); return
+        if k == "\x09":                                  # ^i / Tab: auto-indent
+            self.auto_indent = not self.auto_indent; click()
+            self.say("auto-indent " + ("on" if self.auto_indent else "off — you type it")); return
+        if k == "\x05":                                  # ^e knobs
+            if s and s.knobs:
+                self.knobs_open = not self.knobs_open; click()
+            else:
+                self.say("this one has no knobs")
+            return
+        if k == "\x10":                                  # ^p play what you typed
+            self.play_code(term); return
+        if k == "\x0f":                                  # ^o preview the original
+            self.play_code(term, force_original=True); return
+        if self.knobs_open and s and s.knobs:
+            if k == "UP":    self.knob_i = (self.knob_i - 1) % len(s.knobs); return
+            if k == "DOWN":  self.knob_i = (self.knob_i + 1) % len(s.knobs); return
+            if k in ("LEFT", "RIGHT"):
+                name, lo, hi_, st = s.knobs[self.knob_i]
+                v = self.knob_vals.get(name, lo) + (st if k == "RIGHT" else -st)
+                self.knob_vals[name] = max(lo, min(hi_, round(v, 4)))
+                tick(); return
+        if k == "\x7f":                                  # \b is ^h here, so
+            self.code = self.code[:-1]; return           # only DEL deletes
+        if k == "\r":
+            # auto-indent to the next line of the target, so typing Python
+            # does not mean hammering spaces.
+            tgt = s.code if s else ""
+            self.code += "\n"
+            nl = self.code.count("\n")
+            lines = tgt.split("\n")
+            if self.auto_indent and nl < len(lines):
+                indent = len(lines[nl]) - len(lines[nl].lstrip())
+                self.code += " " * indent
+            tick(); return
+        if k.isprintable():
+            tgt = s.code if s else ""
+            i = len(self.code)
+            if i >= len(tgt):
+                return
+            if CODE_STRICT and k != tgt[i]:
+                # only when strict is on: reject rather than advance
+                self.code_err = self.t
+                return
+            self.code += k
+            if k == tgt[i]: self.code_hit[i] = self.t
+            tick()
+
+    def save_zen(self):
+        d = os.path.expanduser("~/Documents")
+        if not os.path.isdir(d): d = os.path.expanduser("~")
+        p = os.path.join(d, time.strftime("bitetype-%Y%m%d-%H%M%S.txt"))
+        try:
+            with open(p, "w", encoding="utf-8") as f: f.write(self.zen)
+            self.say(f"saved → {p}")
+        except OSError as e:
+            self.say(f"save failed: {e}")
+
+    # ── loop ────────────────────────────────────────────────────────────────
+    def loop(self):
+        FRAME = 1 / 60.0
+        with Term() as term:
+            while self.running:
+                start = time.time()
+                self.t = start - self.born
+                # drain everything waiting, so fast typing never lags a frame
+                for _ in range(16):
+                    k = term.key(0.0)
+                    if k is None: break
+                    self.key(k, term)
+                    if not self.running: break
+                if not self.running: break
+                if self.mode == 0 and self.started and len(self.typed) < len(self.target):
+                    self.recalc()
+                self.draw()
+                rest = FRAME - (time.time() - start)
+                if rest > 0: time.sleep(rest)
+
+# ─── entry ───────────────────────────────────────────────────────────────────
+def main():
+    a = sys.argv[1:]
+    if a and a[0] == "--preview":
+        print("bitetype — type-test, free-write, mangle text, and type tiny programs you can run")
+        return 0
+    if a and a[0] in ("-h", "--help"):
+        print(__doc__)
+        print("  keys: F1-F4 switch modes · ^c quits")
+        print(f"  snippets: {len(SNIPPETS)} in {os.path.join(HERE,'snippets')}")
+        return 0
+    if not sys.stdin.isatty():
+        print("bitetype needs a terminal", file=sys.stderr); return 1
+    App().loop()
+    return 0
+
+if __name__ == "__main__":
+    try: sys.exit(main())
+    except KeyboardInterrupt:
+        sys.stdout.write(f"{ESC}[?25h{ESC}[?1049l{RESET}"); sys.exit(0)
