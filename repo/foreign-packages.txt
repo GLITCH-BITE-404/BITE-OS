@@ -6,6 +6,7 @@ quickshell-git
 hyprshade
 hyprwayland-scanner-git
 libcava
+qt6-m3shapes-git
 mpvpaper
 python-materialyoucolor
 python-pywalfox

@@ -2,26 +2,28 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import Quickshell
+import Caelestia
 import Caelestia.Config
+import Caelestia.Services
 import qs.components
+import qs.components.controls
 import qs.services
 import qs.utils
 
 Column {
     id: root
 
-    required property DrawerVisibilities visibilities
+    required property ScreenState screenState
 
     padding: Tokens.padding.large
+    rightPadding: CUtils.clamp(padding - Config.border.thickness, 0, padding)
     spacing: Tokens.spacing.large
 
     SessionButton {
         id: logout
 
         icon: Config.session.icons.logout
-        // Default loginctl terminate-user kills the compositor mid-frame and
-        // can leave the session frozen — ask Hyprland to exit cleanly instead.
-        command: ["hyprctl", "dispatch", "exit"]
+        command: Config.session.commands.logout
 
         KeyNavigation.down: shutdown
 
@@ -29,11 +31,11 @@ Column {
 
         Connections {
             function onLauncherChanged(): void {
-                if (!root.visibilities.launcher)
+                if (!root.screenState.launcher)
                     logout.forceActiveFocus();
             }
 
-            target: root.visibilities
+            target: root.screenState
         }
     }
 
@@ -41,16 +43,16 @@ Column {
         id: shutdown
 
         icon: Config.session.icons.shutdown
-        command: ["systemctl", "poweroff"]
+        command: Config.session.commands.shutdown
 
         KeyNavigation.up: logout
-        KeyNavigation.down: update
+        KeyNavigation.down: hibernate
     }
 
     AnimatedImage {
         width: Tokens.sizes.session.button
         height: Tokens.sizes.session.button
-        sourceSize.width: width
+        sourceSize.width: width * ((QsWindow.window as QsWindow)?.devicePixelRatio ?? 1)
 
         playing: visible
         asynchronous: true
@@ -60,10 +62,10 @@ Column {
     }
 
     SessionButton {
-        id: update
+        id: hibernate
 
-        icon: "system_update"
-        command: ["sh", "-c", Paths.home + "/.config/glitch/bin/glitch-update.sh"]
+        icon: Config.session.icons.hibernate
+        command: Config.session.commands.hibernate
 
         KeyNavigation.up: shutdown
         KeyNavigation.down: reboot
@@ -73,26 +75,35 @@ Column {
         id: reboot
 
         icon: Config.session.icons.reboot
-        command: ["systemctl", "reboot"]
+        command: Config.session.commands.reboot
 
-        KeyNavigation.up: update
+        KeyNavigation.up: hibernate
     }
 
-    component SessionButton: StyledRect {
+    component SessionButton: IconButton {
         id: button
 
-        required property string icon
         required property list<string> command
+
+        function exec(): void {
+            if (!SessionManager.exec(command))
+                Quickshell.execDetached(command);
+            // BITE-OS: close the session menu once an action is picked
+            root.screenState.session = false;
+        }
 
         implicitWidth: Tokens.sizes.session.button
         implicitHeight: Tokens.sizes.session.button
 
-        radius: Tokens.rounding.large
-        color: button.activeFocus ? Colours.palette.m3secondaryContainer : Colours.tPalette.m3surfaceContainer
+        inactiveColour: activeFocus ? Colours.palette.m3secondaryContainer : Colours.tPalette.m3surfaceContainer
+        inactiveOnColour: activeFocus ? Colours.palette.m3onSecondaryContainer : Colours.palette.m3onSurface
+        radius: pressed ? Tokens.rounding.medium : activeFocus ? Tokens.rounding.extraLarge : Tokens.rounding.largeIncreased
+        font: Tokens.font.icon.builders.large.scale(1.3).build()
+        onClicked: exec()
 
-        Keys.onEnterPressed: Quickshell.execDetached(button.command)
-        Keys.onReturnPressed: Quickshell.execDetached(button.command)
-        Keys.onEscapePressed: root.visibilities.session = false
+        Keys.onEnterPressed: exec()
+        Keys.onReturnPressed: exec()
+        Keys.onEscapePressed: root.screenState.session = false
         Keys.onPressed: event => {
             if (!Config.session.vimKeybinds)
                 return;
@@ -114,24 +125,6 @@ Column {
                     event.accepted = true;
                 }
             }
-        }
-
-        StateLayer {
-            radius: parent.radius
-            color: button.activeFocus ? Colours.palette.m3onSecondaryContainer : Colours.palette.m3onSurface
-            onClicked: {
-                Quickshell.execDetached(button.command);
-                root.visibilities.session = false;
-            }
-        }
-
-        MaterialIcon {
-            anchors.centerIn: parent
-
-            text: button.icon
-            color: button.activeFocus ? Colours.palette.m3onSecondaryContainer : Colours.palette.m3onSurface
-            font.pointSize: Tokens.font.size.extraLarge
-            font.weight: 500
         }
     }
 }

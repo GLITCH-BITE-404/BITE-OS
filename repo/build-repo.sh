@@ -41,21 +41,24 @@ REBUILD_FOREIGN=0
 # the ISO on older CPUs and in VMs — the repo must only ever ship generic
 # x86_64 (or any-arch) packages.
 # --- version pins ------------------------------------------------------------
-# The rice ships a CUSTOMISED caelestia 1.6.x tree that only loads against these
-# exact versions: caelestia-shell 2.x dropped CachingImageManager from the
-# Caelestia.Internal plugin, and libcava 1.0.0 moved the soname .so.0 -> .so.1.
-# Either one makes the shell QML fail to load outright — no bar, no keybinds.
-# find_pkg() otherwise takes `sort -V | tail -1` (NEWEST wins), which would
-# happily pull libcava-1.0.0 out of paru's clone cache and bake the breakage
-# into the ISO. Pinned packages are matched exactly and are never rebuilt from
-# the AUR. The installed system is pinned to match in customize_airootfs.sh.
+# The rice ships a CUSTOMISED caelestia tree (merged onto 2.4.0 on 2026-09-14)
+# that only loads against the plugin generation it was merged for. A shell QML /
+# plugin mismatch fails to load outright — no bar, no keybinds, reads as
+# "Hyprland crashed". find_pkg() otherwise takes `sort -V | tail -1` (NEWEST
+# wins), which would pull whatever paru's clone cache holds into the ISO.
+# Pinned packages are matched exactly and are never rebuilt from the AUR. The
+# installed system is pinned to match in customize_airootfs.sh, and the bite-os
+# PKGBUILD requires these versions so Super+U moves them in step with the rice.
 declare -A PINS=(
-    [caelestia-shell]="1.6.1-1"
-    [libcava]="0.10.7-2"
-    # quickshell-git is the RUNTIME the pinned caelestia-shell 1.6.1 loads into.
+    [caelestia-shell]="2.4.0-1"
+    [libcava]="1.0.0-1"
+    # new in caelestia 2.x (Material shapes); a -git package, so pin the build
+    # the merge was smoke-tested against instead of whatever HEAD is today
+    [qt6-m3shapes-git]="r41.32ad9ce-1"
+    # quickshell-git is the RUNTIME caelestia and serpantinum both load into.
     # It is a -git package, so paru would build whatever HEAD is today and could
-    # silently pair 1.6.1 with an API it wasn't built against — the same failure
-    # that looks like "Hyprland crashed". Pin it to the build we know works.
+    # silently pair the shells with an API they weren't built against. Pin it to
+    # the build we know works.
     [quickshell-git]="0.3.0.r3.g7d1c9a9-1"
 )
 

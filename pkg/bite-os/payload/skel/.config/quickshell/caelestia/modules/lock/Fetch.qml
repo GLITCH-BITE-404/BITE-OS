@@ -1,27 +1,30 @@
+// ◈ BITE-OS modification of caelestia-shell 2.4.0's lock-screen fetch panel:
+// user@host chip, a rotating-quote prompt with a blinking caret, two-tone
+// aligned info rows and bordered colour swatches, on 2.4.0's own layout rules
+// (fit-to-height thresholds from Tokens.sizes.lock) and 2.4.0 token names.
 pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Services.UPower
+import Caelestia
 import Caelestia.Config
 import qs.components
 import qs.components.effects
 import qs.services
 import qs.utils
 
-ColumnLayout {
+StyledRect {
     id: root
 
-    anchors.fill: parent
-    anchors.margins: Tokens.padding.large * 2
-    anchors.topMargin: Tokens.padding.large
+    required property real rootHeight
 
-    spacing: Tokens.spacing.small
+    readonly property bool wide: width > Tokens.sizes.lock.largeFontWidth
+    readonly property font monoFont: wide ? Tokens.font.mono.medium : Tokens.font.mono.small
+    readonly property string hostName: SysInfo.hostname || Quickshell.env("HOSTNAME") || "bite-os"
 
-    readonly property string hostName: Quickshell.env("HOSTNAME") || "chomp"
-
-    // ── Rotating header lines (cursed motivational / glitch flavor) ───────
+    // ── rotating header lines (cursed motivational / glitch flavour) ───────
     readonly property var quotes: [
         "stay hungry. stay cursed.",
         "wake up. rice the world.",
@@ -46,13 +49,14 @@ ColumnLayout {
 
     Timer {
         interval: 7000
-        running: true
+        running: root.visible
         repeat: true
         onTriggered: quoteSwap.start()
     }
 
     SequentialAnimation {
         id: quoteSwap
+
         PropertyAnimation { target: quoteText; property: "opacity"; to: 0; duration: 180; easing.type: Easing.InOutQuad }
         ScriptAction {
             script: {
@@ -65,195 +69,186 @@ ColumnLayout {
         PropertyAnimation { target: quoteText; property: "opacity"; to: 1; duration: 220; easing.type: Easing.InOutQuad }
     }
 
-    // ── Header row 1: user@host chip + distro icon ─────────────────
-    RowLayout {
-        Layout.fillWidth: true
-        Layout.fillHeight: false
-        spacing: Tokens.spacing.normal
+    implicitHeight: layout.implicitHeight + layout.anchors.topMargin + layout.anchors.margins
+    radius: Tokens.rounding.medium
+    // fixed alpha + hairline border: readable in leaf mode (no blur backing)
+    color: Qt.alpha(Colours.palette.m3surfaceContainerHigh, Colours.transparency.enabled ? 0.55 : 0.92)
+    border.width: 1
+    border.color: Qt.alpha(Colours.palette.m3outlineVariant, 0.40)
 
-        StyledRect {
-            implicitWidth: userHost.implicitWidth + Tokens.padding.normal * 2
-            implicitHeight: userHost.implicitHeight + Tokens.padding.small * 2
+    ColumnLayout {
+        id: layout
 
-            color: Colours.palette.m3primary
-            radius: Tokens.rounding.small
+        anchors.fill: parent
+        anchors.margins: Tokens.padding.extraLarge
+        anchors.topMargin: Tokens.padding.extraLarge
+        anchors.bottomMargin: Tokens.padding.extraLarge
+
+        spacing: Tokens.spacing.small
+
+        // header row 1: user@host chip + small logo (when the big one is hidden)
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: false
+            spacing: Tokens.spacing.medium
+
+            StyledRect {
+                implicitWidth: userHost.implicitWidth + Tokens.padding.medium * 2
+                implicitHeight: userHost.implicitHeight + Tokens.padding.small * 2
+
+                color: Colours.palette.m3primary
+                radius: Tokens.rounding.small
+
+                MonoText {
+                    id: userHost
+
+                    anchors.centerIn: parent
+                    text: `${SysInfo.user}@${root.hostName}`
+                    font.bold: true
+                    color: Colours.palette.m3onPrimary
+                }
+            }
+
+            Item {
+                Layout.fillWidth: true
+            }
+
+            WrappedLoader {
+                Layout.fillHeight: true
+                Layout.preferredWidth: height
+                Layout.preferredHeight: 0
+                active: !iconLoader.active
+
+                sourceComponent: SysInfo.isDefaultLogo ? caelestiaLogo : distroIcon
+            }
+        }
+
+        // header row 2: full-width quote prompt with a blinking block caret
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 0
 
             MonoText {
-                id: userHost
+                text: "~$ "
+                color: Colours.palette.m3onSurfaceVariant
+            }
 
-                anchors.centerIn: parent
-                text: `${SysInfo.user}@${root.hostName}`
-                font.pointSize: Tokens.font.size.small
-                font.bold: true
-                color: Colours.palette.m3onPrimary
+            MonoText {
+                id: quoteText
+
+                Layout.fillWidth: true
+                text: root.quotes[root.quoteIndex]
+                color: Colours.palette.m3primary
+                font.italic: true
+                elide: Text.ElideRight
+                wrapMode: Text.NoWrap
+            }
+
+            Rectangle {
+                implicitWidth: root.monoFont.pointSize * 0.55
+                implicitHeight: root.monoFont.pointSize * 1.15
+                Layout.alignment: Qt.AlignVCenter
+                Layout.leftMargin: 2
+                color: Colours.palette.m3primary
+                radius: 1
+
+                SequentialAnimation on opacity {
+                    loops: Animation.Infinite
+                    running: root.visible
+                    PropertyAnimation { to: 1; duration: 0 }
+                    PauseAnimation { duration: 520 }
+                    PropertyAnimation { to: 0; duration: 0 }
+                    PauseAnimation { duration: 520 }
+                }
             }
         }
 
-        Item { Layout.fillWidth: true }   // spacer
-
-        WrappedLoader {
-            Layout.fillHeight: true
-            Layout.maximumHeight: userHost.implicitHeight + Tokens.padding.small * 2
-            active: !iconLoader.active
-
-            sourceComponent: SysInfo.isDefaultLogo ? caelestiaLogo : distroIcon
-        }
-    }
-
-    // ── Header row 2: full-width quote prompt with caret ───────────
-    RowLayout {
-        Layout.fillWidth: true
-        Layout.topMargin: Tokens.spacing.small / 2
-        spacing: 0
-
-        MonoText {
-            text: "~$ "
-            color: Colours.palette.m3onSurfaceVariant
-            font.pointSize: Tokens.font.size.normal
-        }
-
-        MonoText {
-            id: quoteText
-            Layout.fillWidth: true
-            text: root.quotes[root.quoteIndex]
-            color: Colours.palette.m3primary
-            font.pointSize: Tokens.font.size.normal
-            font.italic: true
-            elide: Text.ElideRight
-            wrapMode: Text.NoWrap
-        }
-
-        // blinking block caret
         Rectangle {
-            implicitWidth: Tokens.font.size.normal * 0.55
-            implicitHeight: Tokens.font.size.normal * 1.15
-            Layout.alignment: Qt.AlignVCenter
-            Layout.leftMargin: 2
-            color: Colours.palette.m3primary
-            radius: 1
+            Layout.fillWidth: true
+            Layout.topMargin: Tokens.spacing.extraSmall
+            Layout.bottomMargin: Tokens.spacing.extraSmall
+            implicitHeight: 1
+            color: Qt.alpha(Colours.palette.m3outline, 0.45)
+        }
 
-            SequentialAnimation on opacity {
-                loops: Animation.Infinite
-                running: true
-                PropertyAnimation { to: 1; duration: 0 }
-                PauseAnimation { duration: 520 }
-                PropertyAnimation { to: 0; duration: 0 }
-                PauseAnimation { duration: 520 }
+        // body: logo + two-tone rows, trimmed to fit the lock screen's height
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: Tokens.spacing.extraLarge
+
+            WrappedLoader {
+                id: iconLoader
+
+                Layout.fillHeight: true
+                active: root.width > Tokens.sizes.lock.largeLogoWidth
+
+                sourceComponent: SysInfo.isDefaultLogo ? caelestiaLogo : distroIcon
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: Tokens.padding.medium
+                Layout.bottomMargin: iconLoader.active || colourRowLoader.active ? Tokens.padding.medium : 0
+                spacing: Tokens.spacing.small
+
+                Repeater {
+                    model: {
+                        const rows = [];
+                        const hasBatt = UPower.displayDevice.isLaptopBattery;
+                        const h = root.rootHeight;
+
+                        if (!hasBatt && h > Tokens.sizes.lock.fetch4LinesHeight)
+                            rows.push({ label: "OS", value: "BITE-OS" });
+                        if (h > (hasBatt ? Tokens.sizes.lock.fetch4LinesHeight : Tokens.sizes.lock.fetch3LinesHeight))
+                            rows.push({ label: "WM", value: SysInfo.wm });
+                        if (!hasBatt || h > Tokens.sizes.lock.fetch3LinesHeight)
+                            rows.push({ label: "USR", value: `${SysInfo.user}@${root.hostName}` });
+                        if (h > Tokens.sizes.lock.fetch4LinesHeight)
+                            rows.push({ label: "SH", value: SysInfo.shell });
+                        rows.push({ label: "UP", value: SysInfo.uptime });
+                        if (hasBatt)
+                            rows.push({ label: "BAT", value: `${[UPowerDeviceState.Charging, UPowerDeviceState.FullyCharged, UPowerDeviceState.PendingCharge].includes(UPower.displayDevice.state) ? "(+) " : ""}${Math.round(UPower.displayDevice.percentage * 100)}%` });
+                        return rows;
+                    }
+
+                    FetchRow {
+                        required property var modelData
+
+                        label: modelData.label
+                        value: modelData.value
+                    }
+                }
             }
         }
-    }
-
-    // ── Thin separator ─────────────────────────────────────────────
-    Rectangle {
-        Layout.fillWidth: true
-        Layout.topMargin: Tokens.spacing.small / 2
-        Layout.bottomMargin: Tokens.spacing.small / 2
-        implicitHeight: 1
-        color: Qt.alpha(Colours.palette.m3outline, 0.45)
-    }
-
-    // ── Body: icon + key/value rows ────────────────────────────────
-    RowLayout {
-        Layout.fillWidth: true
-        Layout.fillHeight: false
-        spacing: height * 0.15
 
         WrappedLoader {
-            id: iconLoader
+            id: colourRowLoader
 
-            Layout.fillHeight: true
-            active: root.width > 320
+            Layout.topMargin: iconLoader.active ? Tokens.spacing.small : 0
+            Layout.alignment: Qt.AlignHCenter
+            active: root.rootHeight > Tokens.sizes.lock.showColourBoxRowHeight
 
-            sourceComponent: SysInfo.isDefaultLogo ? caelestiaLogo : distroIcon
-        }
+            sourceComponent: RowLayout {
+                id: coloursRow
 
-        ColumnLayout {
-            Layout.fillWidth: true
-            Layout.topMargin: Tokens.padding.normal
-            Layout.bottomMargin: Tokens.padding.normal
-            Layout.leftMargin: iconLoader.active ? 0 : width * 0.1
-            spacing: Tokens.spacing.small
+                readonly property real box: root.monoFont.pointSize * 1.9
 
-            WrappedLoader {
-                Layout.fillWidth: true
-                active: root.height > 140
+                spacing: Tokens.spacing.small
 
-                sourceComponent: FetchRow {
-                    label: "OS"
-                    value: "BITE-OS"
-                }
-            }
+                Repeater {
+                    model: CUtils.clamp(Math.floor((layout.width + coloursRow.spacing) / (coloursRow.box + coloursRow.spacing)), 0, 8)
 
-            WrappedLoader {
-                Layout.fillWidth: true
-                active: root.height > (batLoader.active ? 200 : 110)
+                    StyledRect {
+                        required property int index
 
-                sourceComponent: FetchRow {
-                    label: "WM"
-                    value: SysInfo.wm
-                }
-            }
-
-            WrappedLoader {
-                Layout.fillWidth: true
-                active: !batLoader.active || root.height > 110
-
-                sourceComponent: FetchRow {
-                    label: "USR"
-                    value: `${SysInfo.user}@${root.hostName}`
-                }
-            }
-
-            WrappedLoader {
-                Layout.fillWidth: true
-                active: root.height > 230
-
-                sourceComponent: FetchRow {
-                    label: "SH"
-                    value: SysInfo.shell
-                }
-            }
-
-            FetchRow {
-                label: "UP"
-                value: SysInfo.uptime
-            }
-
-            WrappedLoader {
-                id: batLoader
-
-                Layout.fillWidth: true
-                active: UPower.displayDevice.isLaptopBattery
-
-                sourceComponent: FetchRow {
-                    label: "BAT"
-                    value: `${[UPowerDeviceState.Charging, UPowerDeviceState.FullyCharged, UPowerDeviceState.PendingCharge].includes(UPower.displayDevice.state) ? "(+) " : ""}${Math.round(UPower.displayDevice.percentage * 100)}%`
-                }
-            }
-        }
-    }
-
-    // ── Tightened color swatches ───────────────────────────────────
-    WrappedLoader {
-        Layout.alignment: Qt.AlignHCenter
-        Layout.topMargin: Tokens.spacing.small
-        active: root.height > 180
-
-        sourceComponent: RowLayout {
-            spacing: Tokens.spacing.small
-
-            Repeater {
-                model: Math.max(0, Math.min(8, root.width / (Tokens.font.size.larger * 1.5 + Tokens.spacing.small)))
-
-                StyledRect {
-                    required property int index
-
-                    implicitWidth: implicitHeight
-                    implicitHeight: Tokens.font.size.larger * 1.4
-                    color: Colours.palette[`term${index}`]
-                    radius: Tokens.rounding.small / 2
-                    border.width: 1
-                    border.color: Qt.alpha(Colours.palette.m3outline, 0.35)
+                        implicitWidth: implicitHeight
+                        implicitHeight: coloursRow.box
+                        color: Colours.palette[`term${index}`]
+                        radius: Tokens.rounding.extraSmall
+                        border.width: 1
+                        border.color: Qt.alpha(Colours.palette.m3outline, 0.35)
+                    }
                 }
             }
         }
@@ -270,8 +265,9 @@ ColumnLayout {
     Component {
         id: distroIcon
 
+        // the BITE-OS mark, from the user's own home (never a hard-coded /home/<name>)
         Image {
-            source: "file:///home/glitchbite404/.config/glitch/icons/logo-hero.png"
+            source: "file://" + Quickshell.env("HOME") + "/.config/glitch/icons/logo-hero.png"
             fillMode: Image.PreserveAspectFit
             sourceSize.width: height
             sourceSize.height: height
@@ -283,7 +279,7 @@ ColumnLayout {
         visible: active
     }
 
-    // Two-tone row: accent label + onSurface value, colon-aligned.
+    // two-tone row: accent label + on-surface value, colon-aligned
     component FetchRow: RowLayout {
         property string label
         property string value
@@ -292,30 +288,28 @@ ColumnLayout {
         spacing: 0
 
         MonoText {
-            // 4-char fixed slot keeps colons aligned across rows.
-            text: (label + "    ").substring(0, 4)
+            // 4-char slot keeps the colons aligned across rows
+            text: (parent.label + "    ").substring(0, 4)
             color: Colours.palette.m3primary
-            font.pointSize: root.width > 400 ? Tokens.font.size.larger : Tokens.font.size.normal
             font.bold: true
         }
 
         MonoText {
             text: ": "
             color: Colours.palette.m3onSurfaceVariant
-            font.pointSize: root.width > 400 ? Tokens.font.size.larger : Tokens.font.size.normal
         }
 
         MonoText {
             Layout.fillWidth: true
-            text: value
+            text: parent.value
             color: Colours.palette.m3onSurface
-            font.pointSize: root.width > 400 ? Tokens.font.size.larger : Tokens.font.size.normal
             font.bold: !Colours.transparency.enabled
             elide: Text.ElideRight
         }
     }
 
     component MonoText: StyledText {
-        font.family: Tokens.font.family.mono
+        font.family: root.monoFont.family
+        font.pointSize: root.monoFont.pointSize
     }
 }

@@ -279,6 +279,7 @@ yaml-cpp-0.8
 xorg-xhost
 caelestia-shell
 libcava
+qt6-m3shapes-git
 caelestia-cli
 # --- live installer kiosk: boot straight into Calamares, no Hyprland ---
 cage

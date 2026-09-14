@@ -1,59 +1,54 @@
 {
-    "appearance": {
-        "anim": {
-            "durations": {
-                "scale": 1
-            }
-        },
-        "transparency": {
-            "enabled": false
-        }
+  "appearance": {
+    "anim": {
+      "durations": {
+        "scale": 1
+      }
     },
-    "background": {
-        "desktopClock": {
-            "background": {
-                "enabled": false
-            },
-            "enabled": true,
-            "invertColors": false,
-            "position": "top-right",
-            "shadow": {
-                "enabled": true
-            }
-        },
-        "enabled": true,
-        "visualiser": {
-            "autoHide": true,
-            "enabled": false
-        },
-        "wallpaperEnabled": true
-    },
-    "bar": {
-        "persistent": true,
-        "showOnHover": false,
-        "status": {
-            "showAudio": false,
-            "showKbLayout": false,
-            "showLockStatus": true
-        },
-        "workspaces": {
-            "occupiedBg": false
-        }
-    },
-    "general": {
-        "logo": "/home/glitchbite404/.config/glitch/icons/icon.png"
-    },
-    "launcher": {
-        "showOnHover": false
-    },
-    "notifs": {
-        "fullscreen": "on"
-    },
-    "paths": {
-        "wallpaperDir": "~/Pictures/Wallpapers"
-    },
-    "services": {
-        "lyricsBackend": "Auto",
-        "showLyrics": false
+    "transparency": {
+      "enabled": false
     }
+  },
+  "background": {
+    "desktopClock": {
+      "background": {
+        "enabled": false
+      },
+      "enabled": true,
+      "invertColors": false,
+      "position": "top-right",
+      "shadow": {
+        "enabled": true
+      }
+    },
+    "enabled": true,
+    "visualiser": {
+      "autoHide": true,
+      "enabled": false
+    },
+    "wallpaperEnabled": true
+  },
+  "bar": {
+    "persistent": true,
+    "showOnHover": false,
+    "workspaces": {
+      "occupiedBg": false
+    }
+  },
+  "general": {
+    "logo": "~/.config/glitch/icons/icon.png"
+  },
+  "launcher": {
+    "showOnHover": false
+  },
+  "notifs": {
+    "fullscreen": "On"
+  },
+  "paths": {
+    "wallpaperDir": "~/Pictures/Wallpapers"
+  },
+  "services": {
+    "lyricsBackend": "Auto",
+    "showLyrics": false
+  }
 }

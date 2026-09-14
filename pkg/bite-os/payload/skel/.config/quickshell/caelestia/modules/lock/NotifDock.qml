@@ -19,14 +19,14 @@ ColumnLayout {
     anchors.fill: parent
     anchors.margins: Tokens.padding.large
 
-    spacing: Tokens.spacing.smaller
+    spacing: Tokens.spacing.medium
 
     StyledText {
         Layout.fillWidth: true
         text: Notifs.list.length > 0 ? qsTr("%1 notification%2").arg(Notifs.list.length).arg(Notifs.list.length === 1 ? "" : "s") : qsTr("Notifications")
+        // BITE-OS: readable without blur backing (leaf mode)
         color: Colours.palette.m3onSurface
-        font.family: Tokens.font.family.mono
-        font.weight: 500
+        font: Tokens.font.mono.builders.small.weight(Font.Medium).build()
         elide: Text.ElideRight
     }
 
@@ -36,7 +36,7 @@ ColumnLayout {
         Layout.fillWidth: true
         Layout.fillHeight: true
 
-        radius: Tokens.rounding.small
+        radius: Tokens.rounding.medium
         color: "transparent"
 
         Loader {
@@ -46,13 +46,13 @@ ColumnLayout {
             opacity: Notifs.list.length > 0 && !Config.lock.hideNotifs ? 0 : 1
 
             sourceComponent: ColumnLayout {
-                spacing: Tokens.spacing.large
+                spacing: Tokens.spacing.largeIncreased
 
                 Image {
                     asynchronous: true
                     source: Paths.absolutePath(Config.paths.lockNoNotifsPic)
                     fillMode: Image.PreserveAspectFit
-                    sourceSize.width: clipRect.width * 0.8
+                    sourceSize.width: clipRect.width * 0.8 * ((QsWindow.window as QsWindow)?.devicePixelRatio ?? 1)
 
                     layer.enabled: true
                     layer.effect: Colouriser {
@@ -65,9 +65,7 @@ ColumnLayout {
                     Layout.alignment: Qt.AlignHCenter
                     text: Config.lock.hideNotifs ? qsTr("Unlock for Notifications") : qsTr("No Notifications")
                     color: Colours.palette.m3onSurfaceVariant
-                    font.pointSize: Tokens.font.size.large
-                    font.family: Tokens.font.family.mono
-                    font.weight: 500
+                    font: Tokens.font.mono.builders.large.weight(Font.Medium).build()
                 }
             }
 
@@ -95,6 +93,7 @@ ColumnLayout {
 
             add: Transition {
                 Anim {
+                    type: Anim.DefaultEffects
                     property: "opacity"
                     from: 0
                     to: 1
@@ -103,12 +102,12 @@ ColumnLayout {
                     property: "scale"
                     from: 0
                     to: 1
-                    type: Anim.DefaultSpatial
                 }
             }
 
             remove: Transition {
                 Anim {
+                    type: Anim.DefaultEffects
                     property: "opacity"
                     to: 0
                 }
@@ -120,23 +119,23 @@ ColumnLayout {
 
             move: Transition {
                 Anim {
+                    type: Anim.DefaultEffects
                     properties: "opacity,scale"
                     to: 1
                 }
                 Anim {
                     property: "y"
-                    type: Anim.DefaultSpatial
                 }
             }
 
             displaced: Transition {
                 Anim {
+                    type: Anim.DefaultEffects
                     properties: "opacity,scale"
                     to: 1
                 }
                 Anim {
                     property: "y"
-                    type: Anim.DefaultSpatial
                 }
             }
         }
