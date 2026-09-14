@@ -14,7 +14,11 @@ fi
 sleep 0.2
 
 if [ -n "$HYPRLAND_INSTANCE_SIGNATURE" ] || pgrep -x Hyprland &>/dev/null; then
-    hyprctl dispatch 'hl.dsp.exit()' 2>/dev/null || \
+    # ── BITE-OS modification ──
+    # hyprctl exits 0 even on "Invalid dispatcher", so check its reply:
+    # Lua-config dispatcher, then hyprlang (hyprland.conf) one, then SIGTERM
+    hyprctl dispatch 'hl.dsp.exit()' 2>/dev/null | grep -qx 'ok' || \
+    hyprctl dispatch exit 2>/dev/null | grep -qx 'ok' || \
     pkill -SIGTERM -x Hyprland 2>/dev/null
 elif [ -n "$NIRI_SOCKET" ] || pgrep -x niri &>/dev/null; then
     niri msg action quit --skip-confirmation 2>/dev/null || \

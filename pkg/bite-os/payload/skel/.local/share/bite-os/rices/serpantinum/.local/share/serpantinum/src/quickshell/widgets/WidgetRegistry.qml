@@ -191,6 +191,119 @@ QtObject {
             variants: {
                 "default": { file: "faces/UserFace.qml", icon: "1", label: I18n.t("widgets.variants.default") }
             }
+        },
+        "usage": {
+            name: I18n.t("widgets.types.usage"),
+            icon: "󰍛",
+            iconOffsetX: -1,
+            defaultWidth: 400,
+            defaultHeight: 350,
+            defaultVariant: "default",
+            variants: {
+                "default": { file: "faces/UsageFace.qml", icon: "1", label: I18n.t("widgets.variants.default") }
+            }
+        },
+        "battery": {
+            name: I18n.t("widgets.types.battery"),
+            icon: "󰁹",
+            iconOffsetX: 1,
+            defaultWidth: 260,
+            defaultHeight: 90,
+            defaultVariant: "default",
+            variants: {
+                "default": { file: "faces/BatteryFace.qml", icon: "1", label: I18n.t("widgets.variants.default") }
+            }
+        },
+        // ── BITE-OS modification: our own widget faces (plain names: I18n.t
+        // has no fallback, and these would otherwise need 10 language files)
+        "dedsec": {
+            name: "Dedsec monitor",
+            biteos: true,
+            icon: String.fromCodePoint(0xF018D),
+            iconOffsetX: 0,
+            defaultWidth: 380,
+            defaultHeight: 230,
+            defaultVariant: "default",
+            variants: {
+                "default": { file: "faces/DedsecFace.qml", icon: "1", label: "Terminal" },
+                "bars": { file: "faces/DedsecBarsFace.qml", icon: "2", label: "Bars" },
+                "hex": { file: "faces/DedsecHexFace.qml", icon: "3", label: "Hex" }
+            }
+        },
+        "matrix": {
+            name: "Matrix rain",
+            biteos: true,
+            icon: String.fromCodePoint(0xF0628),
+            iconOffsetX: 0,
+            defaultWidth: 320,
+            defaultHeight: 240,
+            defaultVariant: "default",
+            variants: {
+                "default": { file: "faces/MatrixFace.qml", icon: "1", label: "Katakana" },
+                "binary": { file: "faces/MatrixBinaryFace.qml", icon: "2", label: "Binary" },
+                "glitch": { file: "faces/MatrixGlitchFace.qml", icon: "3", label: "Glitch" }
+            }
+        },
+        "rice": {
+            name: "Rice switcher",
+            biteos: true,
+            icon: String.fromCodePoint(0xF03D8),
+            iconOffsetX: 0,
+            defaultWidth: 300,
+            defaultHeight: 190,
+            defaultVariant: "default",
+            variants: {
+                "default": { file: "faces/RiceFace.qml", icon: "1", label: "Cards" },
+                "compact": { file: "faces/RiceCompactFace.qml", icon: "2", label: "Compact" }
+            }
+        },
+        "ricesaves": {
+            name: "Rice saves",
+            biteos: true,
+            icon: String.fromCodePoint(0xF02DA),
+            iconOffsetX: 0,
+            defaultWidth: 300,
+            defaultHeight: 200,
+            defaultVariant: "default",
+            variants: {
+                "default": { file: "faces/RiceSavesFace.qml", icon: "1", label: "List" }
+            }
+        },
+        "widgetsaves": {
+            name: "Widget layouts",
+            biteos: true,
+            icon: String.fromCodePoint(0xF0570),
+            iconOffsetX: 0,
+            defaultWidth: 320,
+            defaultHeight: 220,
+            defaultVariant: "default",
+            variants: {
+                "default": { file: "faces/WidgetSavesFace.qml", icon: "1", label: "List" }
+            }
+        },
+        "workspacemap": {
+            name: "Workspace map",
+            biteos: true,
+            icon: String.fromCodePoint(0xF0A07),
+            iconOffsetX: 0,
+            defaultWidth: 420,
+            defaultHeight: 180,
+            defaultVariant: "default",
+            variants: {
+                "default": { file: "faces/WorkspaceMapFace.qml", icon: "1", label: "Grid" }
+            }
+        },
+        "proctop": {
+            name: "Process top",
+            biteos: true,
+            icon: String.fromCodePoint(0xF0128),
+            iconOffsetX: 0,
+            defaultWidth: 400,
+            defaultHeight: 230,
+            defaultVariant: "default",
+            variants: {
+                "default": { file: "faces/ProcTopFace.qml", icon: "1", label: "Terminal" }
+            }
         }
     })
 

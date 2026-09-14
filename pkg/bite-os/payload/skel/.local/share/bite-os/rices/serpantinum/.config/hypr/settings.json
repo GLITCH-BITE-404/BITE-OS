@@ -258,14 +258,14 @@
       "mods": "",
       "key": "XF86PowerOff",
       "dispatcher": "exec",
-      "command": "serpantinum lock"
+      "command": "~/.config/hypr/scripts/bite-lock.sh"
     },
     {
       "type": "bindel",
       "mods": "$mainMod",
       "key": "L",
       "dispatcher": "exec",
-      "command": "serpantinum lock"
+      "command": "~/.config/hypr/scripts/bite-lock.sh"
     },
     {
       "type": "bindl",
@@ -465,13 +465,6 @@
     },
     {
       "type": "bind",
-      "mods": "$mainMod CTRL",
-      "key": "D",
-      "dispatcher": "exec",
-      "command": "bash ~/.config/glitch/bin/dots-switch.sh caelestia"
-    },
-    {
-      "type": "bind",
       "mods": "$mainMod",
       "key": "U",
       "dispatcher": "exec",
@@ -483,6 +476,27 @@
       "key": "A",
       "dispatcher": "exec",
       "command": "serpantinum msg toggle autohide"
+    },
+    {
+      "type": "bindl",
+      "mods": "",
+      "key": "XF86AudioPrev",
+      "dispatcher": "exec",
+      "command": "playerctl previous"
+    },
+    {
+      "type": "bindl",
+      "mods": "",
+      "key": "XF86AudioNext",
+      "dispatcher": "exec",
+      "command": "playerctl next"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "M",
+      "dispatcher": "exec",
+      "command": "serpantinum msg toggle music"
     }
   ],
   "startup": [

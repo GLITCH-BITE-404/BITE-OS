@@ -100,7 +100,9 @@
       "empty_graphic": {
         "title": "Animación de centro vacío",
         "desc": "Mostrar el gráfico del gato durmiendo en el centro de notificaciones cuando esté vacío"
-      }
+      },
+      "test": "Probar notificación",
+      "test_desc": "Esta es una notificación de prueba"
     },
     "idle": {
       "enabled": {
@@ -636,6 +638,10 @@
       "exclusive": {
         "title": "Modo exclusivo",
         "desc": "Evitar que las ventanas ocupen el espacio del dock"
+      },
+      "on_top": {
+        "title": "Colocar dock sobre las ventanas",
+        "desc": "Mantener el dock visible encima de las ventanas de aplicaciones"
       }
     }
   },
@@ -1017,7 +1023,9 @@
       "weather": "Clima",
       "image": "Imagen",
       "visualizer": "Visualizador",
-      "user": "Usuario"
+      "user": "Usuario",
+      "usage": "Uso",
+      "battery": "Batería"
     },
     "variants": {
       "digital": "Digital",

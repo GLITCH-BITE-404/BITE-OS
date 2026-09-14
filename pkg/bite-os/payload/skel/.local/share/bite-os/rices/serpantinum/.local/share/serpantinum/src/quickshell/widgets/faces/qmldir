@@ -1,3 +1,5 @@
+UsageFace 1.0 UsageFace.qml
+BatteryFace 1.0 BatteryFace.qml
 ClockFaceAnalog 1.0 ClockFaceAnalog.qml
 ClockFaceDigital 1.0 ClockFaceDigital.qml
 ImageFaceRect 1.0 ImageFaceRect.qml
@@ -8,3 +10,17 @@ MusicFaceRound 1.0 MusicFaceRound.qml
 WeatherFaceCompact 1.0 WeatherFaceCompact.qml
 WeatherFaceFull 1.0 WeatherFaceFull.qml
 WeatherFaceRound 1.0 WeatherFaceRound.qml
+# BITE-OS modification: our faces, so the thin look files can extend them
+MatrixFace 1.0 MatrixFace.qml
+MatrixBinaryFace 1.0 MatrixBinaryFace.qml
+MatrixGlitchFace 1.0 MatrixGlitchFace.qml
+DedsecFace 1.0 DedsecFace.qml
+DedsecBarsFace 1.0 DedsecBarsFace.qml
+DedsecHexFace 1.0 DedsecHexFace.qml
+RiceFace 1.0 RiceFace.qml
+RiceCompactFace 1.0 RiceCompactFace.qml
+BiteWidgetConfig 1.0 BiteWidgetConfig.qml
+RiceSavesFace 1.0 RiceSavesFace.qml
+WidgetSavesFace 1.0 WidgetSavesFace.qml
+WorkspaceMapFace 1.0 WorkspaceMapFace.qml
+ProcTopFace 1.0 ProcTopFace.qml

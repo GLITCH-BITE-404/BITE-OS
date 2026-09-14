@@ -1844,9 +1844,19 @@ PanelWindow {
 
         Item {
             id: toolbar
-            implicitWidth: toolbarLayout.implicitWidth + s(32)
+
+            // ── BITE-OS modification ─────────────────────────────────────
+            // A tab on the bar's top-left edge opens a second row with
+            // BITE-OS's own widgets (registry entries with biteos: true)
+            // UNDER upstream's. The bar is bottom-anchored, so growing its
+            // height by that row lifts it upward; the tab then reads Close.
+            property bool showBiteWidgets: false
+            readonly property var biteTypes: WidgetRegistry.typeList().filter(t => t.biteos === true)
+
+            implicitWidth: Math.max(toolbarLayout.implicitWidth, biteRow.implicitWidth) + s(32)
             width: implicitWidth
-            height: s(100)
+            height: s(100) + (showBiteWidgets ? biteRow.implicitHeight + s(10) : 0)
+            Behavior on height { NumberAnimation { duration: 260; easing.type: Easing.OutCubic } }
             anchors.bottom: parent.bottom
             anchors.bottomMargin: s(24)
             anchors.horizontalCenter: parent.horizontalCenter
@@ -1863,14 +1873,100 @@ PanelWindow {
                 radius: ThemeBackend.borderRadius
             }
 
+            // the tab: rounded top corners, same colour as the bar, so it
+            // reads as part of it
+            Item {
+                id: biteTab
+                visible: toolbar.biteTypes.length > 0
+                x: s(20)
+                y: -height + 1
+                width: biteTabRow.implicitWidth + s(24)
+                height: s(26)
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: Math.min(ThemeBackend.borderRadius, s(10))
+                    color: ThemeBackend.base
+                }
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: parent.height / 2
+                    color: ThemeBackend.base
+                }
+
+                Row {
+                    id: biteTabRow
+                    anchors.centerIn: parent
+                    spacing: s(6)
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: toolbar.showBiteWidgets ? "Close" : "BITE-OS"
+                        font.family: ThemeBackend.fontFamily
+                        font.pixelSize: s(11)
+                        font.bold: true
+                        color: toolbar.showBiteWidgets
+                               ? (biteTabMouse.containsMouse ? ThemeBackend.text : ThemeBackend.subtext0)
+                               : (biteTabMouse.containsMouse ? ThemeBackend.text : ThemeBackend.green)
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: String.fromCodePoint(toolbar.showBiteWidgets ? 0xF0140 : 0xF0143)
+                        font.family: "Iosevka Nerd Font"
+                        font.pixelSize: s(13)
+                        color: toolbar.showBiteWidgets ? ThemeBackend.subtext0 : ThemeBackend.green
+                    }
+                }
+
+                MouseArea {
+                    id: biteTabMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: toolbar.showBiteWidgets = !toolbar.showBiteWidgets
+                }
+            }
+
+            // second row: BITE-OS widgets, under upstream's
             RowLayout {
-                id: toolbarLayout
-                anchors.fill: parent
-                anchors.margins: s(16)
+                id: biteRow
+                anchors.top: toolbarLayout.bottom
+                anchors.topMargin: s(10)
+                anchors.left: parent.left
+                anchors.leftMargin: s(16)
                 spacing: s(20)
+                opacity: toolbar.showBiteWidgets ? 1.0 : 0.0
+                enabled: toolbar.showBiteWidgets
+                Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutQuad } }
 
                 Repeater {
-                    model: WidgetRegistry.typeList()
+                    model: toolbar.biteTypes
+                    delegate: Loader {
+                        Layout.alignment: Qt.AlignVCenter
+                        sourceComponent: WidgetRegistry.toolbarComponent(modelData.id)
+                        onLoaded: {
+                            if (item) {
+                                item.typeData = modelData;
+                                item.redactor = redactorMode;
+                            }
+                        }
+                    }
+                }
+            }
+
+            RowLayout {
+                id: toolbarLayout
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.margins: s(16)
+                height: s(68)
+                spacing: s(20)
+
+                // upstream's widgets only; ours live in biteRow
+                Repeater {
+                    model: WidgetRegistry.typeList().filter(t => t.biteos !== true)
                     delegate: Loader {
                         Layout.alignment: Qt.AlignVCenter
                         sourceComponent: WidgetRegistry.toolbarComponent(modelData.id)
@@ -1896,7 +1992,8 @@ PanelWindow {
                         size: s(40)
                         cornerRadius: ThemeBackend.borderRadius
                         buttonIcon: "󰕰"
-                        iconOffsetX: -2
+                        // BITE-OS: -2 was tuned for real Iosevka; our Symbols Nerd Font glyph is already centred.
+                        iconOffsetX: 0
                         iconFontSize: s(20)
                         accentColor: redactorMode.gridEnabled ? ThemeBackend.mauve : ThemeBackend.surface0
                         textColor: redactorMode.gridEnabled ? ThemeBackend.crust : ThemeBackend.text
@@ -1920,7 +2017,8 @@ PanelWindow {
                         textColor: ThemeBackend.text
                         Layout.alignment: Qt.AlignVCenter
                         visible: activeWidgetsModel.count > 0
-                        iconOffsetX: -1
+                        // BITE-OS: -1 was tuned for real Iosevka; our Symbols Nerd Font glyph is already centred.
+                        iconOffsetX: 0
                         onClicked: redactorMode.removeAllWidgets()
                     }
 

@@ -490,6 +490,27 @@
       "key": "A",
       "dispatcher": "exec",
       "command": "serpantinum msg toggle autohide"
+    },
+    {
+      "type": "bindl",
+      "mods": "",
+      "key": "XF86AudioPrev",
+      "dispatcher": "exec",
+      "command": "playerctl previous"
+    },
+    {
+      "type": "bindl",
+      "mods": "",
+      "key": "XF86AudioNext",
+      "dispatcher": "exec",
+      "command": "playerctl next"
+    },
+    {
+      "type": "bind",
+      "mods": "$mainMod",
+      "key": "M",
+      "dispatcher": "exec",
+      "command": "serpantinum msg toggle music"
     }
   ],
   "startup": [

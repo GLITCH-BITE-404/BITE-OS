@@ -520,7 +520,7 @@ Item {
     }
 
     Component.onCompleted: {
-        Quickshell.execDetached(["bash", "-c", "mkdir -p '" + window.cacheDir + "'; if [ ! -f '" + window.modeFilePath + "' ]; then echo '" + activeMode + "' > '" + window.modeFilePath + "'; fi"]);
+        Quickshell.execDetached(["bash", "-c", "mkdir -p '" + window.cacheDir + "'; if [ ! -f '" + window.modeFilePath + "' ]; then echo '" + activeMode + "' > '" + window.modeFilePath + "' মোবfi"]);
 
         window.findDevices();
         window.rebuildEthData();
@@ -541,6 +541,7 @@ Item {
         }
 
         window.validateActiveMode();
+        window.refreshOrbitDisplay();
 
         if (visible) {
             forceActiveFocus();
@@ -602,6 +603,13 @@ Item {
     Timer { id: powerMinSpinTimer; interval: 800; onTriggered: { if (window.activeMode === "eth") window.rebuildEthData(); else if (window.activeMode === "wifi") window.rebuildWifiData(); else window.rebuildBtData(false); } }
 
     property bool showInfoView: false
+    onShowInfoViewChanged: {
+        window.hoveredCardCount = 0;
+        if (window.showInfoView) {
+            window.updateInfoNodes();
+        }
+        window.refreshOrbitDisplay();
+    }
 
     property string pendingWifiSsid: ""
     property string pendingWifiId: ""
@@ -778,11 +786,22 @@ Item {
         }
 
         if (window.showInfoView) window.updateInfoNodes();
+        window.refreshOrbitDisplay();
     }
 
     ListModel { id: wifiListModel }
     ListModel { id: btListModel }
     ListModel { id: infoListModel }
+    ListModel { id: orbitDisplayModel }
+
+    function refreshOrbitDisplay() {
+        let src = (window.currentConn && window.showInfoView) ? infoListModel : (window.activeMode === "wifi" ? wifiListModel : (window.activeMode === "bt" ? btListModel : null));
+        let arr = [];
+        if (src) {
+            for (let i = 0; i < src.count; i++) arr.push(src.get(i));
+        }
+        window.syncModel(orbitDisplayModel, arr);
+    }
 
     function syncModel(listModel, dataArray) {
         if (!listModel || !dataArray) return;
@@ -841,6 +860,7 @@ Item {
             if (nextWifiList !== null) { window.syncModel(wifiListModel, nextWifiList); window.wifiList = nextWifiList; nextWifiList = null; }
             if (nextBtList !== null) { window.syncModel(btListModel, nextBtList); window.btList = nextBtList; nextBtList = null; }
             if (nextInfoList !== null) { window.syncModel(infoListModel, nextInfoList); nextInfoList = null; }
+            window.refreshOrbitDisplay();
         }
     }
 
@@ -896,6 +916,14 @@ Item {
     readonly property bool currentConn: activeMode === "eth" ? window.isEthConn : (activeMode === "wifi" ? window.isWifiConn : window.isBtConn)
 
     readonly property var currentObjList: activeMode === "eth" ? (window.isEthConn ? [window.ethConnected] : []) : (activeMode === "wifi" ? (window.isWifiConn ? [window.wifiConnected] : []) : window.btConnected)
+
+    readonly property string orbitSourceKey: (window.currentConn && window.showInfoView)
+        ? ("info_" + window.activeMode)
+        : (window.activeMode === "wifi" ? "wifi" : (window.activeMode === "bt" ? "bt" : (window.activeMode === "eth" ? "eth" : "none")))
+    onOrbitSourceKeyChanged: {
+        window.hoveredCardCount = 0;
+        window.refreshOrbitDisplay();
+    }
 
     readonly property bool isLogicMultiState: window.activeMode === "bt" && window.activeCoreCount > 1
 
@@ -953,7 +981,7 @@ Item {
         }
 
         if (window.isListLocked && window.activeMode !== "eth") window.nextInfoList = nodes;
-        else { window.syncModel(infoListModel, nodes); window.nextInfoList = null; }
+        else { window.syncModel(infoListModel, nodes); window.nextInfoList = null; window.refreshOrbitDisplay(); }
     }
 
     function rebuildEthData() {
@@ -1106,7 +1134,7 @@ Item {
 
         if (!window.deepEqual(window.wifiList, newNetworks)) {
             if (window.isListLocked) window.nextWifiList = newNetworks;
-            else { window.syncModel(wifiListModel, newNetworks); window.wifiList = newNetworks; window.nextWifiList = null; }
+            else { window.syncModel(wifiListModel, newNetworks); window.wifiList = newNetworks; window.nextWifiList = null; window.refreshOrbitDisplay(); }
         }
 
         if (window.activeMode === "wifi") {
@@ -1246,7 +1274,7 @@ Item {
 
         if (!window.deepEqual(window.btList, newDevices)) {
             if (window.isListLocked) window.nextBtList = newDevices;
-            else { window.syncModel(btListModel, newDevices); window.btList = newDevices; window.nextBtList = null; }
+            else { window.syncModel(btListModel, newDevices); window.btList = newDevices; window.nextBtList = null; window.refreshOrbitDisplay(); }
         }
 
         if (window.activeMode === "bt") {
@@ -2074,12 +2102,13 @@ Item {
 
                 Repeater {
                     id: orbitRepeater
-                    model: (window.currentConn && window.showInfoView) ? infoListModel : (window.activeMode === "wifi" ? wifiListModel : (window.activeMode === "bt" ? btListModel : null))
+                    model: orbitDisplayModel
 
                     delegate: Item {
                         id: floatCardDelegateContainer
                         width: window.s(150); height: window.s(52)
 
+                        property bool isCardHovered: false
                         property bool isLoaded: false
                         opacity: (isLoaded && window.currentPower) ? 1.0 : 0.0
                         visible: opacity > 0.01
@@ -2119,7 +2148,7 @@ Item {
 
                         property int siblingsCount: {
                             let c = 0;
-                            let m = orbitRepeater.model;
+                            let m = orbitDisplayModel;
                             if (m && typeof m.count === "number") {
                                 for (let i = 0; i < m.count; i++) {
                                     let d = m.get(i);
@@ -2130,7 +2159,7 @@ Item {
                         }
                         property int localIndex: {
                             let idx = 0;
-                            let m = orbitRepeater.model;
+                            let m = orbitDisplayModel;
                             if (m && typeof m.count === "number" && typeof index === "number") {
                                 for (let i = 0; i < index && i < m.count; i++) {
                                     let d = m.get(i);
@@ -2142,7 +2171,7 @@ Item {
 
                         property real unifiedRatio: window.activeMode === "wifi" || window.activeMode === "eth" ? 0.0 : window.multiTransitionState
 
-                        property real activeCount: (unifiedRatio > 0.5 && myParentIdx !== -1) ? siblingsCount : orbitRepeater.count
+                        property real activeCount: (unifiedRatio > 0.5 && myParentIdx !== -1) ? siblingsCount : orbitDisplayModel.count
                         property real dynamicScale: activeCount > 10 ? Math.max(0.6, 12.0 / activeCount) : (unifiedRatio > 0.5 ? (window.activeCoreCount > 2 ? 0.7 : 0.8) : 1.0)
 
                         property real safeMultiShift: window.activeMode === "wifi" || window.activeMode === "eth" ? 0.0 : window.multiTransitionState
@@ -2153,7 +2182,7 @@ Item {
 
                         property real parentBaseAngle: pItem ? pItem.animatedBaseAngle : 0
 
-                        property real targetSingleBaseAngle: (index / Math.max(1, orbitRepeater.count)) * Math.PI * 2
+                        property real targetSingleBaseAngle: (index / Math.max(1, orbitDisplayModel.count)) * Math.PI * 2
                         property real singleBaseAngle: targetSingleBaseAngle
                         Behavior on singleBaseAngle { enabled: window.visible; NumberAnimation { duration: 800; easing.type: Easing.OutExpo } }
 
@@ -2214,19 +2243,23 @@ Item {
 
                         scale: (!isLoaded ? 0.0 : (isHoveredOrHighlighted ? dynamicScale * 1.025 : dynamicScale)) * currentPopScale
                         Behavior on scale { enabled: window.visible; NumberAnimation { duration: 250; easing.type: Easing.OutQuint } }
-                        z: cardHoverHandler.hovered ? 10 : index
+                        z: floatCardDelegateContainer.isCardHovered ? 10 : index
 
                         HoverHandler {
                             id: cardHoverHandler
                             enabled: window.visible
                             onHoveredChanged: {
-                                if (hovered) window.hoveredCardCount++;
-                                else window.hoveredCardCount = Math.max(0, window.hoveredCardCount - 1);
+                                if (floatCardDelegateContainer.isCardHovered !== hovered) {
+                                    floatCardDelegateContainer.isCardHovered = hovered;
+                                    if (hovered) window.hoveredCardCount++;
+                                    else window.hoveredCardCount = Math.max(0, window.hoveredCardCount - 1);
+                                }
                             }
                         }
 
                         Component.onDestruction: {
-                            if (cardHoverHandler.hovered) {
+                            if (floatCardDelegateContainer.isCardHovered) {
+                                floatCardDelegateContainer.isCardHovered = false;
                                 window.hoveredCardCount = Math.max(0, window.hoveredCardCount - 1);
                             }
                         }
@@ -2273,6 +2306,8 @@ Item {
                             let currentIsInfoNode = typeof isInfoNode !== "undefined" ? isInfoNode : false;
 
                             if (currentCmd === "TOGGLE_VIEW") {
+                                floatCardDelegateContainer.isCardHovered = false;
+                                window.hoveredCardCount = 0;
                                 window.showInfoView = !window.showInfoView;
                             } else if (currentIsInfoNode && currentAction === "IP Address") {
                                 let itemName = myButtonText;

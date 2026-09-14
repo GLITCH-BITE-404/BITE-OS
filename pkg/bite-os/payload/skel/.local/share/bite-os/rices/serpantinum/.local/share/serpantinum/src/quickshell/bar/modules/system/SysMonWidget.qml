@@ -176,6 +176,7 @@ Rectangle {
             }
         }
 
+        // ── BITE-OS modification ──────────────────────────────────────────
         // Light copy of the row, clipped to the part of the pill ABOVE the
         // liquid; waveClipBox below draws the dark copy inside the liquid.
         // Unclipped, the light glyph kept drawing underneath the dark one, and

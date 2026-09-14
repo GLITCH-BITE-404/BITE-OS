@@ -99,7 +99,9 @@
       "empty_graphic": {
         "title": "Centro notifiche vuoto",
         "desc": "Mostra il gattino che dorme quando il centro delle notifiche è vuoto"
-      }
+      },
+      "test": "Prova notifica",
+      "test_desc": "Questa è una notifica di prova"
     },
     "idle": {
       "enabled": {
@@ -591,6 +593,10 @@
       "exclusive": {
         "title": "Modalità esclusiva",
         "desc": "Impedisci alle finestre di occupare lo spazio del dock"
+      },
+      "on_top": {
+        "title": "Posiziona la dock sopra le finestre",
+        "desc": "Mantieni la dock visibile sopra le finestre delle applicazioni"
       }
     }
   },
@@ -972,7 +978,9 @@
       "weather": "Meteo",
       "image": "Immagine",
       "visualizer": "Visualizzatore",
-      "user": "Utente"
+      "user": "Utente",
+      "usage": "Utilizzo",
+      "battery": "Batteria"
     },
     "variants": {
       "digital": "Digitale",

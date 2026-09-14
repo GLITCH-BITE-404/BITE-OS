@@ -7,4 +7,17 @@ gesture = 3, horizontal, workspace
 bindm = SUPER, mouse:272, movewindow
 bindm = SUPER, mouse:273, resizewindow
 
+# ───────── Recovery Binds (STATIC — survive a dead shell / broken settings.json) ─────────
+# These are deliberately NOT generated from settings.json: if that file breaks,
+# jq emits nothing and every dynamic bind disappears. These stay.
+bind = SUPER SHIFT, R, exec, ~/.config/hypr/scripts/shell-recover.sh restart
+bind = SUPER SHIFT ALT, R, exec, hyprctl reload
+bind = SUPER SHIFT, Return, exec, kitty
+bind = SUPER SHIFT, L, exec, ~/.config/hypr/scripts/bite-lock.sh
+# Swap back to caelestia. STATIC on purpose: this was previously generated from
+# settings.json, so a broken settings.json removed the only escape route.
+bind = SUPER CTRL, D, exec, bash ~/.config/glitch/bin/dots-switch.sh caelestia
+bind = SUPER, Escape, exec, bash ~/.config/glitch/bin/dots-switch.sh caelestia
+bind = SUPER SHIFT, Escape, exec, hyprctl dispatch submap reset
+
 # ───────── Dynamic Settings Binds ─────────

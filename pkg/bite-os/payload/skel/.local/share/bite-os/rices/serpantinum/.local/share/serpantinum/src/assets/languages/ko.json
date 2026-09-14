@@ -99,7 +99,9 @@
       "empty_graphic": {
         "title": "빈 알림 센터 애니메이션",
         "desc": "알림 센터가 비어 있을 때 잠자는 고양이 그래픽을 표시합니다"
-      }
+      },
+      "test": "알림 테스트",
+      "test_desc": "이것은 테스트 알림입니다"
     },
     "idle": {
       "enabled": {
@@ -592,6 +594,10 @@
       "exclusive": {
         "title": "단독 모드",
         "desc": "창이 독 공간을 차지하지 않도록 방지"
+      },
+      "on_top": {
+        "title": "창 위에 독 배치",
+        "desc": "애플리케이션 창 위에 독이 항상 보이도록 유지"
       }
     }
   },
@@ -973,7 +979,9 @@
       "weather": "날씨",
       "image": "이미지",
       "visualizer": "시각화 도구",
-      "user": "사용자"
+      "user": "사용자",
+      "usage": "사용량",
+      "battery": "배터리"
     },
     "variants": {
       "digital": "디지털",

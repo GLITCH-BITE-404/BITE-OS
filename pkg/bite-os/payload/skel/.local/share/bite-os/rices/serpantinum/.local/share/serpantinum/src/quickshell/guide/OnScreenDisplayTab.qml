@@ -190,7 +190,8 @@ Item {
                             Layout.alignment: Qt.AlignVCenter
                             cornerRadius: ThemeBackend.borderRadius
                             buttonIcon: "󰍹"
-                            iconOffsetX: -2
+                            // BITE-OS: -2 was tuned for real Iosevka; our Symbols Nerd Font glyph is already centred.
+                            iconOffsetX: 0
                             iconFontSize: rootObj.s(16)
                             accentColor: ThemeBackend.surface0
                             textColor: "#ffffff"

@@ -99,7 +99,9 @@
       "empty_graphic": {
         "title": "Empty center animation",
         "desc": "Display the sleeping cat graphic in the notification center when empty"
-      }
+      },
+      "test": "Test notification",
+      "test_desc": "This is a test notification"
     },
     "idle": {
       "enabled": {
@@ -592,6 +594,10 @@
       "exclusive": {
         "title": "Exclusive mode",
         "desc": "Prevent windows from taking space occupied by the dock"
+      },
+      "on_top": {
+        "title": "Place dock on top of windows",
+        "desc": "Keep the dock visible above application windows"
       }
     }
   },
@@ -973,7 +979,9 @@
       "weather": "Weather",
       "image": "Image",
       "visualizer": "Visualizer",
-      "user": "User"
+      "user": "User",
+      "usage": "Usage",
+      "battery": "Battery"
     },
     "variants": {
       "digital": "Digital",

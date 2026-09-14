@@ -53,6 +53,26 @@ sync_settings() {
     cp -a "$src" "$dst.tmp" && mv -f "$dst.tmp" "$dst"
 }
 
+# Safety net: this sync makes every widget change permanent within a second,
+# so on 2026-09-14 an accidental "delete all widgets" overwrote the vault's
+# only good copy. Whenever a layout is about to LOSE widgets, park the vault's
+# previous version first. Lives outside the rice-managed dirs so `rice save`
+# never wipes it. Restore: copy a file back over
+# ~/.local/state/serpantinum/widgets/<monitor>/layout.json, then `serpantinum reload`.
+WIDGET_HIST="$HOME/.local/share/bite-os/rices/_widget-history/serpantinum"
+backup_if_shrunk() {
+    local new="$1" old="$2" rel="$3" n o
+    [ -f "$old" ] || return 0
+    n="$(jq 'if type=="array" then length else 0 end' "$new" 2>/dev/null)" || return 0
+    o="$(jq 'if type=="array" then length else 0 end' "$old" 2>/dev/null)" || return 0
+    [[ "$n" =~ ^[0-9]+$ && "$o" =~ ^[0-9]+$ ]] || return 0
+    [ "$n" -lt "$o" ] || return 0
+    mkdir -p "$WIDGET_HIST"
+    cp -a "$old" "$WIDGET_HIST/${rel//\//_}-$(date +%Y%m%d-%H%M%S)-${o}widgets.json"
+    # keep the newest 30
+    ls -1t "$WIDGET_HIST"/*.json 2>/dev/null | tail -n +31 | xargs -r rm -f
+}
+
 # widget layouts: one layout.json per monitor, written by the widget redactor
 sync_widgets() {
     local src="$SRC_STATE/widgets" dst="$VAULT/.local/state/serpantinum/widgets"
@@ -65,6 +85,15 @@ sync_widgets() {
         local rel="${f#$src/}"
         local out="$dst/$rel"
         cmp -s "$f" "$out" && continue
+        backup_if_shrunk "$f" "$out" "$rel"
+        # per-change log (added / moved / resized / removed ...) that the Rice
+        # tab undoes one change at a time via the shell's widget IPC
+        [ -x "$HOME/.config/hypr/scripts/widget-journal.sh" ] && \
+            "$HOME/.config/hypr/scripts/widget-journal.sh" record "$out" "$f" "${rel%%/*}"
+        # named widget saves: an auto save when the user switched auto-save
+        # on (rate-limited inside widget-saves.sh; a no-op when it's off)
+        [ -x "$HOME/.config/hypr/scripts/widget-saves.sh" ] && \
+            "$HOME/.config/hypr/scripts/widget-saves.sh" auto-tick
         mkdir -p "$(dirname "$out")"
         cp -a "$f" "$out.tmp" && mv -f "$out.tmp" "$out"
     done < <(find "$src" -type f -name '*.json' 2>/dev/null)

@@ -45,7 +45,8 @@ Rectangle {
         height: barWindow ? barWindow.s(sideTopRoot.isCompact ? 28 : 30) : (sideTopRoot.isCompact ? 28 : 30)
         cornerRadius: Math.max(0, ThemeBackend.borderRadius - (barWindow ? barWindow.s(2) : 2))
         buttonIcon: "󰒓"
-        iconOffsetX: -2
+        // BITE-OS: -2 was tuned for real Iosevka; our Symbols Nerd Font glyph is already centred.
+        iconOffsetX: 0
         iconFontSize: barWindow ? barWindow.s(sideTopRoot.isCompact ? 14 : 15) : (sideTopRoot.isCompact ? 14 : 15)
         accentColor: sideTopRoot.isCompact ? Qt.lighter(ThemeBackend.surface0, 1.18) : ThemeBackend.surface0
         textColor: isHoveredOrHighlighted ? ThemeBackend.text : (sideTopRoot.isCompact ? ThemeBackend.subtext0 : ThemeBackend.overlay2)

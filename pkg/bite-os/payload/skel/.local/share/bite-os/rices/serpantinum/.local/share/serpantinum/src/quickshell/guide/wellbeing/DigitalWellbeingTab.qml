@@ -452,7 +452,8 @@ Item {
                     cornerRadius: ThemeBackend.borderRadius
                     buttonIcon: "󰒓"
                     iconFontSize: rootObj.s(16)
-                    iconOffsetX: -1
+                    // BITE-OS: -1 was tuned for real Iosevka; our Symbols Nerd Font glyph is already centred.
+                    iconOffsetX: 0
                     accentColor: ThemeBackend.surface0
                     textColor: isHoveredOrHighlighted ? ThemeBackend.text : ThemeBackend.overlay0
                     onClicked: tabRoot.isSettingsView = !tabRoot.isSettingsView
@@ -493,7 +494,8 @@ Item {
                         cornerRadius: ThemeBackend.borderRadius
                         buttonIcon: "󰃭"
                         iconFontSize: rootObj.s(16)
-                        iconOffsetX: -1
+                        // BITE-OS: -1 was tuned for real Iosevka; our Symbols Nerd Font glyph is already centred.
+                        iconOffsetX: 0
                         accentColor: ThemeBackend.surface0
                         textColor: isHoveredOrHighlighted ? ThemeBackend.text : ThemeBackend.overlay0
                         opacity: (tabRoot.selectedAppClass === "" && !tabRoot.isWeekView && !tabRoot.isSettingsView) ? 1.0 : 0.0

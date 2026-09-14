@@ -15,6 +15,61 @@ KEYBINDS_CONF="$CONF_DIR/keybindings.conf"
 MONITORS_CONF="$CONF_DIR/monitors.conf"
 ZSH_RC="$HOME/.zshrc"
 
+# ─── widget-bind contract ─────────────────────────────────────────────────
+# settings.json binds name shell widgets, but nothing ever checked those names
+# existed. getLayout() returns undefined for an unknown target and Main.qml's
+# handleCommand then silently returns -- exit 0, no error, dead key. That is
+# how Super+B stayed broken. Two layers: rewrite known renames, then warn on
+# whatever is still unresolved.
+
+# Legacy target -> current widget. Keeps BITE-OS binds working across
+# serpantinum renames without hand-editing settings.json.
+declare -A WIDGET_ALIASES=(
+    [battery]=system      # battery UI folded into syspanel/SystemPanel.qml
+    [movies]=music        # no movies component exists (dead name upstream in
+                          # serpantinum's _allWidgetNames); media/MusicPopup.qml
+                          # is the only real media widget, so Super+P opens that
+)
+
+# Handled in handleCommand BEFORE the getLayout() gate, so they are valid
+# despite having no WindowRegistry entry. Not orphans.
+WIDGET_SPECIAL="launcher clipboard clip airplane flight hidden"
+
+# The authoritative list of openable widgets, read from the live shell.
+serp_widget_targets() {
+    local reg="${SERPANTINUM_DIR:-$HOME/.local/share/serpantinum/src}/quickshell/WindowRegistry.js"
+    [ -f "$reg" ] || return 1
+    sed -n '/let base = {/,/^    };/p' "$reg" \
+        | grep -oE '^[[:space:]]{8}"[a-z]+"' | tr -d ' "'
+}
+
+apply_widget_aliases() {
+    local f="$1" legacy current
+    for legacy in "${!WIDGET_ALIASES[@]}"; do
+        current="${WIDGET_ALIASES[$legacy]}"
+        sed -i -E "s/(msg (toggle|open)) ${legacy}\b/\1 ${current}/g" "$f"
+    done
+}
+
+# Warn loudly instead of shipping a key that does nothing.
+validate_widget_binds() {
+    local f="$1" valid orphans=""
+    valid="$(serp_widget_targets 2>/dev/null) $WIDGET_SPECIAL"
+    [ -n "${valid// /}" ] || return 0   # shell tree missing; nothing to check against
+
+    local t
+    for t in $(grep -oE 'msg (toggle|open) [a-z]+' "$f" | awk '{print $3}' | sort -u); do
+        printf '%s\n' $valid | grep -qx "$t" || orphans="$orphans $t"
+    done
+
+    [ -z "$orphans" ] && return 0
+    echo "WARNING: keybind targets not present in the shell:$orphans"
+    command -v notify-send >/dev/null 2>&1 && \
+        notify-send -u critical "BITE-OS keybinds" "Dead widget target(s):$orphans" 2>/dev/null
+    hyprctl notify -1 6000 "rgb(ffaa00)" "◈ dead keybind target(s):$orphans" >/dev/null 2>&1
+    return 1
+}
+
 # Ensure the required files and directories exist
 mkdir -p "$CONF_DIR" "$TMPL_DIR" "$(dirname "$SETTINGS_FILE")" "$(dirname "$ENV_FILE")"
 [ ! -f "$SETTINGS_FILE" ] && echo "{}" > "$SETTINGS_FILE"
@@ -22,28 +77,21 @@ mkdir -p "$CONF_DIR" "$TMPL_DIR" "$(dirname "$SETTINGS_FILE")" "$(dirname "$ENV_
 CACHE_DIR="$HOME/.cache/settings_watcher"
 mkdir -p "$CACHE_DIR"
 
-# ─── single-instance guard ────────────────────────────────────────────────
-# This is launched from BOTH autostart.conf and dots-switch.sh, so copies
-# accumulated. Concurrent copies then regenerated autostart.conf at the same
-# time — `cp template` + `jq >>` from two writers interleaves into a file with
-# every exec-once listed TWICE, including `quickshell` and this watcher itself.
-# Next login therefore started two shells and two watchers, which doubled the
-# file again: a compounding loop that ends in a stack of bars. Not flock — the
-# inotifywait children would inherit and pin the fd if this script died first.
-WATCH_LOCK="$CACHE_DIR/watcher.pid"
-_take_lock() { ( set -o noclobber; echo $$ > "$WATCH_LOCK" ) 2>/dev/null; }
-if ! _take_lock; then
-    _holder="$(cat "$WATCH_LOCK" 2>/dev/null)"
-    if [ -n "$_holder" ] && kill -0 "$_holder" 2>/dev/null; then
-        echo "settings_watcher already running (pid $_holder) — exiting"
-        exit 0
-    fi
-    rm -f "$WATCH_LOCK"
-    _take_lock || exit 0
-fi
-trap 'rm -f "$WATCH_LOCK"' EXIT INT TERM HUP
-
 compile_settings() {
+    # Own lock, separate from the watcher lock: prevents two regenerations from
+    # interleaving `cp template` + append, which is what doubled autostart.conf.
+    local _clock="$CACHE_DIR/compile.pid"
+    if ! ( set -o noclobber; echo $$ > "$_clock" ) 2>/dev/null; then
+        local _h; _h="$(cat "$_clock" 2>/dev/null)"
+        if [ -n "$_h" ] && kill -0 "$_h" 2>/dev/null; then
+            echo "compile already in progress (pid $_h) — skipping"
+            return 0
+        fi
+        rm -f "$_clock"
+        ( set -o noclobber; echo $$ > "$_clock" ) 2>/dev/null || return 0
+    fi
+    trap 'rm -f "$_clock"' RETURN
+
     echo "Regenerating configurations from templates..."
 
     # Hash existing configs before any changes, split by monitor vs non-monitor.
@@ -118,7 +166,14 @@ compile_settings() {
     # 4. Regenerate keybindings.conf
     echo "Regenerating keybindings.conf..."
     cp "$TMPL_DIR/keybinds.conf.template" "$KEYBINDS_CONF"
-    jq -r '.keybinds[]? | "\(.type // "bind") = \(.mods // ""), \(.key // ""), \(.dispatcher // "exec")\(if .command and .command != "" then ", \(.command)" else "" end)"' "$SETTINGS_FILE" >> "$KEYBINDS_CONF"
+    # Built via temp file so aliases are applied before the binds land, and so a
+    # jq failure cannot leave a half-written keybindings.conf in place.
+    _KB_TMP="$(mktemp "${KEYBINDS_CONF}.XXXXXX")"
+    jq -r '.keybinds[]? | "\(.type // "bind") = \(.mods // ""), \(.key // ""), \(.dispatcher // "exec")\(if .command and .command != "" then ", \(.command)" else "" end)"' "$SETTINGS_FILE" > "$_KB_TMP"
+    apply_widget_aliases "$_KB_TMP"
+    cat "$_KB_TMP" >> "$KEYBINDS_CONF"
+    rm -f "$_KB_TMP"
+    validate_widget_binds "$KEYBINDS_CONF" || true
 
     # 5. Regenerate monitors.conf
     echo "Regenerating monitors.conf..."
@@ -148,11 +203,37 @@ compile_settings() {
     fi
 }
 
-# If called with --compile, execute once and exit (used by install.sh)
-if [[ "$1" == "--compile" ]]; then
+# --compile is a one-shot regeneration (install.sh, dots-switch, manual repair).
+# It must NOT take the watcher's single-instance lock: that lock means "only one
+# inotify loop", not "only one regeneration", and conflating them made
+# `--compile` a silent no-op whenever a watcher was already up. compile_settings
+# takes its own short-lived lock instead, so two regenerations still cannot
+# interleave -- which was the actual doom-loop defect.
+if [[ "${1:-}" == "--compile" ]]; then
     compile_settings
-    exit 0
+    exit $?
 fi
+
+# ─── single-instance guard ────────────────────────────────────────────────
+# This is launched from BOTH autostart.conf and dots-switch.sh, so copies
+# accumulated. Concurrent copies then regenerated autostart.conf at the same
+# time — `cp template` + `jq >>` from two writers interleaves into a file with
+# every exec-once listed TWICE, including `quickshell` and this watcher itself.
+# Next login therefore started two shells and two watchers, which doubled the
+# file again: a compounding loop that ends in a stack of bars. Not flock — the
+# inotifywait children would inherit and pin the fd if this script died first.
+WATCH_LOCK="$CACHE_DIR/watcher.pid"
+_take_lock() { ( set -o noclobber; echo $$ > "$WATCH_LOCK" ) 2>/dev/null; }
+if ! _take_lock; then
+    _holder="$(cat "$WATCH_LOCK" 2>/dev/null)"
+    if [ -n "$_holder" ] && kill -0 "$_holder" 2>/dev/null; then
+        echo "settings_watcher already running (pid $_holder) — exiting"
+        exit 0
+    fi
+    rm -f "$WATCH_LOCK"
+    _take_lock || exit 0
+fi
+trap 'rm -f "$WATCH_LOCK"' EXIT INT TERM HUP
 
 echo "Started watching settings directories for changes..."
 

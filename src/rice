@@ -25,6 +25,17 @@ ROOT="${HOME}/.local/share/bite-os/rices"
 SRC="${HOME}/.local/share/bite-os/vault-src"
 ACTIVE_FILE="${ROOT}/.active"
 AUTOBACK="${ROOT}/_autobackup"
+REPLACED="${ROOT}/_replaced"
+# One line per save, tab-separated: <id> <rice> <label>. Append-only, so the
+# history survives even if a vault entry is later overwritten or removed.
+SAVELOG="${ROOT}/.saves.log"
+# How many snapshots to keep in each of _replaced and _autobackup. Every save
+# and every swap writes a full copy (~190MB here), so with no cap the vault
+# grows without bound -- it reached 19G/300 snapshots before this existed.
+RICE_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/bite-os/rice.conf"
+HISTORY_LIMIT=10
+[[ -f "$RICE_CONF" ]] && . "$RICE_CONF"
+[[ "$HISTORY_LIMIT" =~ ^[0-9]+$ ]] || HISTORY_LIMIT=10
 APP="BITE-OS"
 
 # Dirs the switcher considers part of a "rice". Anything outside this list is
@@ -42,7 +53,8 @@ MANAGED_DIRS=(
     ".local/state/serpantinum"
 )
 
-mkdir -p "$ROOT" "$AUTOBACK" "$SRC"
+mkdir -p "$ROOT" "$AUTOBACK" "$SRC" "$REPLACED"
+touch "$SAVELOG"
 
 c_red=$'\e[31m'; c_grn=$'\e[32m'; c_ylw=$'\e[33m'; c_dim=$'\e[2m'; c_rst=$'\e[0m'
 say()  { printf '%s\n' "$*"; }
@@ -117,6 +129,100 @@ park_current() {
     done
 }
 
+# Keep the newest $HISTORY_LIMIT in a directory, delete the rest. Sorted by
+# name because the id carries the timestamp; mtime is the copied content's
+# time and disagrees with it.
+prune_dir() {
+    local dir="$1" limit="$2" removed=0 freed=0
+    [[ -d "$dir" ]] || return 0
+    [[ "$limit" -le 0 ]] && return 0
+    local -a all
+    mapfile -t all < <(find "$dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r)
+    local i
+    for ((i = limit; i < ${#all[@]}; i++)); do
+        local sz; sz=$(du -sm "${all[$i]}" 2>/dev/null | cut -f1)
+        rm -rf -- "${all[$i]}" && { removed=$((removed+1)); freed=$((freed+sz)); }
+    done
+    [[ "$removed" -gt 0 ]] && printf '%s %s\n' "$removed" "$freed"
+    return 0
+}
+
+prune_history() {
+    local quiet="${1:-}"
+    local r a
+    r="$(prune_dir "$REPLACED" "$HISTORY_LIMIT")"
+    a="$(prune_dir "$AUTOBACK" "$HISTORY_LIMIT")"
+    if [[ -n "$r$a" && "$quiet" != "quiet" ]]; then
+        local n=0 mb=0
+        [[ -n "$r" ]] && { n=$((n + ${r%% *})); mb=$((mb + ${r##* })); }
+        [[ -n "$a" ]] && { n=$((n + ${a%% *})); mb=$((mb + ${a##* })); }
+        [[ "$n" -gt 0 ]] && say "  ${c_dim}pruned $n old snapshot(s), freed ${mb}MB (limit: $HISTORY_LIMIT)${c_rst}"
+    fi
+    return 0
+}
+
+cmd_prune() {
+    local yes=0 limit="$HISTORY_LIMIT"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -y|--yes) yes=1; shift ;;
+            -n)       limit="${2:-$HISTORY_LIMIT}"; shift 2 ;;
+            *)        shift ;;
+        esac
+    done
+    [[ "$limit" =~ ^[0-9]+$ ]] || { err "-n needs a number"; exit 2; }
+    local rc ac
+    rc=$(find "$REPLACED" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+    ac=$(find "$AUTOBACK" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+    local drop=$(( (rc > limit ? rc - limit : 0) + (ac > limit ? ac - limit : 0) ))
+    if [[ "$drop" -eq 0 ]]; then ok "nothing to prune (limit $limit)"; return 0; fi
+    say "will delete $drop snapshot(s), keeping the newest $limit of each"
+    say "  ${c_dim}_replaced: $rc   _autobackup: $ac   currently $(du -sh "$ROOT" 2>/dev/null | cut -f1)${c_rst}"
+    if [[ "$yes" -eq 0 ]]; then
+        printf 'proceed? [y/N] '; local ans; read -r ans
+        [[ "$ans" =~ ^[Yy]$ ]] || { warn "cancelled"; return 0; }
+    fi
+    HISTORY_LIMIT="$limit" prune_history
+    ok "vault now $(du -sh "$ROOT" 2>/dev/null | cut -f1)"
+    return 0
+}
+
+cmd_delete() {
+    local id="${1:-}" yes=0
+    [[ "${2:-}" == "-y" || "${2:-}" == "--yes" ]] && yes=1
+    [[ -z "$id" ]] && { err "usage: rice delete <id> [-y]   (see: rice log)"; exit 2; }
+    local snap="${REPLACED}/${id}"
+    [[ -d "$snap" ]] || snap="${AUTOBACK}/${id}"
+    [[ -d "$snap" ]] || { err "no snapshot '$id'"; exit 1; }
+    local sz; sz=$(du -sh "$snap" 2>/dev/null | cut -f1)
+    if [[ "$yes" -eq 0 ]]; then
+        printf "delete snapshot '%s' (%s)? [y/N] " "$id" "$sz"; local ans; read -r ans
+        [[ "$ans" =~ ^[Yy]$ ]] || { warn "cancelled"; return 0; }
+    fi
+    rm -rf -- "$snap"
+    printf '%s\tdeleted\t%s\t%s\n' "$(ts)" "${id%-*-*}" "$id" >> "$SAVELOG"
+    ok "deleted '$id' (freed $sz)"
+    return 0
+}
+
+cmd_limit() {
+    local n="${1:-}"
+    if [[ -z "$n" ]]; then
+        say "history limit: ${HISTORY_LIMIT}   ${c_dim}(${RICE_CONF/$HOME/~})${c_rst}"
+        return 0
+    fi
+    [[ "$n" =~ ^[0-9]+$ ]] || { err "limit must be a number"; exit 2; }
+    mkdir -p "$(dirname "$RICE_CONF")"
+    if [[ -f "$RICE_CONF" ]] && grep -q '^HISTORY_LIMIT=' "$RICE_CONF"; then
+        sed -i "s/^HISTORY_LIMIT=.*/HISTORY_LIMIT=$n/" "$RICE_CONF"
+    else
+        echo "HISTORY_LIMIT=$n" >> "$RICE_CONF"
+    fi
+    ok "history limit set to $n"
+    HISTORY_LIMIT="$n" prune_history
+    return 0
+}
+
 cmd_list() {
     local active; active="$(active_name)"
     say "Rices in vault:"
@@ -141,21 +247,30 @@ cmd_list() {
 cmd_current() { active_name; }
 
 cmd_save() {
-    local name="${1:-}" force=0
-    [[ "${2:-}" == "--force" ]] && force=1
-    [[ -z "$name" ]] && { err "usage: rice save <name> [--force]"; exit 2; }
+    local name="" label="" force=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --force|-f)   force=1; shift ;;
+            -m|--message) label="${2:-}"; shift 2 ;;
+            -*)           err "unknown flag: $1"; exit 2 ;;
+            *)            [[ -z "$name" ]] && name="$1" || { err "unexpected: $1"; exit 2; }; shift ;;
+        esac
+    done
+    [[ -z "$name" ]] && { err "usage: rice save <name> [-m \"what changed\"] [--force]"; exit 2; }
     [[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]] || { err "name must be [a-zA-Z0-9_-]+"; exit 2; }
-    local dest="${ROOT}/${name}"
+
+    local dest="${ROOT}/${name}" stamp; stamp="$(ts)"
     if [[ -d "$dest" && "$force" -eq 0 ]]; then
         err "rice '$name' already exists. Use --force or pick another name."
         exit 1
     fi
+    local aside=""
     if [[ -d "$dest" && "$force" -eq 1 ]]; then
-        # don't delete — move aside.
-        local aside="${ROOT}/_replaced/${name}-$(ts)"
+        # don't delete — move aside. This is what `rice log` lists and what
+        # `rice restore` reads, so every overwrite is recoverable by name.
+        aside="${REPLACED}/${name}-${stamp}"
         mkdir -p "$(dirname "$aside")"
         mv "$dest" "$aside"
-        warn "previous '$name' moved to ${aside/$HOME/~}"
     fi
     mkdir -p "$dest"
     local copied=0
@@ -166,8 +281,27 @@ cmd_save() {
         fi
     done
     printf '%s\n' "${MANAGED_DIRS[@]}" > "${dest}/manifest.txt"
-    echo "saved=$(ts)" > "${dest}/meta.txt"
-    ok "saved rice '$name' ($copied dirs) → ${dest/$HOME/~}"
+    # Nothing changed since the last save? Put the old save back instead of
+    # making a snapshot. Repeated saves were pushing real saves out of the
+    # history limit (four "quick save" presses evicted four named saves).
+    if [[ -n "$aside" ]] && diff -rq --no-dereference -x meta.txt "$aside" "$dest" >/dev/null 2>&1; then
+        rm -rf "$dest"
+        mv "$aside" "$dest"
+        ok "no changes since the last save of '$name' — nothing new saved"
+        return 0
+    fi
+    {
+        echo "saved=${stamp}"
+        [[ -n "$label" ]] && echo "label=${label}"
+        [[ -n "$aside" ]] && echo "superseded=${name}-${stamp}"
+    } > "${dest}/meta.txt"
+    # tabs separate, so a label containing spaces stays one field
+    printf '%s\tsave\t%s\t%s\n' "$stamp" "$name" "${label:-—}" >> "$SAVELOG"
+    [[ -n "$aside" ]] && printf '%s\tsuperseded\t%s\t%s\n' "$stamp" "$name" "${name}-${stamp}" >> "$SAVELOG"
+    ok "saved rice '$name' ($copied dirs)${label:+ — $label}"
+    prune_history
+    [[ -n "$aside" ]] && say "  ${c_dim}restore the previous one with: rice restore ${name}-${stamp}${c_rst}"
+    return 0
 }
 
 cmd_load() {
@@ -207,6 +341,7 @@ cmd_load() {
     notify-send -a "$APP" -i "applications-graphics" \
         "Rice loaded: ${name}" \
         "Old config preserved. \`rice rollback\` to revert." 2>/dev/null || true
+    prune_history
 }
 
 cmd_rollback() {
@@ -248,13 +383,101 @@ cmd_diff() {
     done
 }
 
+cmd_log() {
+    local filter="" limit=25
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -n) limit="${2:-25}"; shift 2 ;;
+            *)  filter="$1"; shift ;;
+        esac
+    done
+    # Snapshots on disk are the truth; the log adds the labels. Listing from
+    # disk means entries still show up if the log is ever lost.
+    local found=0
+    say "${c_dim}rice history  (newest first)${c_rst}"
+    while IFS= read -r dir; do
+        [[ -z "$dir" ]] && continue
+        local id rice label when
+        id="$(basename "$dir")"
+        rice="${id%-*-*}"
+        [[ -n "$filter" && "$rice" != "$filter" ]] && continue
+        # meta.txt travels with the snapshot, so it always describes THAT
+        # state. The log is an audit trail, not the display source.
+        label="$(sed -n 's/^label=//p' "$dir/meta.txt" 2>/dev/null)"
+        # The id carries the save time; mtime is the copied content's time and
+        # disagrees with it, which made the listing look wrong.
+        local stamppart="${id##*-}" datepart
+        datepart="${id%-*}"; datepart="${datepart##*-}"
+        when="${datepart:0:4}-${datepart:4:2}-${datepart:6:2} ${stamppart:0:2}:${stamppart:2:2}"
+        printf '  %s%-30s%s %s%s%s  %s\n' \
+            "$c_grn" "$id" "$c_rst" "$c_dim" "$when" "$c_rst" "${label:-—}"
+        found=$((found+1))
+        [[ "$found" -ge "$limit" ]] && break
+        # sort by the id, not mtime: the id encodes when the snapshot was
+        # taken, mtime is the copied content's time, and the two disagree --
+        # which made a list labelled "newest first" come out unordered.
+    done < <(find "${REPLACED}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r)
+
+    # current vault entries, so `log` shows what you would load right now
+    say ""
+    say "${c_dim}current saves${c_rst}"
+    for d in "${ROOT}"/*/; do
+        local n; n="$(basename "$d")"
+        [[ "$n" == _* ]] && continue
+        [[ -n "$filter" && "$n" != "$filter" ]] && continue
+        local lb wh
+        lb="$(sed -n 's/^label=//p' "$d/meta.txt" 2>/dev/null)"
+        wh="$(sed -n 's/^saved=//p' "$d/meta.txt" 2>/dev/null)"
+        printf '  %s%-30s%s %s%s%s  %s\n' \
+            "$c_ylw" "$n" "$c_rst" "$c_dim" "${wh:-?}" "$c_rst" "${lb:-—}"
+    done
+    [[ "$found" -eq 0 ]] && say "" && say "  ${c_dim}no superseded snapshots yet — they appear when you re-save over a rice${c_rst}"
+    return 0
+}
+
+cmd_restore() {
+    local id="${1:-}" do_load=0
+    [[ "${2:-}" == "--load" ]] && do_load=1
+    [[ -z "$id" ]] && { err "usage: rice restore <id> [--load]   (see: rice log)"; exit 2; }
+    local snap="${REPLACED}/${id}"
+    [[ -d "$snap" ]] || snap="${AUTOBACK}/${id}"
+    [[ -d "$snap" ]] || { err "no snapshot '$id'. Run: rice log"; exit 1; }
+
+    local rice="${id%-*-*}"
+    [[ -d "$snap/config" || -f "$snap/manifest.txt" ]] || warn "snapshot looks unusual — restoring anyway"
+
+    # Restoring is itself a save-over, so the thing being replaced is kept too.
+    local dest="${ROOT}/${rice}" stamp; stamp="$(ts)"
+    if [[ -d "$dest" ]]; then
+        mv "$dest" "${REPLACED}/${rice}-${stamp}"
+        printf '%s\tsuperseded\t%s\tbefore restore of %s\n' "$stamp" "$rice" "$id" >> "$SAVELOG"
+        warn "current '$rice' kept as ${rice}-${stamp}"
+    fi
+    cp -a "$snap" "$dest"
+    printf '%s\trestore\t%s\tfrom %s\n' "$stamp" "$rice" "$id" >> "$SAVELOG"
+    ok "restored '$id' into rice '$rice'"
+    if [[ "$do_load" -eq 1 ]]; then
+        say "  ${c_dim}loading it…${c_rst}"
+        cmd_load "$rice"
+    else
+        say "  ${c_dim}apply it with: rice load ${rice}${c_rst}"
+    fi
+    return 0
+}
+
 cmd_help() {
     cat <<EOF
 ${c_grn}rice${c_rst} — BITE-OS rice manager (safe config-swap)
 
   rice list                  Show vault contents + active rice
   rice current               Print active rice name
-  rice save <name> [--force] Snapshot current ~/.config into vault
+  rice save <name> [-m "msg"] [--force]
+                             Snapshot current ~/.config into vault
+  rice log [name] [-n N]     Show save history with labels
+  rice restore <id> [--load] Bring back a superseded snapshot
+  rice delete <id> [-y]      Delete one snapshot
+  rice prune [-n N] [-y]     Trim history to the limit
+  rice limit [N]             Show or set how many snapshots to keep
   rice load <name>           Swap to <name> (auto-backs-up current first)
   rice rollback              Undo most recent load
   rice diff <name>           Compare current state to vault rice
@@ -275,6 +498,11 @@ case "${1:-help}" in
     load|swap|use) shift; cmd_load      "$@" ;;
     rollback|undo) shift; cmd_rollback  "$@" ;;
     diff)          shift; cmd_diff      "$@" ;;
+    log|history)   shift; cmd_log       "$@" ;;
+    restore)       shift; cmd_restore   "$@" ;;
+    delete|rm)     shift; cmd_delete    "$@" ;;
+    prune)         shift; cmd_prune     "$@" ;;
+    limit)         shift; cmd_limit     "$@" ;;
     help|--help|-h) cmd_help ;;
     *) err "unknown command: $1"; cmd_help; exit 2 ;;
 esac
