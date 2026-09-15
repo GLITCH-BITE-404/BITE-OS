@@ -9,9 +9,9 @@
 **A glitch-themed, performance-obsessed Linux distribution.**
 Built on the CachyOS base — riced to the teeth, engineered to never get in your way.
 
-`v1.0` · codename **dedsec** · build `20260907` · by **GLITCH-BITE-404**
+`v1.1` · codename **dedsec** · build `20260915` · by **GLITCH-BITE-404**
 
-[![Latest build](https://img.shields.io/badge/latest%20build-20260907-00ff78?style=for-the-badge)](#-download)
+[![Latest build](https://img.shields.io/badge/latest%20build-20260915-00ff78?style=for-the-badge)](#-download)
 [![TikTok](https://img.shields.io/badge/TikTok-@glitch__bite404-ff0050?style=for-the-badge&logo=tiktok)](https://www.tiktok.com/@glitch_bite404)
 ![Base](https://img.shields.io/badge/base-CachyOS%20%2F%20Arch-1793d1?style=for-the-badge&logo=archlinux)
 ![Shell](https://img.shields.io/badge/desktop-Hyprland%20%2B%20Quickshell-00ff78?style=for-the-badge)
@@ -23,17 +23,17 @@ Built on the CachyOS base — riced to the teeth, engineered to never get in you
 
 ---
 
-> ## ⬛ Latest version — build `20260907`
+> ## ⬛ Latest version — build `20260915`
 >
-> **This is the newest ISO and replaces every earlier upload.** The second desktop
-> is now **serpantinum** — a Qt6/QuickShell shell with a movable-widget desktop,
-> live audio visualiser and a built-in settings GUI — replacing the ilyamiro rice.
-> It ships with a **BITE-OS tab** for saving and swapping rices and a **Keybinds
-> tab** that edits your shortcuts from the GUI. Full list under
-> **[What's new](#-whats-new-in-20260907)**.
+> **This is the newest ISO and replaces every earlier upload.** Caelestia moves to
+> stable **2.4.0** and serpantinum to **2.1.5** — both merged with every BITE-OS
+> change kept — plus new **BITE-OS desktop widgets** (dedsec monitor, matrix rain,
+> rice switcher, workspace map, process top…), **widget saves** with auto-save, and
+> **undo** for widget changes. Full list under
+> **[What's new](#-whats-new-in-20260915)**.
 >
-> **[⤓ Download it here](#-download)** · already on an older build? Just press
-> `SUPER+U`, no reinstall needed.
+> **[⤓ Download it here](#-download)** · already on 1.1.31 or newer? Just press
+> `SUPER+U`. Installed from an older ISO? See **[Updating](#-updating)**.
 >
 > After installing, `bite-toys update && bite-toys upgrade` pulls the newest
 > toys — they update independently of the ISO.
@@ -204,27 +204,68 @@ The system maps directly to these custom core inputs for elite navigation:
 
 ## ◈ Download
 
-> ### ⬛ Latest build — `20260907`
+> ### ⬛ Latest build — `20260915` (1.1.31)
 > This is the **current** ISO and supersedes every earlier upload. Everything from
-> the `20260906` build, plus the move from ilyamiro to **serpantinum** as the second
-> desktop — see **[What's new](#-whats-new-in-20260907)**. The rice swap needs this
-> ISO; `SUPER+U` won't bring it to an older install.
+> the earlier builds, plus Caelestia 2.4.0, serpantinum 2.1.5 and the BITE-OS
+> widgets — see **[What's new](#-whats-new-in-20260915)**.
 
 > The ISO (~5.6 GiB) is hosted off-GitHub due to file-size limits.
 
-**➡ [Download BITE-OS 1.0 (dedsec)](https://archive.org/download/bite-os-1.0-x86_64_20260907/bite-os-1.0-x86_64.iso)**
+**➡ [Download BITE-OS 1.1.31 (dedsec)](https://archive.org/download/bite-os-1.1.31-x86_64/bite-os-1.1.31-x86_64.iso)**
 
-*(mirror / details page: [archive.org item](https://archive.org/details/bite-os-1.0-x86_64_20260907))*
+*(mirror / details page: [archive.org item](https://archive.org/details/bite-os-1.1.31-x86_64))*
 
-`SHA256`: `28a84e561e60df9aeb745ee030da1bc1898f7600c02e24801476774399024801`
+`SHA256`: `15a50830f6125b7a72af436b7e277a9fdbbe5730bbbe8ca079f11aaede8a8a76`
 
 Verify the download before flashing — anything that doesn't match this hash is not the ISO I built:
 
 ```bash
-sha256sum bite-os-1.0-x86_64.iso
+sha256sum bite-os-1.1.31-x86_64.iso
 ```
 
 This build ships **`bite-toys`** and its four toys preinstalled — see [Toys](#-toys).
+
+## ◈ What's new in 20260915
+
+**Caelestia is on stable 2.4.0 — with every BITE-OS change kept.** The rice moves off
+the old pinned git build to the 2.4.0 release (plus libcava 1.0 and qt6-m3shapes).
+Like the serpantinum updates, this was a three-way merge: upstream 2.4.0 as the base,
+all 27 BITE-OS patches re-applied on top — the frosted lock screen and its fetch,
+low-battery toasts, video-wallpaper thumbnails, clickable panels over fullscreen.
+Upstream removed the old control center, so the rice switcher now lives in **Nexus**
+as a *Rice & shell* page.
+
+**serpantinum is updated to 2.1.5**, merged the same way: new battery and usage
+widgets, dock layer and scale options, and bluetooth crash fixes upstream, with the
+BITE-OS tabs and patches carried over.
+
+**New BITE-OS desktop widgets.** The widget editor has a **BITE-OS** tab on its top
+edge that opens a second row: a **dedsec monitor** (terminal, bars or hex look),
+**matrix rain** (katakana, binary or glitch), a **rice switcher**, **rice saves**,
+**widget layouts**, a **workspace map** and a live **process top**. Each one's
+settings (how many saves, workspaces or processes it shows) are in the new
+**Widgets** tab in settings.
+
+**Widget saves and undo.**
+- Save your widget layout under a name and load it back later, or turn on
+  auto-save. Saves live outside the rice vault, so restoring or switching a rice
+  never wipes the list.
+- Every widget change is recorded, and the last one can be undone. If widgets
+  suddenly disappear, a backup of the layout is kept automatically.
+
+**Super+U now updates the rice too.** Rice changes used to reach only new installs,
+because they ship in `/etc/skel`. Now `SUPER+U` also brings each release's rice into
+your home — but only the files you never edited; anything you changed is kept. This
+needs an install from this ISO or newer (see [Updating](#-updating)).
+
+**Fixes**
+- Logout from serpantinum works again on plain Hyprland sessions.
+- The rice list shows your current save on top with real save times, and saving
+  an unchanged rice no longer pushes older saves out of the list.
+- Settings sidebar: the BITE-OS, Keybinds and Widgets tabs have their buttons back,
+  and About opens About.
+- Icons sit centred again; media previous/next keys and `SUPER+M` added.
+- NVIDIA driver 615.71.09.
 
 ## ◈ What's new in 20260910
 
@@ -440,6 +481,14 @@ BITE-OS keeps itself current **and stays BITE-OS** — updates never revert it t
 
 - Press **`SUPER + U`**, or launch **Update BITE-OS** from the app menu, or run **`bite-os-update`** in a terminal.
 - It updates *everything* (kernel, apps, AUR, the rice), is **optional** (asks first, only acts if there's something to do), and **logs** every run to `~/.local/state/bite-os/`.
+- Rice updates land in your home too, but only for files you never edited — your changes are kept, and a backup is made before anything is replaced.
+
+> **Installed from an ISO older than 1.1.31 (build `20260915`)?** Those builds pin
+> the old Caelestia 1.6.1, which the current BITE-OS package can't run with, so they
+> can't take updates from the BITE-OS repo — reinstall from the
+> [current ISO](#-download). Until you do, comment out the `[bite-os]` section in
+> `/etc/pacman.conf` (a `#` in front of the `[bite-os]` line and the lines under it)
+> and normal CachyOS / Arch updates work again.
 
 ## ◈ Source
 
@@ -464,7 +513,8 @@ identity out.
 
 The `[bite-os]` repo is **live**, hosted on GitHub Releases, and wired into
 `/etc/pacman.conf` automatically on install — so `SUPER+U` / `pacman -Syu`
-pulls new BITE-OS releases straight from this repository.
+pulls new BITE-OS releases straight from this repository. Every package and the
+repo database are signed with the BITE-OS key, so nobody else can push "updates".
 
 ## ◈ Build it yourself
 

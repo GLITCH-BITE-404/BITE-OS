@@ -50,5 +50,11 @@ for p in "${pkgs[@]}"; do
     echo "package $(basename "$p"): $(wc -l < "$TMP/list") files"
 done
 
+# 3) everything already fingerprinted. Old packages come and go from the build
+# dirs (build-repo.sh clears them), so without this a rebuild silently forgets
+# versions that were shipped -- and Super+U then treats those files as edited.
+# Every entry is a version BITE-OS really shipped, so the list only ever grows.
+[ -f "$OUT" ] && cat "$OUT" >> "$TMP/all"
+
 sort -u "$TMP/all" > "$OUT"
 echo "wrote $OUT: $(wc -l < "$OUT") distinct (hash, path) entries"

@@ -88,6 +88,8 @@ if [ "$rc" -eq 0 ]; then
     echo "${C_CYAN}✓ Update complete. Still BITE-OS.${C_RESET}"
     command -v notify-send >/dev/null && notify-send "BITE-OS" "System updated successfully." || true
     echo "${C_DIM}If a new kernel was installed, reboot when convenient.${C_RESET}"
+    # the upgrade may have brought a new rice release; bring it into this home
+    rice_update
 else
     echo "${C_MAUVE}✗ Update finished with errors (exit $rc). See the log: $LOG${C_RESET}"
     command -v notify-send >/dev/null && notify-send -u critical "BITE-OS" "Update had errors — see $LOG" || true

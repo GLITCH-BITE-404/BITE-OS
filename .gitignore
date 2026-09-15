@@ -2,8 +2,10 @@
 out/
 *.iso
 
-# local pacman repo (rebuilt by repo/build-repo.sh)
+# local pacman repo (rebuilt by repo/build-repo.sh) + the signed copy that
+# repo/publish-repo.sh stages for upload
 repo/x86_64/
+repo/publish/
 
 # built packages
 pkg/**/*.pkg.tar.*
