@@ -10,7 +10,7 @@
 
 pkgname=bite-os
 pkgver=1.1
-pkgrel=29
+pkgrel=30
 pkgdesc="BITE-OS — identity, branding, rice system and tooling (CachyOS-based)"
 arch=('any')
 url="https://tiktok.com/@glitch_bite404"
@@ -27,8 +27,8 @@ depends=(
     'caelestia-shell>=2.4.0' 'libcava>=1.0.0' 'qt6-m3shapes-git'
     'caelestia-cli' 'jq' 'curl' 'playerctl' 'swayosd'
     'cliphist' 'wl-clip-persist' 'bibata-cursor-git' 'hypridle'
-    # bite-toys hub + the bundled toys (bitebeat / bitecam / bitemuseum):
-    'ffmpeg' 'python' 'python-numpy' 'python-pillow' 'qt6-declarative'
+    # bite-toys hub + the bundled toys (bitebeat / bitecam / bitemuseum / bitewrite):
+    'ffmpeg' 'python' 'python-numpy' 'python-pillow' 'qt6-declarative' 'qt6-multimedia'
     'v4l-utils' 'v4l2loopback-dkms'
 )
 

@@ -1,0 +1,62 @@
+# SPEED mode's "sentences" text. One per line; lines starting with # are skipped.
+# Add your own — they're picked at random.
+The quick brown fox jumps over the lazy dog, and the dog does not care.
+Every letter you type lands a little softer than the one before it.
+She kept the old radio on the windowsill because it still caught the rain.
+Nobody remembers who planted the tree, but everybody sits under it.
+The train was late again, so we counted the pigeons on the platform.
+A good song sounds different the hundredth time you hear it.
+He wrote her name on the fogged mirror and waited for it to fade.
+Some days the code compiles on the first try, and those days are suspicious.
+The coffee went cold while I argued with a semicolon.
+Stars do not care how late it is, which is why they are good company.
+My keyboard has a key that squeaks, and I have grown to love it.
+If you listen closely, the fridge hums in a perfect minor chord.
+We drove until the radio lost the station and then we sang instead.
+The cat sat on the laptop as if it knew exactly what it was doing.
+Write the thing you would want to read on a bad day.
+Rain on a tin roof is the oldest drum machine in the world.
+The screen glowed green at three in the morning and nothing felt wrong.
+She laughed so hard at her own joke that it became funny.
+Every map is a little bit wrong, and that is part of the adventure.
+The dog brought back a stick twice its size and looked very proud.
+I found a note in an old book that said you were here first.
+Somewhere a server is running a program nobody remembers writing.
+The best ideas show up in the shower, far away from any pen.
+He fixed the bug by deleting the comment that explained it.
+Lights flickered, the terminal blinked, and the system bit back.
+Mountains look small from far away, and so do most problems.
+The bakery opens at five, and the whole street smells like bread by six.
+We named the plant Kevin and now we have to keep it alive.
+Her handwriting leaned forward like it was always in a hurry.
+A pixel is just a tiny square that tries its very best.
+The ocean kept its secrets and gave us a nice sunset instead.
+Turn it off and on again, and whisper something kind to it.
+There is always one sock that escapes the washing machine.
+The moon followed the car all the way home without asking.
+Old photographs smell like the drawer they were kept in.
+Nothing is as loud as a quiet room when you are waiting for news.
+I learned to type by chatting with friends until dawn.
+The glitch was not a mistake; it was the art trying to get out.
+A cup of tea fixes nothing, but it makes the fixing easier.
+The street lamp buzzed like it had something important to say.
+Every playlist tells a story if you listen in the right order.
+Paper planes fly best when you do not throw them too hard.
+He said he would be five minutes, which meant half an hour.
+The robot learned to dance by watching people who could not.
+Snow made the whole city whisper for a day.
+Small steps still count, even when nobody is watching you take them.
+The library was so quiet you could hear the pages turning.
+Code is poetry that a machine is forced to read.
+We watched the storm from the balcony with a bowl of popcorn.
+Her favourite colour changed every week, and she was right every time.
+The hardest part of any journey is putting your shoes on.
+A keyboard is a piano that plays words instead of notes.
+He saved the file, closed the laptop, and finally went outside.
+Somewhere between the second and third coffee, the plan made sense.
+The wind rearranged the leaves exactly the way it wanted.
+Nobody reads the terms and conditions, not even the people who wrote them.
+The music box played the same tune for fifty years without complaining.
+Fireflies are just tiny lanterns that forgot to stay still.
+The printer jammed, because of course it did.
+Always leave a place a little better than you found it.

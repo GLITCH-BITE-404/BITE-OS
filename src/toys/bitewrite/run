@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# bitewrite — a blank page where every letter lands like the launcher's.
+#
+# Write.qml and its pieces are the face; engine.py does what QML cannot —
+# synthesising the sound packs, finding songs and lyrics, driving MPRIS,
+# saving settings. They talk through a run directory, like bitedig.
+
+set -uo pipefail
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/bite-os"
+RUNDIR="$CACHE/write-run"
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}/bite-os/bitewrite"
+c_red=$'\e[31m'; c_dim=$'\e[2m'; c_rst=$'\e[0m'
+die() { printf '%s✗%s %s\n' "$c_red" "$c_rst" "$*" >&2; exit 1; }
+
+if [[ "${1:-}" == "--preview" ]]; then
+    printf '  bitewrite — WRITE · CODE · LYRICS\n'
+    printf '  %sopens a window; there is nothing to sample into a text pane%s\n' "$c_dim" "$c_rst"
+    exit 0
+fi
+
+command -v qml6 >/dev/null 2>&1 || die "qml6 is missing — sudo pacman -S qt6-declarative"
+[[ -f "$HERE/Write.qml" ]] || die "Write.qml is missing from $HERE"
+
+mkdir -p "$RUNDIR" "$DATA/snippets" "$DATA/songs"
+rm -f "$RUNDIR"/*.qml "$RUNDIR"/*.js "$RUNDIR/request.json" "$RUNDIR/status.json" "$RUNDIR/now.json"
+cp -f "$HERE"/*.qml "$HERE"/*.js "$RUNDIR/"
+
+DOCS="$(xdg-user-dir DOCUMENTS 2>/dev/null || true)"
+[[ -n "$DOCS" && -d "$DOCS" ]] || DOCS="$HOME"
+export DATA DOCS
+
+python3 "$HERE/engine.py" --prep "$RUNDIR" || die "could not prepare the run directory"
+
+python3 "$HERE/engine.py" --serve "$RUNDIR" &
+ENGINE=$!
+trap 'kill "$ENGINE" 2>/dev/null; wait "$ENGINE" 2>/dev/null' EXIT INT TERM
+
+# Qt refuses local-file XHR unless told otherwise — the whole IPC rides on it.
+export QML_XHR_ALLOW_FILE_READ=1 QML_XHR_ALLOW_FILE_WRITE=1
+cd "$RUNDIR" || die "cannot enter $RUNDIR"
+
+# Mesa and VDPAU probe for backends this machine doesn't have, and Qt
+# Multimedia announces its ffmpeg on every launch. None of it is an error.
+# Filtered by exact text so a real problem still gets through.
+qml6 Write.qml 2>&1 | grep -v --line-buffered \
+    -e "MESA-LOADER: failed to open" \
+    -e "^failed to open .*_gbm.so" \
+    -e "Failed to open VDPAU backend" \
+    -e "qt.multimedia.ffmpeg: Using Qt multimedia with FFmpeg" \
+    || true

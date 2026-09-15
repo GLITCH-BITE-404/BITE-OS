@@ -1,0 +1,139 @@
+# Every one of these can also be changed from inside bitewrite — F4 opens the
+# settings panel, and what you pick there is saved back into this file.
+
+# ── look ─────────────────────────────────────────────────────────────────────
+
+# How a new letter arrives.
+# launcher is the shell's own pop. drop falls in and bounces. glitch scrambles
+# through noise before it settles. stamp slams down from big. spin twirls in.
+# float drifts up softly. random picks one per letter.
+# @choices launcher,drop,glitch,stamp,spin,float,random
+entrance=launcher
+
+# How a deleted letter leaves.
+# launcher shrinks up and away. fall drops off the page with gravity. dust
+# bursts into sparks. flick gets flicked off to the side. glitch tears apart.
+# @choices launcher,fall,dust,flick,glitch
+exit=launcher
+
+# What colour the letters are.
+# theme is plain text colour. flash lands in the accent and cools down.
+# rainbow gives every letter its own hue. accent writes in the accent colour.
+# @choices theme,flash,rainbow,accent
+colour=theme
+
+# How hard each letter bounces when it lands. 5 is exactly the launcher.
+# @range 0-10
+bounce=5
+
+# @choices bar,block,underline
+caret=bar
+
+# The caret and selection colour, from the live theme. The launcher uses mauve.
+# @choices mauve,blue,peach,teal,red,pink,yellow,green,sapphire
+accent=mauve
+
+# How big the letters are, in pixels. Ctrl+= and Ctrl+- change it too.
+# @range 12-72
+size=28
+
+# The widest a line gets, in characters, before words wrap.
+# @range 20-160
+width=60
+
+# ── feel ─────────────────────────────────────────────────────────────────────
+
+# A little burst of sparks from every letter you type.
+# @choices on,off
+sparks=on
+
+# A streak counter: keep typing without pausing and it climbs, the page edge
+# glows harder, and every milestone goes off.
+# @choices on,off
+combo=on
+
+# Shake the page: on Enter, on every key, or never.
+# @choices enter,keys,off
+shake=enter
+
+# Each new letter sends a little wave back through the ones before it.
+# @choices off,on
+ripple=off
+
+# ── sound ────────────────────────────────────────────────────────────────────
+
+# launcher is the shell's own click. The rest are synthesised: typewriter
+# (with a bell on Enter), thock (deep mechanical), bubble, musicbox and
+# chiptune (every letter is a note, so typing plays melodies), glitch, and
+# rain (soft, for calm writing).
+# @choices launcher,typewriter,thock,bubble,musicbox,chiptune,glitch,rain,none
+soundpack=launcher
+
+# Loudness on top of your shell's own sfx volume. 10 is exactly the launcher.
+# @range 0-10
+volume=10
+
+# A different .wav for the launcher pack's key click. Blank is the real one.
+type_sound=
+
+# ── code mode ────────────────────────────────────────────────────────────────
+
+# How visible the code you are copying is. 0 hides it completely, so you
+# have to know it by heart. Ctrl+H hides it on the fly.
+# @range 0-10
+ghost=3
+
+# strict refuses a wrong key instead of typing it, with a buzz.
+# @choices off,on
+strict=off
+
+# ── lyrics mode ──────────────────────────────────────────────────────────────
+
+# follow: the song plays through the line you're on and waits at the start of
+# the next one until you get there, so it never runs away from you (needs
+# synced lyrics — without timestamps it behaves like drive). drive: the song
+# only plays while you keep typing and drifts to a stop when you pause.
+# karaoke: the song plays straight through and you race it.
+# @choices follow,drive,karaoke
+flow=follow
+
+# In follow, how many lines the singer may get ahead of you before the song
+# waits. 0 means it waits the moment it reaches a line you haven't started.
+# @range 0-3
+lead=0
+
+# Finish a line and keep typing and you drop onto the next one on your own,
+# rather than piling letters onto the end of the line.
+# @choices on,off
+autoline=on
+
+# In drive, how long the song keeps going after your last key, in tenths of a
+# second. 15 is a second and a half.
+# @range 3-60
+grace=15
+
+# ── speed mode ───────────────────────────────────────────────────────────────
+
+# How long a test runs. infinite never stops and just shows your speed live.
+# custom uses the number of seconds below.
+# @choices 60,15,30,120,infinite,custom
+speed_time=60
+
+# Seconds, when speed_time is custom.
+# @range 10-600
+speed_custom=90
+
+# What you type. words: random common words. sentences: real sentences with
+# capitals and punctuation. hard: words with capitals, numbers and symbols
+# thrown in. page: what you wrote in WRITE mode.
+# @choices words,sentences,hard,page
+speed_text=words
+
+# ── window ───────────────────────────────────────────────────────────────────
+
+# @choices window,maximized,fullscreen
+window=window
+
+# Keep the page: what you wrote in WRITE mode comes back next time.
+# @choices on,off
+keep=on
