@@ -108,7 +108,6 @@ lib32-mesa
 lib32-opencl-mesa
 lib32-vulkan-intel
 lib32-vulkan-radeon
-lib32-nvidia-utils
 linux-cachyos-headers
 dkms
 nvidia-utils
@@ -297,7 +296,10 @@ lib32-vulkan-radeon
 # plus userspace libs. For older cards users install nvidia-470xx-dkms post-install.
 nvidia-open-dkms
 nvidia-utils
-lib32-nvidia-utils
+# From multilib on purpose: [cachyos] is listed first and can lag a driver
+# bump (2026-09-15: its lib32 was 610.57.04 while its nvidia-utils was
+# 615.71.09 -> "unable to satisfy nvidia-utils=610.57.04", ISO build failed).
+multilib/lib32-nvidia-utils
 nvidia-settings
 opencl-nvidia
 egl-wayland
