@@ -38,7 +38,11 @@ QtObject {
         for (var i = 0; i < sfx.made.length; i++) sfx.made[i].destroy();
         sfx.made = [];
         var b = {};
-        var p = sfx.info;
+        // straight from the manifest, NOT sfx.info: load() runs from
+        // onPackChanged, which can fire before the info binding has caught
+        // up — so it loaded the PREVIOUS pack, and a reset or a change only
+        // took effect one change later
+        var p = sfx.manifest[sfx.pack] || null;
         if (p) {
             ["key", "space", "enter", "back", "error", "done", "run"].forEach(function(ev) {
                 b[ev] = (p[ev] || []).map(function(path) {

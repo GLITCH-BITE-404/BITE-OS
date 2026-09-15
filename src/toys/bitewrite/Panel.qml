@@ -172,15 +172,39 @@ Item {
             font.letterSpacing: 2
             color: w.cAccent
         }
-        Text {
+        // the total reset, where you can see it — two clicks, so a stray one
+        // can't throw away everything you set up
+        Rectangle {
+            id: resetBtn
+            property bool armed: false
             anchors.right: parent.right
-            anchors.rightMargin: 20
+            anchors.rightMargin: 16
             anchors.verticalCenter: head.verticalCenter
-            text: "keep typing to try it"
-            font.family: w.fontFamily
-            font.pixelSize: 11
-            color: w.cSub
-            opacity: 0.6
+            width: resetLabel.implicitWidth + 22
+            height: 26
+            radius: 13
+            color: armed ? Qt.alpha(w.cBad, 0.22) : (resetHover.hovered ? Qt.alpha(w.cAccent, 0.18) : "transparent")
+            border.width: 1
+            border.color: armed ? w.cBad : Qt.alpha(w.cAccent, 0.45)
+            Behavior on color { ColorAnimation { duration: 140 } }
+            Text {
+                id: resetLabel
+                anchors.centerIn: parent
+                text: resetBtn.armed ? "sure? click again" : "↺ reset all"
+                font.family: w.fontFamily
+                font.pixelSize: 12
+                color: resetBtn.armed ? w.cBad : w.cAccent
+            }
+            HoverHandler { id: resetHover }
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                    if (resetBtn.armed) { resetBtn.armed = false; disarm.stop(); pn.resetAll(); }
+                    else { resetBtn.armed = true; disarm.restart(); }
+                }
+            }
+            Timer { id: disarm; interval: 3000; onTriggered: resetBtn.armed = false }
         }
 
         ListView {

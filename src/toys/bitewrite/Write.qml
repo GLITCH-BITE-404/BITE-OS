@@ -85,6 +85,9 @@ Window {
     // code never wraps (a wrapped line of code is a different line of code),
     // and neither does anything with a ghost, so typing sits on top of it
     readonly property bool nowrap: win.ghosted || win.mode === "code"
+    // LYRICS and SPEED: every key fills the next slot of the ghost and the
+    // line never moves (see align.js slots())
+    readonly property bool slotMode: win.ghosted && (win.mode === "lyrics" || win.mode === "speed")
 
     // ── grid ────────────────────────────────────────────────────────────────
     readonly property int longest: {
@@ -336,7 +339,7 @@ Window {
     function glyphAt(s, i) {
         var code = s.charCodeAt(i), ch = s[i];
         if (isHigh(code)) return i + 1 < s.length ? ch + s[i + 1] : "";
-        if (isLow(code) || ch === "\n" || ch === "\t" || ch === " ") return "";
+        if (isLow(code) || ch === "\n" || ch === "\t" || ch === " " || ch === win.fill) return "";
         return ch;
     }
 
@@ -375,6 +378,10 @@ Window {
         for (var i = 0; i < lines.length; i++) m = Math.max(m, lines[i].length);
         return m;
     }
+    function alignNow(s) {
+        if (!win.ghosted) return null;
+        return win.slotMode ? Align.slots(s, win.ghostLines) : Align.align(s, win.ghostLines);
+    }
     function applyAlign(al) {
         win.ghostView = al ? al.view : [];
         win.wrong = al ? al.wrong : 0;
@@ -399,7 +406,7 @@ Window {
         }
 
         var L = layout(s), i;
-        var al = win.ghosted ? Align.align(s, win.ghostLines) : null;
+        var al = win.alignNow(s);
         var bad = al ? al.bad : null;
         var move = function(idx, oc, orow, ob) {
             var nb = bad ? bad[idx] : false;
@@ -437,7 +444,7 @@ Window {
 
     // the ghost changed but the text didn't (a new piece, SPEED growing)
     function realign() {
-        var s = ed.text, al = win.ghosted ? Align.align(s, win.ghostLines) : null;
+        var s = ed.text, al = win.alignNow(s);
         for (var i = 0; i < s.length; i++) {
             var nb = al ? al.bad[i] : false;
             if (!!win.badArr[i] !== nb) charModel.setProperty(i, "bad", nb);
@@ -548,12 +555,7 @@ Window {
         if (ed.readOnly) return true;
         var atEnd = ed.cursorPosition === ed.length && !ed.selectedText.length;
 
-        // a finished line + more typing drops onto the next line
-        if (atEnd && win.ghosted && t !== "\n" &&
-            ((win.mode === "lyrics" && win.autoline) || win.mode === "speed")) {
-            var nl = Align.autoline(Align.state(ed.text, win.ghostLines), t);
-            if (nl !== null) { ed.insert(ed.cursorPosition, nl); return true; }
-        }
+        if (win.slotMode) return win.slotKey(t);
 
         // strict: a wrong key is refused, not typed
         if (win.strict && win.ghosted && atEnd && win.mode !== "speed") {
@@ -579,11 +581,70 @@ Window {
         return false;
     }
 
+    // ── LYRICS and SPEED: every key fills the next slot ─────────────────────
+    // The line never moves. A wrong letter stays red where it stands and you
+    // carry on; extra letters are refused rather than shoving the ghost along
+    // and off the screen; a space mid-word skips to the next word.
+    // must match FILL in align.js — a .pragma library's plain vars don't
+    // reach QML (only its functions do), so Align.FILL reads as undefined.
+    // Private-use, because TextEdit turns a non-breaking space back into a
+    // plain one the moment it's typed, which silently erased every skip
+    readonly property string fill: "\ue000"
+    function caretToEnd() { if (win.slotMode && !ed.selectedText.length) ed.cursorPosition = ed.length; }
+    function refuse() {
+        sfxObj.play("error");
+        caretShake.restart();
+        if (win.mode === "speed") speed.onKey("error");
+    }
+    function slotKey(t) {
+        if (ed.selectedText.length) ed.deselect();
+        ed.cursorPosition = ed.length;
+        var s = ed.text, lines = s.split("\n"), r = lines.length - 1, line = lines[r], L = line.length;
+        var last = r >= win.ghostLines.length - 1;
+        var g = r < win.ghostLines.length ? win.ghostLines[r] : "";
+        var gc = L < g.length ? g[L] : null;              // null: this row is full
+        var wraps = win.mode === "speed" || win.autoline;
+        var end = ed.length;
+
+        if (t === "\n") {                                  // Enter skips the rest of the row
+            if (last) { refuse(); return true; }
+            ed.insert(end, g.substr(L).replace(/[^ ]/g, win.fill) + "\n");
+            return true;
+        }
+        if (gc === null) {                                 // the row is full
+            if (!wraps || last) { refuse(); return true; }
+            ed.insert(end, t === " " ? "\n" : "\n" + t);
+            return true;
+        }
+        if (t === " ") {
+            if (gc === " ") return false;                  // the space it wants
+            if (!L || line[L - 1] === " ") return true;    // a stray space between words: nothing happens
+            var e = L;                                     // mid-word: skip the rest of the word
+            while (e < g.length && g[e] !== " ") e++;
+            var skip = g.substring(L, e).replace(/./g, win.fill);
+            ed.insert(end, skip + (e < g.length ? " " : (wraps && !last ? "\n" : "")));
+            return true;
+        }
+        if (gc === " ") { refuse(); return true; }         // the word is full — extras push nothing
+        if (win.strict && t !== gc) { refuse(); return true; }
+        return false;                                      // typed where it stands; wrong goes red
+    }
+    // Backspace straight after a skip takes the whole skip back in one press
+    function slotBack() {
+        var s = ed.text, n = s.length;
+        if (!n || (s[n - 1] !== " " && s[n - 1] !== "\n")) return false;
+        var j = n - 1;
+        while (j > 0 && (s[j - 1] === win.fill || s[j - 1] === " ")) j--;
+        if (s.substring(j, n).indexOf(win.fill) < 0) return false;
+        ed.remove(j, n);
+        return true;
+    }
+
     // ── what a keystroke does besides the letter ────────────────────────────
     function onEdit(ch) {
         var kind = "key", c = "";
         if (ch.del > 0 && ch.ins === 0) kind = "back";
-        else if (ch.ins >= 1 && ch.ins <= 2) {
+        else if (ch.ins >= 1) {
             c = ch.text.slice(-1);
             kind = c === "\n" ? "enter" : c === " " ? "space" : "key";
             if (win.ghosted && win.badArr[ch.p + ch.ins - 1]) kind = "error";
@@ -976,7 +1037,8 @@ Window {
         var name = "bitewrite-" + d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()) + "-" +
                    z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds()) + (win.mode === "code" ? ".js" : ".txt");
         var path = (win.docsDir || win.homeDir) + "/" + name;
-        win.writeFile(path, ed.text, function() { toast("saved → " + pretty(path)); });
+        // skipped letters are private-use marks on the page — spaces in a file
+        win.writeFile(path, ed.text.split(win.fill).join(" "), function() { toast("saved → " + pretty(path)); });
         sfxObj.play("enter");
     }
     function toast(msg) { toastText.text = msg; toastAnim.restart(); }
@@ -1029,7 +1091,12 @@ Window {
                 keepTimer.restart();
             }
         }
-        onCursorPositionChanged: win.updateCaret()
+        onCursorPositionChanged: {
+            win.updateCaret();
+            // slot typing always happens at the end — a click or an arrow
+            // can't open a gap in the middle of the line
+            if (win.slotMode && !ed.selectedText.length && ed.cursorPosition < ed.length) Qt.callLater(win.caretToEnd);
+        }
         onSelectionStartChanged: win.updateSelection()
         onSelectionEndChanged: win.updateSelection()
 
@@ -1079,6 +1146,7 @@ Window {
                 if (win.mode === "speed") win.cycleSpeed("speed_time", times, 1);
                 else if (win.mode !== "lyrics") ed.insert(ed.cursorPosition, win.mode === "code" ? "  " : "    ");
             }
+            else if (!ctrl && e.key === Qt.Key_Backspace && win.slotMode) { if (!win.slotBack()) return; }
             else if (!ctrl && e.text.length === 1 && e.text >= " ") { if (!win.typeKey(e.text)) return; }
             else if (!ctrl && (e.key === Qt.Key_Return || e.key === Qt.Key_Enter)) { if (!win.typeKey("\n")) return; }
             else return;
@@ -1250,6 +1318,16 @@ Window {
                                : (sung ? Math.max(0.55, win.ghostLevel / 10) : win.ghostLevel / 10 * 0.6)
                         Behavior on opacity { NumberAnimation { duration: 200 } }
                         Behavior on color { ColorAnimation { duration: 200 } }
+
+                        // letters skipped with a space: still in their place, in red
+                        Text {
+                            text: modelData.missed || ""
+                            height: parent.height
+                            verticalAlignment: Text.AlignVCenter
+                            font: parent.font
+                            color: win.cBad
+                            opacity: parent.opacity > 0.01 ? Math.min(1, 0.6 / parent.opacity) : 0
+                        }
                     }
                 }
 
