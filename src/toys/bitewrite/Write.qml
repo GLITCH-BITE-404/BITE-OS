@@ -1,23 +1,26 @@
 // bitewrite — the launcher's search box, turned into a whole page.
 //
-// Four modes behind one page:
+// Five modes behind one page:
 //   WRITE   free writing, kept between sessions
-//   CODE    write a program (or type one over its ghost); Ctrl+Enter runs
-//           whatever you wrote — broken code doesn't run, valid code does
+//   NOTES   as many notes as you like, saved as you type
+//   CODE    write a program in JavaScript, Python or Bash (or type one over
+//           its ghost); Ctrl+Enter runs whatever you wrote
 //   LYRICS  a song's lyrics as the ghost; your typing drives the song
 //   SPEED   a typing test with your speed live at the bottom
 //
 // A hidden TextEdit owns the text (typing, undo, paste, the keyboard caret
 // all come free) and every character is its own Glyph on a monospace grid,
-// fed by a prefix/suffix diff so only changed letters are born or die. What
-// you type is held against the ghost by align.js, line by line and word by
-// word. Animation numbers for the default style are lifted from serpantinum's
-// reusables/Input.qml, so it FEELS like the launcher rather than resembling it.
+// fed by a prefix/suffix diff so only changed letters are born or die.
+// bidi.js puts right-to-left text where it belongs on that grid; align.js
+// holds what you type against the ghost. Animation numbers for the default
+// style are lifted from serpantinum's reusables/Input.qml, so it FEELS like
+// the launcher rather than resembling it.
 
 import QtQuick
 import QtQuick.Window
 import QtQuick.Particles
 import "align.js" as Align
+import "bidi.js" as Bidi
 
 Window {
     id: win
@@ -37,9 +40,11 @@ Window {
     property color cAccent: "#b5838d"
     property color cBad: "#e76f51"
     property string fontFamily: "JetBrainsMono Nerd Font"
+    property string fontRtl: ""
     property real radius: 10
     property int userPx: 28
     property int maxCols: 60
+    property string direction: "auto"
     property real overshoot: 3.2
     property string entrance: "launcher"
     property string exit: "launcher"
@@ -64,6 +69,7 @@ Window {
     property string bestsPath: ""
     property string docsDir: ""
     property string homeDir: ""
+    property string terminalName: ""
     property var snippetList: []
     property bool ready: false
     property var sfx: sfxObj
@@ -72,29 +78,29 @@ Window {
     property string mode: "write"
     property string target: ""         // the ghost, in CODE, LYRICS and SPEED
     property var ghostLines: []
-    property var ghostView: []         // per row: the part of the ghost still to type
+    property var ghostVis: []          // per ghost line: where each letter sits (bidi.js)
+    property int ghostCells: 0
+    property var ghostView: []         // align.js's view of the ghost, per row
     property string writeText: ""      // WRITE's page while another mode is up
     property string pieceName: ""
+    property string codeLang: "js"
     property bool ghostHidden: false
     property bool complete: false
     property bool alignComplete: false
     property int wrong: 0
     property int typedMax: 0
     property var compileState: null
-    readonly property bool ghosted: win.mode !== "write" && win.target.length > 0
+    readonly property bool ghosted: win.mode !== "write" && win.mode !== "notes" && win.target.length > 0
     // code never wraps (a wrapped line of code is a different line of code),
     // and neither does anything with a ghost, so typing sits on top of it
     readonly property bool nowrap: win.ghosted || win.mode === "code"
     // LYRICS and SPEED: every key fills the next slot of the ghost and the
     // line never moves (see align.js slots())
     readonly property bool slotMode: win.ghosted && (win.mode === "lyrics" || win.mode === "speed")
+    readonly property var langNames: ({ js: "javascript", python: "python", bash: "bash" })
 
     // ── grid ────────────────────────────────────────────────────────────────
-    readonly property int longest: {
-        var m = 0;
-        for (var i = 0; i < win.ghostLines.length; i++) m = Math.max(m, win.ghostLines[i].length);
-        return m;
-    }
+    readonly property int longest: win.ghostCells
     // with a ghost, the letters shrink to fit its longest line
     readonly property int fitPx: win.ghosted ? Math.floor((win.width - 150) / (win.longest + 3) / 0.62) : 999
     readonly property int fontPx: Math.max(12, Math.min(win.userPx, win.fitPx))
@@ -105,14 +111,20 @@ Window {
     readonly property real lineH: Math.round(win.fontPx * 1.7)
     readonly property real padX: Math.round(win.fontPx * 1.3)
     readonly property real padY: Math.round(win.fontPx * 0.9)
-    readonly property int fitCols: Math.max(8, Math.floor((win.width - 96 - 2 * win.padX) / win.slot))
+    readonly property real sideRoom: notes.active && win.width > 900 ? 260 : 0
+    readonly property int fitCols: Math.max(8, Math.floor((win.width - 96 - win.sideRoom - 2 * win.padX) / win.slot))
     readonly property int cols: win.ghosted ? Math.max(win.longest + 1, 8)
                               : (win.mode === "code" ? win.fitCols : Math.min(win.maxCols, win.fitCols))
     function fitColsAt(px) { return Math.floor((win.width - 150) / (px * 0.62)) - 3; }
 
     property var units: []
-    property var pc: []
-    property var pr: []
+    property var pc: []          // column of each character's cell
+    property var pr: []          // row
+    property var pg: []          // what's drawn for it (mirrored brackets, whole clusters)
+    property var pw: []          // cells it takes
+    property var pf: []          // drawn in the right-to-left font
+    property var cc: []          // where the caret sits before each index (n+1)
+    property var cr: []
     property var badArr: []
     property int endCol: 0
     property int endRow: 0
@@ -137,6 +149,7 @@ Window {
 
     TextMetrics { id: metrics; font.family: win.fontFamily; font.pixelSize: win.fontPx; text: "0" }
     ListModel { id: charModel }
+    ListModel { id: ghostModel }
     Sfx { id: sfxObj }
     property var ghostComp: Qt.createComponent("Ghost.qml")
 
@@ -188,14 +201,17 @@ Window {
             if (Date.now() - win.waiting.sent > 25000) {           // engine gone: don't wedge
                 var dead = win.waiting; win.waiting = null;
                 if (dead.cb) dead.cb({ ok: false, error: "the engine didn't answer" });
-                sendNext(); return;
+                if (!win.waiting) sendNext();
+                return;
             }
             readFile("status.json", function(raw) {
                 var r; try { r = JSON.parse(raw); } catch (e) { return; }
                 if (!win.waiting || r.seq !== win.waiting.seq) return;
                 var w0 = win.waiting; win.waiting = null;
                 if (w0.cb) w0.cb(r);
-                sendNext();
+                // a callback that asks again has already sent its request —
+                // sending "next" now would forget that one was in flight
+                if (!win.waiting) sendNext();
             });
         }
     }
@@ -232,12 +248,15 @@ Window {
             if (P.subtext0) win.cSub = P.subtext0;
             if (P.red) win.cBad = P.red;
             if (o.font) win.fontFamily = o.font;
+            win.fontRtl = o.fontRtl || "";
             if (o.radius !== undefined) win.radius = o.radius;
             win.shellVolume = o.shellVolume !== undefined ? o.shellVolume : 1;
             win.draftPath = o.draft || "";
             win.bestsPath = o.bests || "";
             win.docsDir = o.docs || "";
             win.homeDir = o.home || "";
+            win.terminalName = o.terminal || "";
+            notes.dir = o.notesDir || "";
             sfxObj.manifest = o.sfx || {};
 
             var packs = Object.keys(o.sfx || {}).sort(function(a, b) {
@@ -249,6 +268,7 @@ Window {
                 entrance: o.enter || "launcher", exit: o.exit || "launcher", colour: o.colour || "theme",
                 bounce: o.bounce !== undefined ? o.bounce : 5, caret: o.caret || "bar",
                 accent: o.accentKey || "mauve", size: o.size || 28, width: o.cols || 60,
+                direction: o.direction || "auto",
                 sparks: o.sparks === false ? "off" : "on", combo: o.combo === false ? "off" : "on",
                 shake: o.shake || "enter", ripple: o.ripple ? "on" : "off",
                 soundpack: o.pack || "launcher", volume: o.volume !== undefined ? o.volume : 10,
@@ -265,6 +285,7 @@ Window {
                 try { win.snippetList = JSON.parse(s); } catch (e) { win.snippetList = []; }
             });
             speed.load();
+            if (notes.dir) notes.load();
 
             openAnim.start();
             ed.forceActiveFocus();
@@ -287,6 +308,7 @@ Window {
         case "accent": win.cAccent = win.pal[value] || win.pal.mauve || win.cAccent; break;
         case "size": win.userPx = Number(value); break;
         case "width": win.maxCols = Number(value); break;
+        case "direction": win.direction = value; if (!initial) Qt.callLater(win.relayout); break;
         case "sparks": win.sparksOn = value === "on"; break;
         case "combo": win.comboOn = value === "on"; break;
         case "shake": win.shake = value; break;
@@ -334,43 +356,261 @@ Window {
     }
 
     // ── layout ──────────────────────────────────────────────────────────────
-    function isHigh(c) { return c >= 0xD800 && c <= 0xDBFF; }
-    function isLow(c) { return c >= 0xDC00 && c <= 0xDFFF; }
+    // must match FILL in align.js — a .pragma library's plain vars don't
+    // reach QML (only its functions do), so Align.FILL reads as undefined.
+    // Private-use, because TextEdit turns a non-breaking space back into a
+    // plain one the moment it's typed, which silently erased every skip
+    readonly property string fill: ""
+
+    // A cluster is a character plus whatever rides on it (the second half of
+    // an emoji, Hebrew vowel points, accents): one cell, or two for wide
+    // characters, drawn as a single glyph.
     function glyphAt(s, i) {
-        var code = s.charCodeAt(i), ch = s[i];
-        if (isHigh(code)) return i + 1 < s.length ? ch + s[i + 1] : "";
-        if (isLow(code) || ch === "\n" || ch === "\t" || ch === " " || ch === win.fill) return "";
-        return ch;
+        if (!Bidi.width(s, i)) return "";
+        var ch = s[i];
+        if (ch === "\n" || ch === "\t" || ch === " " || ch === win.fill) return "";
+        var e = i + 1;
+        while (e < s.length && s[e] !== "\n" && !Bidi.width(s, e)) e++;
+        return s.substring(i, e);
+    }
+    function mirrorIf(g, odd) { return g.length === 1 ? Bidi.mirror(g, odd) : g; }
+
+    // which way a paragraph runs: code always left to right; WRITE and NOTES
+    // follow the setting; everything else goes by its first strong letter
+    function paraBase(text, prev) {
+        if (win.mode === "code") return 0;
+        if (win.mode === "write" || win.mode === "notes") {
+            if (win.direction === "ltr") return 0;
+            if (win.direction === "rtl") return 1;
+        }
+        var b = Bidi.strong(text);
+        return b < 0 ? prev : b;
     }
 
-    // WRITE wraps words on a monospace grid (spaces hang off the end of a
-    // line, a word that won't fit hops down whole). Everything else keeps its
-    // lines as they are and the page scrolls sideways instead.
-    function layout(s) {
-        var n = s.length, c = new Array(n), r = new Array(n);
-        var C = win.cols, col = 0, row = 0, i = 0, k, wrap = !win.nowrap;
-        while (i < n) {
-            var ch = s[i];
-            if (ch === "\n") { c[i] = col; r[i] = row; row++; col = 0; i++; continue; }
-            if (!wrap) {
-                if (isLow(s.charCodeAt(i))) { c[i] = Math.max(0, col - 1); r[i] = row; i++; continue; }
-                c[i] = col; r[i] = row; col++; i++; continue;
-            }
-            if (ch === " " || ch === "\t") { c[i] = Math.min(col, C); r[i] = row; col++; i++; continue; }
+    // WRITE and NOTES wrap words (spaces hang off the end of a line, a word
+    // that won't fit hops down whole); everything else keeps its lines as they
+    // are and the page scrolls sideways instead.
+    function wrapRows(s, W, a, b, C) {
+        var out = [], rowStart = a, col = 0, i = a;
+        while (i < b) {
+            if (s[i] === " " || s[i] === "\t") { col += W[i]; i++; continue; }
             var j = i, w = 0;
-            while (j < n && s[j] !== " " && s[j] !== "\n" && s[j] !== "\t") {
-                if (!isLow(s.charCodeAt(j))) w++;
-                j++;
-            }
-            if (col > 0 && col + w > C) { row++; col = 0; }
-            for (k = i; k < j; k++) {
-                if (isLow(s.charCodeAt(k))) { c[k] = Math.max(0, col - 1); r[k] = row; continue; }
-                if (col >= C) { row++; col = 0; }
-                c[k] = col; r[k] = row; col++;
+            while (j < b && s[j] !== " " && s[j] !== "\t") { w += W[j]; j++; }
+            if (col > 0 && col + w > C) { out.push([rowStart, i]); rowStart = i; col = 0; }
+            for (var k = i; k < j; k++) {       // a word longer than the line breaks where it must
+                if (W[k] && col > 0 && col + W[k] > C) { out.push([rowStart, k]); rowStart = k; col = 0; }
+                col += W[k];
             }
             i = j;
         }
-        return { c: c, r: r, ec: wrap ? Math.min(col, C) : col, er: row };
+        out.push([rowStart, b]);
+        return out;
+    }
+
+    // puts one row's characters on the grid, in bidi order
+    function placeRow(s, W, a, b, row, base, C, L, para) {
+        var k;
+        if (win.slotMode) {
+            // slot typing sits exactly on its ghost letter
+            var gv = para < win.ghostVis.length ? win.ghostVis[para] : null;
+            for (k = a; k < b; k++) {
+                var j = k - a, inG = gv && j < gv.col.length;
+                L.c[k] = inG ? gv.col[j] : (gv ? gv.after + (j - gv.col.length) : j);
+                L.odd[k] = inG ? gv.odd[j] : false;
+                L.g[k] = mirrorIf(glyphAt(s, k), L.odd[k]);
+                L.f[k] = Bidi.kind(s[k]) === "R";
+                L.cc[k] = gv ? (j < gv.caret.length ? gv.caret[j] : gv.after) : j;
+                L.cr[k] = row;
+            }
+            return;
+        }
+        var cells = [], ids = [];
+        for (k = a; k < b; k++) if (W[k]) { cells.push(glyphAt(s, k) || s[k]); ids.push(k); }
+        var res = Bidi.layout(cells, base), x = 0, xs = new Array(cells.length), coreRight = 0;
+        for (var v = 0; v < res.order.length; v++) {
+            var li = res.order[v];
+            xs[li] = x;
+            x += W[ids[li]];
+            if (!/^[\s]$/.test(cells[li])) coreRight = x;
+        }
+        // a right-to-left row hangs from the right edge
+        var shift = base ? C - coreRight : 0;
+        for (var n = 0; n < cells.length; n++) {
+            k = ids[n];
+            var col = xs[n] + shift;
+            // only wrapped text clamps (its trailing spaces hang at the edge); a
+            // line that doesn't wrap just carries on, and the page scrolls to it
+            L.c[k] = win.nowrap ? col : (base ? Math.max(0, col) : Math.min(col, C));
+            L.odd[k] = (res.level[n] & 1) === 1;
+            L.g[k] = mirrorIf(glyphAt(s, k), L.odd[k]);
+            L.f[k] = Bidi.kind(s[k]) === "R";
+        }
+        var last = -1;
+        for (k = a; k < b; k++) {
+            if (W[k]) { last = k; continue; }
+            L.c[k] = last >= 0 ? L.c[last] : (base ? C : 0);      // rides on its cluster
+            L.odd[k] = last >= 0 ? L.odd[last] : base === 1;
+            L.g[k] = ""; L.f[k] = false;
+        }
+        // the caret before a character: its right edge when it runs right to left
+        for (k = a; k < b; k++) {
+            var bk = k;
+            while (bk > a && !W[bk]) bk--;
+            L.cc[k] = L.odd[bk] ? L.c[bk] + W[bk] : L.c[bk];
+            L.cr[k] = row;
+        }
+    }
+
+    // where the caret goes after a row's last character
+    function afterRow(a, b, base, C, L, W, para) {
+        if (win.slotMode) return slotCaret(para, b - a);
+        var k = b - 1;
+        while (k >= a && !W[k]) k--;
+        if (k < a) return base ? C : 0;
+        return L.odd[k] ? L.c[k] : L.c[k] + W[k];
+    }
+    function slotCaret(para, j) {
+        var gv = para < win.ghostVis.length ? win.ghostVis[para] : null;
+        if (!gv) return j;
+        return j < gv.caret.length ? gv.caret[j] : gv.after;
+    }
+
+    function layout(s) {
+        var n = s.length, C = win.slotMode ? win.longest : win.cols, wrap = !win.nowrap;
+        var W = new Array(n), i;
+        for (i = 0; i < n; i++) W[i] = s[i] === "\n" ? 0 : Bidi.width(s, i);
+        var L = { c: new Array(n), r: new Array(n), g: new Array(n), f: new Array(n), odd: new Array(n),
+                  cc: new Array(n + 1), cr: new Array(n + 1) };
+        var row = 0, start = 0, para = 0;
+        var prevBase = (win.mode === "write" || win.mode === "notes") && win.direction === "rtl" ? 1 : 0;
+        while (true) {
+            var nl = s.indexOf("\n", start);
+            if (nl < 0) nl = n;
+            var base = paraBase(s.substring(start, nl), prevBase);
+            prevBase = base;
+            var rows = wrap && !win.slotMode ? wrapRows(s, W, start, nl, C) : [[start, nl]];
+            for (var q = 0; q < rows.length; q++) {
+                placeRow(s, W, rows[q][0], rows[q][1], row, base, C, L, para);
+                for (i = rows[q][0]; i < rows[q][1]; i++) L.r[i] = row;
+                if (q === rows.length - 1) {
+                    L.cc[nl] = afterRow(rows[q][0], rows[q][1], base, C, L, W, para);
+                    L.cr[nl] = row;
+                    if (nl < n) {
+                        L.c[nl] = Math.max(0, Math.min(L.cc[nl], C));
+                        L.r[nl] = row; L.g[nl] = ""; L.f[nl] = false; L.odd[nl] = false;
+                    }
+                }
+                row++;
+            }
+            if (nl >= n) break;
+            start = nl + 1;
+            para++;
+            if (start === n) {                   // ends in a newline: an empty last line
+                var eb = paraBase("", prevBase);
+                L.cc[n] = win.slotMode ? slotCaret(para, 0) : (eb ? C : 0);
+                L.cr[n] = row;
+                break;
+            }
+        }
+        L.w = W;
+        L.ec = L.cc[n];
+        L.er = L.cr[n];
+        return L;
+    }
+
+    // ── the ghost ───────────────────────────────────────────────────────────
+    // Each ghost letter is its own item too, placed by the same bidi rules as
+    // the typing, so a Hebrew lyric or a Hebrew comment sits where your
+    // letters will land.
+    function ghostLine(g, base) {
+        var n = g.length, W = new Array(n), k;
+        for (k = 0; k < n; k++) W[k] = Bidi.width(g, k);
+        var cells = [], ids = [];
+        for (k = 0; k < n; k++) if (W[k]) { cells.push(glyphAt(g, k) || g[k]); ids.push(k); }
+        var res = Bidi.layout(cells, base), x = 0, xs = new Array(cells.length);
+        for (var v = 0; v < res.order.length; v++) { xs[res.order[v]] = x; x += W[ids[res.order[v]]]; }
+        return { n: n, W: W, ids: ids, xs: xs, level: res.level, total: x, base: base };
+    }
+    function finishGhostLine(raw, C) {
+        var n = raw.n, col = new Array(n), odd = new Array(n), caret = new Array(n + 1), k;
+        var shift = raw.base ? C - raw.total : 0;
+        for (var i = 0; i < raw.ids.length; i++) {
+            k = raw.ids[i];
+            col[k] = raw.xs[i] + shift;
+            odd[k] = (raw.level[i] & 1) === 1;
+        }
+        var last = -1;
+        for (k = 0; k < n; k++) {
+            if (raw.W[k]) { last = k; continue; }
+            col[k] = last >= 0 ? col[last] : (raw.base ? C : 0);
+            odd[k] = last >= 0 ? odd[last] : raw.base === 1;
+        }
+        for (k = 0; k < n; k++) {
+            var bk = k;
+            while (bk > 0 && !raw.W[bk]) bk--;
+            caret[k] = odd[bk] ? col[bk] + raw.W[bk] : col[bk];
+        }
+        var lk = n - 1;
+        while (lk >= 0 && !raw.W[lk]) lk--;
+        var after = lk < 0 ? (raw.base ? C : 0) : (odd[lk] ? col[lk] : col[lk] + raw.W[lk]);
+        caret[n] = after;
+        return { col: col, odd: odd, caret: caret, after: after, W: raw.W };
+    }
+    function buildGhost() {
+        var raws = [], widest = 0, prev = 0;
+        for (var r = 0; r < win.ghostLines.length; r++) {
+            var g = win.ghostLines[r];
+            var base = win.mode === "code" ? 0 : Bidi.strong(g);
+            if (base < 0) base = prev;
+            prev = base;
+            var raw = ghostLine(g, base);
+            raws.push(raw);
+            widest = Math.max(widest, raw.total);
+        }
+        win.ghostVis = raws.map(function(raw) { return finishGhostLine(raw, widest); });
+        win.ghostCells = widest;
+        buildGhostModel();
+    }
+
+    property var ghostItem: []     // per row: unit index → model index (-1: nothing drawn)
+    property var gShown: []
+    property var gMissed: []
+    function buildGhostModel() {
+        ghostModel.clear();
+        var rows = [], shown = [], missed = [], items = [];
+        for (var r = 0; r < win.ghostLines.length; r++) {
+            var g = win.ghostLines[r], gv = win.ghostVis[r], map = [];
+            for (var k = 0; k < g.length; k++) {
+                map.push(-1);
+                var gl = glyphAt(g, k);
+                if (!gl) continue;
+                map[k] = items.length;
+                items.push({ row: r, col: gv.col[k], ch: mirrorIf(gl, gv.odd[k]), cw: gv.W[k],
+                             rf: Bidi.kind(g[k]) === "R", shown: true, missed: false });
+                shown.push(true);
+                missed.push(false);
+            }
+            rows.push(map);
+        }
+        if (items.length) ghostModel.append(items);
+        win.ghostItem = rows;
+        win.gShown = shown;
+        win.gMissed = missed;
+    }
+    function updateGhost(view) {
+        var shown = win.gShown, missed = win.gMissed;
+        for (var r = 0; r < win.ghostItem.length; r++) {
+            var map = win.ghostItem[r], v = view && r < view.length ? view[r] : null;
+            var mask = v ? v.text : win.ghostLines[r], miss = v ? (v.missed || "") : "";
+            for (var k = 0; k < map.length; k++) {
+                var mi = map[k];
+                if (mi < 0) continue;
+                var s1 = k < mask.length && mask[k] !== " ";
+                var m1 = k < miss.length && miss[k] !== " ";
+                if (shown[mi] !== s1) { shown[mi] = s1; ghostModel.setProperty(mi, "shown", s1); }
+                if (missed[mi] !== m1) { missed[mi] = m1; ghostModel.setProperty(mi, "missed", m1); }
+            }
+        }
     }
 
     function widest(s) {
@@ -387,6 +627,7 @@ Window {
         win.wrong = al ? al.wrong : 0;
         win.alignComplete = al ? al.complete : false;
         speed.correct = al ? al.correct : 0;
+        if (win.ghostItem.length) updateGhost(al ? al.view : null);
     }
 
     // Diff the TextEdit against what is on screen — Input.qml's syncModel,
@@ -408,13 +649,16 @@ Window {
         var L = layout(s), i;
         var al = win.alignNow(s);
         var bad = al ? al.bad : null;
-        var move = function(idx, oc, orow, ob) {
+        var move = function(idx, oi) {
             var nb = bad ? bad[idx] : false;
-            if (oc !== L.c[idx]) charModel.setProperty(idx, "px", L.c[idx]);
-            if (orow !== L.r[idx]) charModel.setProperty(idx, "py", L.r[idx]);
-            if (!!ob !== nb) charModel.setProperty(idx, "bad", nb);
+            if (win.pc[oi] !== L.c[idx]) charModel.setProperty(idx, "px", L.c[idx]);
+            if (win.pr[oi] !== L.r[idx]) charModel.setProperty(idx, "py", L.r[idx]);
+            if (win.pg[oi] !== L.g[idx]) charModel.setProperty(idx, "g", L.g[idx]);
+            if (win.pw[oi] !== L.w[idx]) charModel.setProperty(idx, "cw", Math.max(1, L.w[idx]));
+            if (win.pf[oi] !== L.f[idx]) charModel.setProperty(idx, "rf", L.f[idx]);
+            if (!!win.badArr[oi] !== nb) charModel.setProperty(idx, "bad", nb);
         };
-        for (i = 0; i < p; i++) move(i, win.pc[i], win.pr[i], win.badArr[i]);
+        for (i = 0; i < p; i++) move(i, i);
 
         // a paste, a restored page or a mode switch sweeps in as a wave; a
         // keystroke lands immediately
@@ -422,20 +666,18 @@ Window {
         var rows = [];
         for (i = 0; i < ins; i++) {
             var at = p + i;
-            rows.push({ g: glyphAt(s, at), px: L.c[at], py: L.r[at], bad: bad ? bad[at] : false,
-                        born: ins > 1 ? Math.round(i / ins * span) : 0 });
+            rows.push({ g: L.g[at], px: L.c[at], py: L.r[at], cw: Math.max(1, L.w[at]), rf: L.f[at],
+                        bad: bad ? bad[at] : false, born: ins > 1 ? Math.round(i / ins * span) : 0 });
         }
         if (p === charModel.count) charModel.append(rows);
         else for (i = 0; i < rows.length; i++) charModel.insert(p + i, rows[i]);
 
-        for (i = p + ins; i < nn; i++) {
-            var oi = i - ins + del;
-            move(i, win.pc[oi], win.pr[oi], win.badArr[oi]);
-        }
-        if (p > 0) charModel.setProperty(p - 1, "g", glyphAt(s, p - 1));
+        for (i = p + ins; i < nn; i++) move(i, i - ins + del);
 
         win.units = s.split("");
-        win.pc = L.c; win.pr = L.r; win.badArr = bad || [];
+        win.pc = L.c; win.pr = L.r; win.pg = L.g; win.pw = L.w; win.pf = L.f;
+        win.cc = L.cc; win.cr = L.cr;
+        win.badArr = bad || [];
         win.endCol = L.ec; win.endRow = L.er;
         win.typedMax = al ? al.widest : widest(s);
         applyAlign(al);
@@ -453,13 +695,18 @@ Window {
         applyAlign(al);
     }
 
+    // everything re-placed (window resized, letters resized, direction changed)
     function relayout() {
         var s = ed.text, L = layout(s);
         for (var i = 0; i < s.length; i++) {
             if (win.pc[i] !== L.c[i]) charModel.setProperty(i, "px", L.c[i]);
             if (win.pr[i] !== L.r[i]) charModel.setProperty(i, "py", L.r[i]);
+            if (win.pg[i] !== L.g[i]) charModel.setProperty(i, "g", L.g[i]);
+            if (win.pf[i] !== L.f[i]) charModel.setProperty(i, "rf", L.f[i]);
         }
-        win.pc = L.c; win.pr = L.r; win.endCol = L.ec; win.endRow = L.er;
+        win.pc = L.c; win.pr = L.r; win.pg = L.g; win.pw = L.w; win.pf = L.f;
+        win.cc = L.cc; win.cr = L.cr;
+        win.endCol = L.ec; win.endRow = L.er;
         realign();
         updateCaret();
         updateSelection();
@@ -468,7 +715,8 @@ Window {
 
     function center(i) {
         var c = i < win.pc.length ? win.pc[i] : win.endCol, r = i < win.pr.length ? win.pr[i] : win.endRow;
-        return { x: win.padX + c * win.slot + win.charW / 2, y: r * win.lineH + win.lineH / 2 };
+        var w = i < win.pw.length ? Math.max(1, win.pw[i]) : 1;
+        return { x: win.padX + c * win.slot + (win.charW * w) / 2, y: r * win.lineH + win.lineH / 2 };
     }
 
     // deleted letters get a stand-in that plays the exit where they stood —
@@ -479,18 +727,18 @@ Window {
             var it = rep.itemAt(i);
             if (!it || it.glyph === "" || !win.near(win.pr[i])) continue;
             win.ghostComp.createObject(content, {
-                w: win, style: win.exit, glyph: it.glyph, x: it.x, y: it.y,
+                w: win, style: win.exit, glyph: it.glyph, x: it.x, y: it.y, width: it.width,
                 rise: it.rise + it.bump, scale: it.scale, rotation: it.rotation, color: it.color
             });
-            if (win.exit === "dust" && made < 40) sparkAt(it.x + win.charW / 2, it.y + win.lineH / 2 + it.rise, 6);
+            if (win.exit === "dust" && made < 40) sparkAt(it.x + it.width / 2, it.y + win.lineH / 2 + it.rise, 6);
             made++;
         }
     }
 
     function updateCaret() {
-        var k = ed.cursorPosition;
-        if (k >= win.units.length) { win.caretCol = win.endCol; win.caretRow = win.endRow; }
-        else { win.caretCol = win.pc[k]; win.caretRow = win.pr[k]; }
+        var k = Math.min(ed.cursorPosition, win.units.length);
+        if (k < win.cc.length && win.cc[k] !== undefined) { win.caretCol = win.cc[k]; win.caretRow = win.cr[k]; }
+        else { win.caretCol = win.endCol; win.caretRow = win.endRow; }
         caret.opacity = 1;
         blink.restart();
         follow();
@@ -498,11 +746,12 @@ Window {
 
     function updateSelection() {
         var a = Math.min(ed.selectionStart, ed.selectionEnd), b = Math.max(ed.selectionStart, ed.selectionEnd);
-        var segs = [], cur = null;
+        var segs = [], byRow = {};
         for (var i = a; i < b && i < win.units.length; i++) {
-            if (win.units[i] === "\n") continue;
-            if (!cur || cur.row !== win.pr[i]) { cur = { row: win.pr[i], c0: win.pc[i], c1: win.pc[i] + 1 }; segs.push(cur); }
-            else cur.c1 = Math.max(cur.c1, win.pc[i] + 1);
+            if (win.units[i] === "\n" || !win.pw[i]) continue;
+            var r = win.pr[i], c0 = win.pc[i], c1 = c0 + win.pw[i];
+            if (!byRow[r]) { byRow[r] = { row: r, c0: c0, c1: c1 }; segs.push(byRow[r]); }
+            else { byRow[r].c0 = Math.min(byRow[r].c0, c0); byRow[r].c1 = Math.max(byRow[r].c1, c1); }
         }
         win.selSegs = segs;
     }
@@ -526,17 +775,17 @@ Window {
         if (Math.abs(tx - flick.contentX) > 0.5) { hScrollAnim.to = tx; hScrollAnim.restart(); }
     }
 
+    // the text position whose caret spot is nearest a click
     function indexAt(px, py) {
         var row = Math.floor(py / win.lineH), col = (px - win.padX) / win.slot;
         var n = win.units.length, best = n, bestD = 1e9;
         for (var k = 0; k <= n; k++) {
-            var r = k < n ? win.pr[k] : win.endRow, c = k < n ? win.pc[k] : win.endCol;
-            if (r !== row) continue;
-            var d = Math.abs(c - col);
+            if (win.cr[k] !== row) continue;
+            var d = Math.abs(win.cc[k] - col);
             if (d < bestD) { bestD = d; best = k; }
         }
         if (bestD === 1e9 && row < win.endRow)
-            for (k = 0; k < n; k++) if (win.pr[k] > row) return Math.max(0, k - 1);
+            for (k = 0; k <= n; k++) if (win.cr[k] > row) return Math.max(0, k - 1);
         return best;
     }
 
@@ -558,7 +807,7 @@ Window {
         if (win.slotMode) return win.slotKey(t);
 
         // strict: a wrong key is refused, not typed
-        if (win.strict && win.ghosted && atEnd && win.mode !== "speed") {
+        if (win.strict && win.ghosted && atEnd) {
             var want = Align.expected(Align.state(ed.text, win.ghostLines));
             if (want && t !== want && !(t === " " && want === "\n")) {
                 sfxObj.play("error");
@@ -568,9 +817,9 @@ Window {
             }
         }
 
-        // CODE with no ghost: a closing brace on an empty indented line
-        // steps back out one level, like any editor
-        if (win.mode === "code" && !win.ghosted && t === "}") {
+        // CODE with no ghost: a closing brace on an empty indented line steps
+        // back out one level, like any editor
+        if (win.mode === "code" && !win.ghosted && t === "}" && win.codeLang !== "python") {
             var s = ed.text, i = ed.cursorPosition, ls = s.lastIndexOf("\n", i - 1) + 1, before = s.substring(ls, i);
             if (before.length >= 2 && /^\s+$/.test(before)) {
                 win.quiet = true;
@@ -585,11 +834,6 @@ Window {
     // The line never moves. A wrong letter stays red where it stands and you
     // carry on; extra letters are refused rather than shoving the ghost along
     // and off the screen; a space mid-word skips to the next word.
-    // must match FILL in align.js — a .pragma library's plain vars don't
-    // reach QML (only its functions do), so Align.FILL reads as undefined.
-    // Private-use, because TextEdit turns a non-breaking space back into a
-    // plain one the moment it's typed, which silently erased every skip
-    readonly property string fill: "\ue000"
     function caretToEnd() { if (win.slotMode && !ed.selectedText.length) ed.cursorPosition = ed.length; }
     function refuse() {
         sfxObj.play("error");
@@ -668,17 +912,18 @@ Window {
 
         if (win.mode === "code" && kind === "enter") autoIndent();
         if (win.mode === "code") compileCheck.restart();
+        if (win.mode === "notes") notes.changed(ed.text);
         if (win.mode === "lyrics") songAlive();
         if (win.mode === "speed") {
             if (ch.ins >= 1) speed.onKey(kind);
-            var typedRows = win.endRow;
-            if (win.ghostLines.length - typedRows < 4) extendSpeed();
+            if (win.ghostLines.length - win.endRow < 4) extendSpeed();
         }
         checkComplete();
     }
 
     // CODE: Enter lands on the next line already indented — like the ghost
-    // when there is one, otherwise like the line above, one deeper after a {
+    // when there is one, otherwise like the line above, one deeper after a
+    // line that opens a block
     function autoIndent() {
         var i = ed.cursorPosition, s = ed.text;
         var before = s.substr(0, i).split("\n"), row = before.length - 1, pad = "";
@@ -688,7 +933,8 @@ Window {
         } else if (!win.ghosted) {
             var prev = row > 0 ? before[row - 1] : "";
             pad = prev.substr(0, prev.length - prev.replace(/^\s+/, "").length);
-            if (/[{\[(]\s*$/.test(prev)) pad += "  ";
+            if (win.codeLang === "python") { if (/:\s*(#.*)?$/.test(prev)) pad += "    "; }
+            else if (/[{\[(]\s*$/.test(prev) || (win.codeLang === "bash" && /\b(then|do|else)\s*$/.test(prev))) pad += "  ";
         }
         if (pad.length && s.substr(i, pad.length) !== pad) {
             win.quiet = true;
@@ -720,11 +966,19 @@ Window {
         for (var k = 0; k < 6; k++) sparkAt(flick.contentX + Math.random() * flick.width, flick.contentY + Math.random() * flick.height, 14);
     }
 
-    // CODE: does what you've written compile? (said in the header, quietly)
+    // CODE: does what you've written run? (said in the header, quietly)
     Timer {
         id: compileCheck
-        interval: 350
-        onTriggered: win.compileState = ed.text.trim().length ? stage.check(ed.text) : null
+        interval: 450
+        onTriggered: {
+            var code = ed.text;
+            if (!code.trim().length || win.mode !== "code") { win.compileState = null; return; }
+            if (win.codeLang === "js") { win.compileState = stage.check(code); return; }
+            win.ask({ action: "check", lang: win.codeLang, code: code }, function(r) {
+                if (ed.text !== code) return;
+                win.compileState = r.ok ? { ok: true } : { ok: false, message: r.message || r.error || "", line: r.line || -1 };
+            });
+        }
     }
 
     // ── combo ───────────────────────────────────────────────────────────────
@@ -902,13 +1156,17 @@ Window {
     }
 
     // ── modes ───────────────────────────────────────────────────────────────
-    // The old letters are cleared BEFORE the mode changes: a mode change can
+    // The old letters are cleared BEFORE the ghost changes: a new ghost can
     // resize the font, and letters leaving afterwards played their exit in
     // the new size at the old spacing.
-    function startPiece(t) {
-        setText("");
+    function setGhost(t) {
         win.target = t;
         win.ghostLines = t.length ? t.split("\n") : [];
+        buildGhost();
+    }
+    function startPiece(t) {
+        setText("");
+        setGhost(t);
         win.ghostHidden = false;
         win.combo = 0;
         win.compileState = null;
@@ -922,8 +1180,7 @@ Window {
     }
     function extendSpeed() {
         var more = speed.more();
-        win.ghostLines = win.ghostLines.concat(more);
-        win.target = win.target + "\n" + more.join("\n");
+        setGhost(win.target + "\n" + more.join("\n"));
         realign();
     }
     function cycleSpeed(key, list, d) {
@@ -932,25 +1189,42 @@ Window {
         setSetting(key, list[(i + d + list.length) % list.length]);
     }
 
-    function setMode(m) {
-        if (m === win.mode && m === "write") return;
+    // whatever the mode being left needs to keep
+    function leaveMode(next) {
         if (win.mode === "write") win.writeText = ed.text;
-        if (win.mode === "lyrics" && m !== "lyrics") songStop();
+        if (win.mode === "notes") notes.flush();
+        if (win.mode === "lyrics" && next !== "lyrics") songStop();
+    }
+
+    function setMode(m) {
+        if (m === win.mode && (m === "write" || m === "notes")) return;
         if (m === "write") {
+            leaveMode(m);
             setText("");
             win.mode = "write";
-            win.target = ""; win.ghostLines = []; win.pieceName = "";
+            setGhost("");
+            win.pieceName = "";
             setText(win.writeText);
             Qt.callLater(win.relayout);
+        } else if (m === "notes") {
+            leaveMode(m);
+            setText("");
+            win.mode = "notes";
+            setGhost("");
+            win.pieceName = "";
+            if (notes.ready) enterNotes(); else notes.load(enterNotes);
         } else if (m === "speed") {
+            leaveMode(m);
             win.mode = "speed";
             win.pieceName = "";
             startSpeed();
         } else if (m === "code") {
-            picker.open("CODE — pick something to type, or start blank", [
-                { title: "✎ blank page", sub: "write your own — ctrl+enter runs whatever you wrote", tag: "free", blank: true }
-            ].concat(win.snippetList.map(function(s) {
-                return { title: s.name, sub: s.about, tag: s.level, snippet: s };
+            var blank = ["js", "python", "bash"].map(function(l) {
+                return { title: "✎ blank page — " + win.langNames[l], sub: "write your own · ctrl+enter runs whatever you wrote",
+                         tag: l, blank: true, lang: l };
+            });
+            picker.open("CODE — pick something to type, or start blank", blank.concat(win.snippetList.map(function(s) {
+                return { title: s.name, sub: s.about, tag: s.lang + " · " + s.level, snippet: s };
             })), "");
             picker.purpose = "code";
         } else if (m === "lyrics") {
@@ -965,24 +1239,27 @@ Window {
                             tag: s.local ? "lyrics ✓" : "", song: s };
                 });
                 picker.setItems(items, items.length ? "" :
-                    "nothing is playing and your music folder is empty. Play a song in Spotify, YouTube or mpv, then press F3 again — or drop audio files into ~/.local/share/bite-os/bitewrite/songs");
+                    "nothing is playing and your music folder is empty. Play a song in Spotify, YouTube or mpv, then press F4 again — or drop audio files into ~/.local/share/bite-os/bitewrite/songs");
             });
         }
     }
 
     function pickerChosen(item) {
-        if (win.mode === "write") win.writeText = ed.text;
+        if (picker.purpose === "notes") { openNote(item.id); ed.forceActiveFocus(); return; }
+        leaveMode(picker.purpose);
         if (picker.purpose === "code") {
-            if (win.mode === "lyrics") songStop();
             win.mode = "code";
             if (item.blank) {
+                win.codeLang = item.lang;
                 win.pieceName = "blank page";
                 startPiece("");
-                toast("write anything — ctrl+enter runs it (define function frame(t) and draw with ctx)");
+                toast("write anything in " + win.langNames[item.lang] + " — ctrl+enter runs it"
+                      + (item.lang === "js" ? " (define function frame(t) and draw with ctx)" : " in " + (win.terminalName || "a terminal")));
             } else {
+                win.codeLang = item.snippet.lang;
                 win.pieceName = item.snippet.name;
                 startPiece(item.snippet.code);
-                toast("type it over the ghost, or change it — ctrl+enter runs whatever you wrote");
+                toast("type it over the ghost, or ctrl+f to finish it and edit — ctrl+enter runs whatever you wrote");
             }
         } else {
             win.mode = "lyrics";
@@ -991,18 +1268,86 @@ Window {
         ed.forceActiveFocus();
     }
 
+    // CODE: fill in the rest of the ghost and hand the program over to edit
+    function finishCode() {
+        if (win.mode !== "code" || !win.ghosted) return;
+        var t = win.target;
+        setText(t);
+        setGhost("");
+        Qt.callLater(win.relayout);
+        win.complete = true;
+        compileCheck.restart();
+        sfxObj.play("done");
+        celebrate();
+        toast("finished — it's all yours to change · ctrl+enter runs it");
+    }
+
     // runs exactly what's on the page: broken code doesn't run, valid code does
     function runCode() {
-        if (!ed.text.trim().length) { toast("nothing to run yet"); sfxObj.play("error"); return; }
-        var c = stage.check(ed.text);
-        if (!c.ok) {
-            toast("it doesn't compile — " + c.message + " · check brackets, quotes and commas");
-            sfxObj.play("error");
-            shakePage(4);
+        var code = ed.text;
+        if (!code.trim().length) { toast("nothing to run yet"); sfxObj.play("error"); return; }
+        if (win.codeLang === "js") {
+            var c = stage.check(code);
+            if (!c.ok) { brokenCode(c); return; }
+            sfxObj.play("run");
+            stage.run(code);
             return;
         }
-        sfxObj.play("run");
-        stage.run(ed.text);
+        ask({ action: "check", lang: win.codeLang, code: code }, function(r) {
+            if (!r.ok) { brokenCode(r); return; }
+            sfxObj.play("run");
+            ask({ action: "run", lang: win.codeLang, code: code }, function(x) {
+                toast(x.ok ? "running in " + x.terminal + " — close it when you're done" : (x.error || "couldn't start a terminal"));
+            });
+        });
+    }
+    function brokenCode(c) {
+        toast("it doesn't run — " + (c.line > 0 ? "line " + c.line + ": " : "") + (c.message || c.error || "")
+              + (win.codeLang === "js" && !(c.line > 0) ? " · check brackets, quotes and commas" : ""));
+        sfxObj.play("error");
+        shakePage(4);
+    }
+
+    // ── notes ───────────────────────────────────────────────────────────────
+    function enterNotes() {
+        if (!notes.notes.length) { newNote(); return; }
+        var id = notes.current && notes.titleFor(notes.current) !== "" ? notes.current : notes.notes[0].id;
+        openNote(id);
+    }
+    function openNote(id) {
+        if (win.mode !== "notes") return;
+        notes.open(id, function(txt) {
+            if (win.mode !== "notes" || notes.current !== id) return;
+            setText(txt);
+            Qt.callLater(win.relayout);
+        });
+    }
+    function newNote() {
+        notes.create();
+        setText("");
+        toast("a new note — its first line is its title");
+        ed.forceActiveFocus();
+    }
+    function deleteNote(id) {
+        var title = notes.titleFor(id);
+        var was = id === notes.current;
+        var next = was ? (notes.neighbor(1) || notes.neighbor(-1)) : "";
+        notes.remove(id);
+        ask({ action: "delete_note", id: id }, null);
+        toast("deleted “" + title + "”");
+        if (!was) return;
+        notes.current = "";
+        if (next) openNote(next); else newNote();
+    }
+    property string deleteArmed: ""
+    Timer { id: deleteDisarm; interval: 2500; onTriggered: win.deleteArmed = "" }
+    function deleteCurrentNote() {
+        var id = notes.current;
+        if (!id) return;
+        if (win.deleteArmed === id) { win.deleteArmed = ""; deleteNote(id); return; }
+        win.deleteArmed = id;
+        deleteDisarm.restart();
+        toast("press it again to delete “" + notes.titleFor(id) + "”");
     }
 
     // ── keeping what you wrote ──────────────────────────────────────────────
@@ -1016,13 +1361,14 @@ Window {
         if (win.leaving) return;
         win.leaving = true;
         songStop();
+        notes.flush();
         var page = win.mode === "write" ? ed.text : win.writeText;
         ask({ action: "quit" }, null);
         if (win.keep && win.draftPath) {
             win.writeFile(win.draftPath, page, function() { Qt.quit(); });
             quitGuard.start();
         } else {
-            quitGuard.interval = 150; quitGuard.start();
+            quitGuard.interval = 300; quitGuard.start();
         }
     }
     Timer { id: quitGuard; interval: 800; onTriggered: Qt.quit() }
@@ -1034,8 +1380,9 @@ Window {
     function saveCopy() {
         if (!ed.text.trim().length) { toast("nothing to save yet"); return; }
         var d = new Date(), z = function(v) { return (v < 10 ? "0" : "") + v; };
+        var ext = win.mode !== "code" ? ".txt" : win.codeLang === "python" ? ".py" : win.codeLang === "bash" ? ".sh" : ".js";
         var name = "bitewrite-" + d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()) + "-" +
-                   z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds()) + (win.mode === "code" ? ".js" : ".txt");
+                   z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds()) + ext;
         var path = (win.docsDir || win.homeDir) + "/" + name;
         // skipped letters are private-use marks on the page — spaces in a file
         win.writeFile(path, ed.text.split(win.fill).join(" "), function() { toast("saved → " + pretty(path)); });
@@ -1101,40 +1448,54 @@ Window {
         onSelectionEndChanged: win.updateSelection()
 
         Keys.onPressed: function(e) {
-            var ctrl = e.modifiers & Qt.ControlModifier;
+            var ctrl = e.modifiers & Qt.ControlModifier, shift = e.modifiers & Qt.ShiftModifier, alt = e.modifiers & Qt.AltModifier;
             if (panel.handle(e)) { e.accepted = true; return; }
             var times = ["15", "30", "60", "120", "infinite", "custom"], texts = ["words", "sentences", "hard", "page"];
+            var fkey = e.key >= Qt.Key_F1 && e.key <= Qt.Key_F6;
 
             // a finished SPEED run: the card is up and the page is locked
-            if (win.mode === "speed" && speed.finished && !ctrl) {
+            if (win.mode === "speed" && speed.finished && !ctrl && !fkey) {
                 if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) win.startSpeed();
                 else if (e.key === Qt.Key_Tab) win.cycleSpeed("speed_time", times, 1);
                 else if (e.key === Qt.Key_Backtab) win.cycleSpeed("speed_text", texts, 1);
                 else if (e.key === Qt.Key_Escape) win.setMode("write");
-                else if (e.key >= Qt.Key_F1 && e.key <= Qt.Key_F5) { /* fall through below */ }
-                else { e.accepted = true; return; }
-                if (e.key < Qt.Key_F1 || e.key > Qt.Key_F5) { e.accepted = true; return; }
+                e.accepted = true;
+                return;
             }
 
             if (e.key === Qt.Key_F1) win.setMode("write");
-            else if (e.key === Qt.Key_F2) win.setMode("code");
-            else if (e.key === Qt.Key_F3) win.setMode("lyrics");
-            else if (e.key === Qt.Key_F4) win.setMode("speed");
-            else if (e.key === Qt.Key_F5 || (ctrl && e.key === Qt.Key_Comma)) panel.open();
+            else if (e.key === Qt.Key_F2) win.setMode("notes");
+            else if (e.key === Qt.Key_F3) win.setMode("code");
+            else if (e.key === Qt.Key_F4) win.setMode("lyrics");
+            else if (e.key === Qt.Key_F5) win.setMode("speed");
+            else if (e.key === Qt.Key_F6 || (ctrl && e.key === Qt.Key_Comma)) panel.open();
             else if (ctrl && e.key === Qt.Key_Q) win.leave();
             else if (e.key === Qt.Key_Escape) { if (win.mode !== "write") win.setMode("write"); else win.leave(); }
             else if (ctrl && (e.key === Qt.Key_Return || e.key === Qt.Key_Enter)) {
                 if (win.mode === "code") win.runCode();
                 else if (win.mode === "lyrics") { if (win.songPlaying) win.songPause(); else { win.followWait = false; win.songPlay(); } }
             }
+            else if (ctrl && e.key === Qt.Key_F && win.mode === "code") win.finishCode();
             else if (ctrl && e.key === Qt.Key_R) {
                 if (win.mode === "speed") win.startSpeed();
                 else if (win.ghosted) win.startPiece(win.target);
             }
             else if (ctrl && e.key === Qt.Key_N) {
                 if (win.mode === "speed") win.startSpeed();
+                else if (win.mode === "notes") win.newNote();
                 else if (win.mode !== "write") win.setMode(win.mode);
             }
+            else if (ctrl && e.key === Qt.Key_K && win.mode === "notes") {
+                picker.open("NOTES — find a note", notes.notes.map(function(n) {
+                    return { title: n.title, sub: notes.ago(n.updated), tag: n.id === notes.current ? "open" : "", id: n.id };
+                }), "no notes yet");
+                picker.purpose = "notes";
+            }
+            else if (alt && (e.key === Qt.Key_Up || e.key === Qt.Key_Down) && win.mode === "notes") {
+                var nb = notes.neighbor(e.key === Qt.Key_Up ? -1 : 1);
+                if (nb) win.openNote(nb);
+            }
+            else if (ctrl && shift && (e.key === Qt.Key_Delete || e.key === Qt.Key_Backspace) && win.mode === "notes") win.deleteCurrentNote();
             else if (ctrl && e.key === Qt.Key_H) win.ghostHidden = !win.ghostHidden;
             else if (ctrl && e.key === Qt.Key_S) win.saveCopy();
             else if (ctrl && e.key === Qt.Key_L) { if (ed.length) ed.remove(0, ed.length); }
@@ -1144,7 +1505,7 @@ Window {
             else if (e.key === Qt.Key_Backtab) { if (win.mode === "speed") win.cycleSpeed("speed_text", texts, 1); }
             else if (e.key === Qt.Key_Tab) {
                 if (win.mode === "speed") win.cycleSpeed("speed_time", times, 1);
-                else if (win.mode !== "lyrics") ed.insert(ed.cursorPosition, win.mode === "code" ? "  " : "    ");
+                else if (win.mode !== "lyrics") ed.insert(ed.cursorPosition, win.mode !== "code" ? "    " : win.codeLang === "python" ? "    " : "  ");
             }
             else if (!ctrl && e.key === Qt.Key_Backspace && win.slotMode) { if (!win.slotBack()) return; }
             else if (!ctrl && e.text.length === 1 && e.text >= " ") { if (!win.typeKey(e.text)) return; }
@@ -1165,17 +1526,17 @@ Window {
         anchors.leftMargin: 28
         spacing: 18
         Repeater {
-            model: [["write", "F1"], ["code", "F2"], ["lyrics", "F3"], ["speed", "F4"]]
+            model: ["write", "notes", "code", "lyrics", "speed"]
             delegate: Text {
-                readonly property bool on: win.mode === modelData[0]
-                text: modelData[0].toUpperCase()
+                readonly property bool on: win.mode === modelData
+                text: modelData.toUpperCase()
                 font.family: win.fontFamily
                 font.pixelSize: 13
                 font.letterSpacing: 2
                 color: on ? win.cAccent : win.cSub
                 opacity: on ? 1 : 0.55
                 Behavior on color { ColorAnimation { duration: 160 } }
-                MouseArea { anchors.fill: parent; anchors.margins: -6; onClicked: win.setMode(modelData[0]) }
+                MouseArea { anchors.fill: parent; anchors.margins: -6; onClicked: win.setMode(modelData) }
             }
         }
         Text {
@@ -1192,11 +1553,13 @@ Window {
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: page.top
         anchors.bottomMargin: 12
-        width: Math.max(0, parent.width - 2 * Math.max(tabs.width, counts.width) - 120)
+        width: Math.max(0, parent.width - 2 * Math.max(tabs.width, counts.width + finishBtn.width + 20) - 120)
         horizontalAlignment: Text.AlignHCenter
         elide: Text.ElideRight
         visible: win.mode !== "speed"
-        text: win.pieceName + (win.mode === "lyrics" && win.song
+        text: win.mode === "notes" ? notes.titleFor(notes.current)
+            : win.mode === "code" ? (win.pieceName ? win.pieceName + "   ·   " : "") + win.langNames[win.codeLang]
+            : win.pieceName + (win.mode === "lyrics" && win.song
               ? (win.followWait ? "   ‖ waiting for you" : win.songPlaying ? "   ♪" : "   ‖") : "")
         font.family: win.fontFamily
         font.pixelSize: 13
@@ -1214,10 +1577,12 @@ Window {
         text: win.mode === "speed" ? "best " + (speed.bests[speed.bestKey] || "—")
             : win.mode === "code"
             ? (win.ghosted && win.wrong ? win.wrong + (win.wrong === 1 ? " word differs   ·   " : " words differ   ·   ") : "")
-              + (win.compileState === null ? "" : win.compileState.ok ? "✓ compiles" : "✗ doesn't compile")
+              + (win.compileState === null ? "" : win.compileState.ok ? "✓ runs"
+                 : "✗ doesn't run" + (win.compileState.line > 0 ? " (line " + win.compileState.line + ")" : ""))
             : win.ghosted
             ? Math.min(ed.length, win.target.length) + " / " + win.target.length + (win.wrong ? "   ·   " + win.wrong + " wrong" : "")
             : counts.words + (counts.words === 1 ? " word" : " words") + "   ·   " + (win.endRow + 1) + (win.endRow === 0 ? " line" : " lines")
+              + (win.mode === "notes" ? "   ·   " + notes.notes.length + (notes.notes.length === 1 ? " note" : " notes") : "")
         anchors.right: parent.right
         anchors.bottom: page.top
         anchors.bottomMargin: 12
@@ -1228,11 +1593,37 @@ Window {
         opacity: 0.75
     }
 
+    // CODE: skip the typing and go straight to changing the result
+    Rectangle {
+        id: finishBtn
+        visible: win.mode === "code" && win.ghosted
+        anchors.right: counts.left
+        anchors.rightMargin: 16
+        anchors.verticalCenter: counts.verticalCenter
+        width: visible ? finishLabel.implicitWidth + 20 : 0
+        height: 24
+        radius: 12
+        color: finishHover.hovered ? Qt.alpha(win.cAccent, 0.2) : "transparent"
+        border.width: 1
+        border.color: Qt.alpha(win.cAccent, 0.45)
+        Text {
+            id: finishLabel
+            anchors.centerIn: parent
+            text: "⏭ finish code"
+            font.family: win.fontFamily
+            font.pixelSize: 12
+            color: win.cAccent
+        }
+        HoverHandler { id: finishHover }
+        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { win.finishCode(); ed.forceActiveFocus(); } }
+    }
+
     Rectangle {
         id: page
         readonly property real comboHeat: win.comboOn ? Math.min(1, win.combo / 60) : 0
-        width: Math.min(win.cols * win.slot + 2 * win.padX, win.width - 40)
+        width: Math.min(win.cols * win.slot + 2 * win.padX, win.width - 40 - win.sideRoom)
         anchors.horizontalCenter: parent.horizontalCenter
+        anchors.horizontalCenterOffset: win.sideRoom / 2
         anchors.top: parent.top
         anchors.bottom: parent.bottom
         anchors.topMargin: 52
@@ -1247,6 +1638,7 @@ Window {
         transform: Translate { id: pageShift }
 
         Behavior on width { NumberAnimation { duration: 260; easing.type: Easing.OutQuint } }
+        Behavior on anchors.horizontalCenterOffset { NumberAnimation { duration: 260; easing.type: Easing.OutQuint } }
 
         // the launcher's focus pop, on the whole page when it opens
         SequentialAnimation {
@@ -1287,7 +1679,10 @@ Window {
                 }
 
                 Text {
-                    text: win.mode === "code" ? "write some code — define function frame(t) and draw with ctx" : "just write."
+                    text: win.mode === "code" ? (win.codeLang === "js" ? "write some code — define function frame(t) and draw with ctx"
+                                                                      : "write some " + win.langNames[win.codeLang] + " — ctrl+enter runs it")
+                        : win.mode === "notes" ? "a new note — the first line is its title"
+                        : "just write."
                     x: win.padX
                     height: win.lineH
                     verticalAlignment: Text.AlignVCenter
@@ -1298,36 +1693,27 @@ Window {
                     Behavior on opacity { NumberAnimation { duration: 180 } }
                 }
 
-                // the ghost: per row, only what's still to type, carrying on
-                // from wherever that row's typing ends
+                // the ghost: one item per letter, placed like the typing
                 Repeater {
-                    model: win.ghostView
+                    model: ghostModel
                     delegate: Text {
-                        readonly property bool sung: win.sungRow >= 0 && index >= win.sungRow && index <= win.sungRowEnd
-                        x: win.padX + modelData.col * win.slot + (win.slot - win.charW) / 2
-                        y: index * win.lineH
+                        readonly property bool sung: win.sungRow >= 0 && model.row >= win.sungRow && model.row <= win.sungRowEnd
+                        x: win.padX + model.col * win.slot
+                        y: model.row * win.lineH
+                        width: win.charW * model.cw + (model.cw - 1)
                         height: win.lineH
+                        horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter
-                        text: modelData.text
-                        font.family: win.fontFamily
+                        text: model.ch
+                        font.family: model.rf && win.fontRtl ? win.fontRtl : win.fontFamily
                         font.pixelSize: win.fontPx
-                        font.letterSpacing: win.slot - win.charW
-                        color: sung ? win.cAccent : win.cText
-                        opacity: win.ghostHidden ? 0
+                        // letters skipped with a space stay in their place, in red
+                        color: model.missed ? win.cBad : (sung ? win.cAccent : win.cText)
+                        opacity: win.ghostHidden || !(model.shown || model.missed) ? 0
+                               : model.missed ? 0.6
                                : win.mode === "speed" ? 0.5
                                : (sung ? Math.max(0.55, win.ghostLevel / 10) : win.ghostLevel / 10 * 0.6)
-                        Behavior on opacity { NumberAnimation { duration: 200 } }
-                        Behavior on color { ColorAnimation { duration: 200 } }
-
-                        // letters skipped with a space: still in their place, in red
-                        Text {
-                            text: modelData.missed || ""
-                            height: parent.height
-                            verticalAlignment: Text.AlignVCenter
-                            font: parent.font
-                            color: win.cBad
-                            opacity: parent.opacity > 0.01 ? Math.min(1, 0.6 / parent.opacity) : 0
-                        }
+                        Behavior on opacity { NumberAnimation { duration: 120 } }
                     }
                 }
 
@@ -1352,6 +1738,8 @@ Window {
                         col: model.px
                         row: model.py
                         glyph: model.g
+                        cells: model.cw
+                        rtlFont: model.rf
                         born: model.born
                         bad: model.bad
                     }
@@ -1416,7 +1804,9 @@ Window {
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             anchors.margins: 16
-            text: "×" + win.combo
+            // U+200E: "×34" has no letters to say which way it reads, and under a
+            // Hebrew locale Qt flipped it to "34×"
+            text: "\u200e×" + win.combo
             font.family: win.fontFamily
             font.pixelSize: 18 + Math.min(22, win.combo / 5)
             font.bold: true
@@ -1435,10 +1825,12 @@ Window {
     Text {
         id: hints
         text: win.mode === "code"
-            ? "ctrl+enter run what you wrote   ·   ctrl+n another   ·   ctrl+r restart   ·   ctrl+h hide ghost   ·   f5 settings   ·   esc back"
+            ? "ctrl+enter run   ·   ctrl+f finish   ·   ctrl+n another   ·   ctrl+r restart   ·   ctrl+h hide ghost   ·   f6 settings   ·   esc back"
             : win.mode === "lyrics"
-            ? "ctrl+enter play / pause   ·   ctrl+n another song   ·   ctrl+r restart   ·   f5 settings   ·   esc back"
-            : "f2 code   ·   f3 lyrics   ·   f4 speed   ·   f5 settings   ·   ctrl+s save   ·   ctrl+l clear   ·   esc close"
+            ? "ctrl+enter play / pause   ·   ctrl+n another song   ·   ctrl+r restart   ·   f6 settings   ·   esc back"
+            : win.mode === "notes"
+            ? "ctrl+n new note   ·   ctrl+k find   ·   alt+↑↓ switch   ·   ctrl+shift+del delete   ·   f6 settings   ·   esc back"
+            : "f2 notes   ·   f3 code   ·   f4 lyrics   ·   f5 speed   ·   f6 settings   ·   ctrl+s save   ·   esc close"
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.top: page.bottom
         anchors.topMargin: 18
@@ -1471,6 +1863,12 @@ Window {
     }
 
     // ── overlays ────────────────────────────────────────────────────────────
+    Notes {
+        id: notes
+        w: win
+        page: page
+    }
+
     Speed {
         id: speed
         w: win

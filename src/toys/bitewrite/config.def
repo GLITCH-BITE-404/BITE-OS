@@ -1,4 +1,4 @@
-# Every one of these can also be changed from inside bitewrite — F4 opens the
+# Every one of these can also be changed from inside bitewrite — F6 opens the
 # settings panel, and what you pick there is saved back into this file.
 
 # ── look ─────────────────────────────────────────────────────────────────────
@@ -40,6 +40,12 @@ size=28
 # The widest a line gets, in characters, before words wrap.
 # @range 20-160
 width=60
+
+# Which way text runs in WRITE and NOTES. auto: each paragraph follows its
+# first letter, so Hebrew and Arabic run right to left and English left to
+# right, and an English word inside a Hebrew line still reads correctly.
+# @choices auto,ltr,rtl
+direction=auto
 
 # ── feel ─────────────────────────────────────────────────────────────────────
 
@@ -86,6 +92,10 @@ ghost=3
 # strict refuses a wrong key instead of typing it, with a buzz.
 # @choices off,on
 strict=off
+
+# The terminal that Python and Bash programs run in. Blank uses your rice's
+# own ($terminal in the Hyprland config), then kitty, foot or alacritty.
+terminal=
 
 # ── lyrics mode ──────────────────────────────────────────────────────────────
 

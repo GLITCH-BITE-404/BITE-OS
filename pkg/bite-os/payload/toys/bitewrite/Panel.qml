@@ -1,4 +1,4 @@
-// The settings panel (F4). It never takes the keyboard from the page: arrows
+// The settings panel (F6). It never takes the keyboard from the page: arrows
 // and Esc are routed here while it is open, and every other key still types,
 // so you can change the entrance or the sound pack and try it on the spot.
 // Each change is applied live and saved back through the hub.
@@ -35,6 +35,8 @@ Item {
           about: "taken from your live serpantinum theme" },
         { key: "size", label: "letter size", range: [12, 72], step: 2 },
         { key: "width", label: "line width", range: [20, 160], step: 4, about: "characters before words wrap" },
+        { key: "direction", label: "text direction", choices: ["auto", "ltr", "rtl"],
+          about: "WRITE and NOTES · auto: each paragraph follows its first letter, so Hebrew runs right to left" },
         { head: "feel" },
         { key: "sparks", label: "sparks", choices: ["on", "off"], about: "a little burst from every letter" },
         { key: "combo", label: "combo", choices: ["on", "off"], about: "keep typing without stopping and it climbs" },
@@ -150,7 +152,7 @@ Item {
         case Qt.Key_Return: case Qt.Key_Enter:
             if (pn.rows[pn.cur].action) { resetAll(); return true; }
             return false;
-        case Qt.Key_Escape: case Qt.Key_F5: close(); return true;
+        case Qt.Key_Escape: case Qt.Key_F6: close(); return true;
         }
         return false;
     }
@@ -301,7 +303,7 @@ Item {
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 14
             anchors.horizontalCenter: parent.horizontalCenter
-            text: "↑↓ pick  ·  ←→ or click change  ·  del reset  ·  f5 close"
+            text: "↑↓ pick  ·  ←→ or click change  ·  del reset  ·  f6 close"
             font.family: w.fontFamily
             font.pixelSize: 11
             color: w.cSub

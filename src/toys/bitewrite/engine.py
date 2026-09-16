@@ -13,7 +13,7 @@ it. Two jobs:
                    player is being watched its position goes to now.json.
 """
 
-import glob, json, math, os, re, shutil, subprocess, sys, time
+import glob, json, math, os, re, shlex, shutil, subprocess, sys, time
 import urllib.parse, urllib.request
 
 HOME = os.path.expanduser("~")
@@ -260,31 +260,140 @@ def sfx_manifest(type_override=""):
 
 # ── snippets ──────────────────────────────────────────────────────────────────
 
+LANGS = {".js": "js", ".py": "python", ".sh": "bash"}
+LEVELS = {"easy": 0, "medium": 1, "hard": 2, "extreme": 3, "game": 4}
+
+
 def snippets():
-    """Each snippets/*.js starts with `// name:` and `// about:` lines; the rest
-    is the code you type. Drop your own in ~/.local/share/bite-os/bitewrite/snippets."""
+    """Each file in snippets/ starts with `name:`, `about:` and `level:` comment
+    lines (// in JavaScript, # in Python and Bash); the rest is the code you
+    type. The extension says what it's written in. Drop your own into
+    ~/.local/share/bite-os/bitewrite/snippets."""
     dirs = [os.path.join(HERE, "snippets"),
             os.path.join(E("DATA") or "", "snippets")]
     out = []
     for d in dirs:
-        for p in sorted(glob.glob(os.path.join(d, "*.js"))):
+        for p in sorted(glob.glob(os.path.join(d, "*"))):
+            lang = LANGS.get(os.path.splitext(p)[1])
+            if not lang:
+                continue
             try:
                 raw = open(p, encoding="utf-8").read().replace("\t", "    ")
             except OSError:
                 continue
             meta, body = {}, []
             for line in raw.splitlines():
-                m = re.match(r"^//\s*(name|about|level):\s*(.*)$", line)
+                if not body and line.startswith("#!"):
+                    continue
+                m = re.match(r"^(?://|#)\s*(name|about|level):\s*(.*)$", line)
                 if m and not body:
                     meta[m.group(1)] = m.group(2).strip()
                 elif body or line.strip():
                     body.append(line.rstrip())
             while body and not body[-1]:
                 body.pop()
-            out.append({"name": meta.get("name") or os.path.basename(p)[:-3],
+            out.append({"name": meta.get("name") or os.path.basename(p).rsplit(".", 1)[0],
                         "about": meta.get("about", ""), "level": meta.get("level", ""),
-                        "code": "\n".join(body)})
+                        "lang": lang, "code": "\n".join(body)})
+    order = {"js": 0, "python": 1, "bash": 2}
+    out.sort(key=lambda s: (order[s["lang"]], LEVELS.get(s["level"], 1)))
     return out
+
+
+# ── running Python and Bash ───────────────────────────────────────────────────
+# JavaScript runs inside the window. Python and Bash print to a terminal, so
+# they get one of their own.
+
+TERMS = {
+    "kitty": ["kitty", "--class", "bitewrite-run", "--title", "{title}", "sh", "-c", "{cmd}"],
+    "foot": ["foot", "--app-id", "bitewrite-run", "--title", "{title}", "sh", "-c", "{cmd}"],
+    "alacritty": ["alacritty", "--class", "bitewrite-run", "--title", "{title}", "-e", "sh", "-c", "{cmd}"],
+    "wezterm": ["wezterm", "start", "--class", "bitewrite-run", "--", "sh", "-c", "{cmd}"],
+    "ghostty": ["ghostty", "--class=bitewrite-run", "-e", "sh", "-c", "{cmd}"],
+    "konsole": ["konsole", "-e", "sh", "-c", "{cmd}"],
+}
+
+
+def terminal():
+    want = (E("TOY_TERMINAL") or "").strip()
+    if not want:
+        # the rice's own choice: Hyprland's $terminal
+        for f in glob.glob(os.path.join(HOME, ".config/hypr/**/*.conf"), recursive=True):
+            try:
+                m = re.search(r"^\s*\$terminal\s*=\s*(\S+)", open(f, encoding="utf-8", errors="replace").read(), re.M)
+            except OSError:
+                continue
+            if m:
+                want = os.path.basename(m.group(1))
+                break
+    for name in ([want] if want else []) + list(TERMS):
+        if name in TERMS and shutil.which(name):
+            return name
+    return ""
+
+
+def check_code(lang, code):
+    if lang == "python":
+        try:
+            compile(code, "your code", "exec")
+            return {"ok": True}
+        except SyntaxError as e:
+            return {"ok": False, "message": e.msg, "line": e.lineno or -1}
+        except Exception as e:
+            return {"ok": False, "message": str(e), "line": -1}
+    if lang == "bash":
+        r = subprocess.run(["bash", "-n"], input=code, capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            return {"ok": True}
+        err = (r.stderr or "").strip().splitlines()
+        m = re.search(r"line (\d+): (.*)", err[0] if err else "")
+        return {"ok": False, "message": m.group(2) if m else (err[0] if err else "syntax error"),
+                "line": int(m.group(1)) if m else -1}
+    return {"ok": False, "message": "can't check " + str(lang), "line": -1}
+
+
+def run_code(lang, code):
+    term = TERMINAL or terminal()
+    if not term:
+        return {"ok": False, "error": "no terminal found — set terminal= in bitewrite's settings file"}
+    d = os.path.join(E("DATA") or CACHE, "run")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, "your-code." + ("py" if lang == "python" else "sh"))
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(code + "\n")
+    interp = "python3" if lang == "python" else "bash"
+    cmd = ('cd %s; %s %s; printf "\\n\\033[2m— finished · press enter to close —\\033[0m"; read _'
+           % (shlex.quote(d), interp, shlex.quote(path)))
+    argv = [a.replace("{title}", "bitewrite · " + lang).replace("{cmd}", cmd) for a in TERMS[term]]
+    if E("BITEWRITE_DRYRUN"):
+        return {"ok": True, "terminal": term, "argv": argv}
+    subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+    return {"ok": True, "terminal": term}
+
+
+def delete_note(nid):
+    if not re.fullmatch(r"\d{10,16}", str(nid or "")):
+        return {"ok": False, "error": "bad note id"}
+    try:
+        os.remove(os.path.join(E("DATA") or "", "notes", nid + ".txt"))
+    except FileNotFoundError:
+        pass
+    return {"ok": True}
+
+
+def rtl_font():
+    """A monospace font with Hebrew and Arabic in it, so right-to-left letters
+    sit on the grid like everything else."""
+    for q in (":lang=he:spacing=mono", ":lang=he"):
+        fams = sorted({l.split(",")[0].strip() for l in run(["fc-list", q, "family"]).splitlines() if l.strip()})
+        if fams:
+            mono = [f for f in fams if "mono" in f.lower()]
+            return (mono or fams)[0]
+    return ""
+
+
+TERMINAL = ""
 
 
 # ── opts ──────────────────────────────────────────────────────────────────────
@@ -343,6 +452,10 @@ def prep(rundir):
         "speedCustom": num("SPEED_CUSTOM", 90, 10, 600),
         "speedText": E("TOY_SPEED_TEXT") or "words",
         "bests": os.path.join(E("DATA"), "speed-best.json"),
+        "notesDir": os.path.join(E("DATA"), "notes"),
+        "direction": E("TOY_DIRECTION") or "auto",
+        "fontRtl": rtl_font(),
+        "terminal": terminal(),
         "defaults": config_defaults(),
         "window": E("TOY_WINDOW") or "window",
         "keep": on("KEEP", "on"),
@@ -351,6 +464,7 @@ def prep(rundir):
         "home": HOME,
         "sfx": sfx,
     }
+    os.makedirs(opts["notesDir"], exist_ok=True)
     dump(os.path.join(rundir, "opts.json"), opts)
     dump(os.path.join(rundir, "snippets.json"), snippets())
     dump(os.path.join(rundir, "speed.json"), speed_lists())
@@ -630,6 +744,8 @@ def set_setting(key, value):
 # ── serve ─────────────────────────────────────────────────────────────────────
 
 def serve(rundir):
+    global TERMINAL
+    TERMINAL = terminal()
     reqf, statf = os.path.join(rundir, "request.json"), os.path.join(rundir, "status.json")
     nowf = os.path.join(rundir, "now.json")
     last, watch, next_poll = None, "", 0
@@ -655,6 +771,12 @@ def serve(rundir):
                     res = player_op(req.get("player", ""), req.get("op", ""))
                 elif a == "watch":
                     watch = req.get("player", ""); res = {"ok": True}
+                elif a == "check":
+                    res = check_code(req.get("lang", ""), req.get("code", ""))
+                elif a == "run":
+                    res = run_code(req.get("lang", ""), req.get("code", ""))
+                elif a == "delete_note":
+                    res = delete_note(req.get("id", ""))
                 elif a == "set":
                     # a batch, so arrowing through the panel can't outrun us
                     pairs = req.get("pairs") or {req.get("key", ""): req.get("value", "")}

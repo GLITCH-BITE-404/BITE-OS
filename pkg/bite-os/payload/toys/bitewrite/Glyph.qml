@@ -15,6 +15,8 @@ Text {
     property string glyph: ""
     property int born: 0
     property bool bad: false          // CODE / LYRICS: not what the ghost says
+    property int cells: 1             // 2 for Chinese, Japanese, Korean, emoji
+    property bool rtlFont: false      // Hebrew / Arabic: drawn in a font that has them
 
     property bool live: false
     property real rise: 0
@@ -26,12 +28,12 @@ Text {
 
     x: w.padX + col * w.slot
     y: row * w.lineH
-    width: w.charW
+    width: w.charW * cells + (cells - 1)
     height: w.lineH
     horizontalAlignment: Text.AlignHCenter
     verticalAlignment: Text.AlignVCenter
     text: scr < 1 ? w.noise(scr) : glyph
-    font.family: w.fontFamily
+    font.family: rtlFont && w.fontRtl ? w.fontRtl : w.fontFamily
     font.pixelSize: w.fontPx
     readonly property color ink: w.colour === "rainbow"
         ? Qt.hsla(((col * 0.031 + row * 0.113) % 1 + 1) % 1, 0.72, 0.7, 1)

@@ -100,8 +100,8 @@ function align(text, ghost) {
         else for (j = 0; j < tt.length; j++) if (tt[j].w !== gt[j].w) { complete = false; break; }
 
         // the ghost keeps its own place: whatever of it lies past the end of
-        // what you've typed, where it always was
-        view.push({ col: t.length, text: g.substr(t.length), missed: "" });
+        // what you've typed, blanked out where you already have
+        view.push({ col: 0, text: " ".repeat(Math.min(t.length, g.length)) + g.substr(t.length), missed: "" });
         off += t.length + 1;
     }
     return { bad: bad, view: view, wrong: wrong, correct: correct,
