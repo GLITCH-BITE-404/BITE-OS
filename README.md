@@ -23,14 +23,12 @@ Built on the CachyOS base — riced to the teeth, engineered to never get in you
 
 ---
 
-> ## ⬛ Latest version — build `20260915`
+> ## ⬛ Latest version — 1.1.33 (`20261011`)
 >
-> **This is the newest ISO and replaces every earlier upload.** Caelestia moves to
-> stable **2.4.0** and serpantinum to **2.1.5** — both merged with every BITE-OS
-> change kept — plus new **BITE-OS desktop widgets** (dedsec monitor, matrix rain,
-> rice switcher, workspace map, process top…), **widget saves** with auto-save, and
-> **undo** for widget changes. Full list under
-> **[What's new](RELEASES.md#-whats-new-in-20260915)**.
+> **This is the newest ISO and replaces every earlier upload.** It brings the new
+> **BITE-OS Style** tab — glitch popups, notifications that bite onto the screen,
+> Dedsec and Matrix lock screens — and serpantinum **2.2.7** with lyrics, a
+> desktop menu and widget presets. Full list in **[Releases](RELEASES.md)**.
 >
 > **[⤓ Download it here](#-download)** · already on 1.1.31 or newer? Just press
 > `SUPER+U`. Installed from an older ISO? See **[Updating](#-updating)**.
@@ -205,31 +203,29 @@ The system maps directly to these custom core inputs for elite navigation:
 
 ## ◈ Download
 
-> ### ⬛ Latest build — `20260915` (1.1.31)
-> This is the **current** ISO and supersedes every earlier upload. Everything from
-> the earlier builds, plus Caelestia 2.4.0, serpantinum 2.1.5 and the BITE-OS
-> widgets — see **[What's new](RELEASES.md#-whats-new-in-20260915)**.
+> ### ⬛ Latest build — 1.1.33 (`20261011`)
+> This is the **current** ISO and supersedes every earlier upload — see
+> **[Releases](RELEASES.md)** for what's in it.
 
-> The ISO (~5.6 GiB) is hosted off-GitHub due to file-size limits.
+> The ISO (~5.7 GiB) is hosted off-GitHub due to file-size limits.
 
-**➡ [Download BITE-OS 1.1.31 (dedsec)](https://archive.org/download/bite-os-1.1.31-x86_64/bite-os-1.1.31-x86_64.iso)**
+**➡ [Download BITE-OS 1.1.33 (dedsec)](https://archive.org/download/bite-os-1.1.33-x86_64/bite-os-1.1.33-x86_64.iso)**
 
-*(mirror / details page: [archive.org item](https://archive.org/details/bite-os-1.1.31-x86_64))*
+*(mirror / details page: [archive.org item](https://archive.org/details/bite-os-1.1.33-x86_64))*
 
-`SHA256`: `15a50830f6125b7a72af436b7e277a9fdbbe5730bbbe8ca079f11aaede8a8a76`
+`SHA256`: `f7e2b7cf40ad2d3ede23927a639252bf14c40d037d0300be86c405f2a8ecfaae`
 
 Verify the download before flashing — anything that doesn't match this hash is not the ISO I built:
 
 ```bash
-sha256sum bite-os-1.1.31-x86_64.iso
+sha256sum bite-os-1.1.33-x86_64.iso
 ```
 
 This build ships **`bite-toys`** and its four toys preinstalled — see [Toys](#-toys).
 
 ## ◈ Releases
 
-What changed in every build — newest first, including what the next build
-ships — lives in **[RELEASES.md](RELEASES.md)**.
+What changed in every build — newest first — lives in **[RELEASES.md](RELEASES.md)**.
 
 ---
 
