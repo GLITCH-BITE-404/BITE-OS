@@ -94,6 +94,8 @@ echo "==> 1/4  Building the bite-os package (fresh)"
 # STALE package (e.g. 1.1-7) won and shipped in the ISO (missing the latest skel,
 # rice, plymouth theme, etc.). Clean slate avoids the whole ambiguity.
 rm -f "$DISTRO/pkg/bite-os/"bite-os-*.pkg.tar.*
+# the bundled toys live in BITE-OS-toys, not this repo — fetch them on a fresh clone
+bash "$DISTRO/tools/fetch-bundled-toys.sh"
 ( cd "$DISTRO/pkg/bite-os" && makepkg -f --noconfirm ) || {
     echo "!! makepkg failed — fix PKGBUILD/payload, then re-run." >&2; exit 1; }
 # Copy ONLY the package makepkg just built (resolved exactly, not globbed), and

@@ -39,3 +39,10 @@ pkg/**/*.tar.gz
 # python bytecode (toys run from source)
 __pycache__/
 *.pyc
+
+# toys live in their own repo (GLITCH-BITE-404/BITE-OS-toys). The package's
+# bundled copies are fetched by tools/fetch-bundled-toys.sh at build time.
+src/toys/
+pkg/bite-os/payload/toys/
+tools/bitewrite-tests/
+tools/test-bitewrite.sh

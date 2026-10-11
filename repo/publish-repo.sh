@@ -40,6 +40,8 @@ export MAKEPKG_CONF="$HERE/makepkg-portable.conf"
 echo "==> 1/5  Building + signing the bite-os package ($(grep -E '^pkgver|^pkgrel' "$DISTRO/pkg/bite-os/PKGBUILD" | tr '\n' ' '))"
 # fingerprints first (it also reads the old packages we're about to clear)
 bash "$DISTRO/tools/gen-skel-hashes.sh"
+# the bundled toys live in BITE-OS-toys, not this repo — fetch them on a fresh clone
+bash "$DISTRO/tools/fetch-bundled-toys.sh"
 rm -f "$DISTRO/pkg/bite-os/"bite-os-*.pkg.tar.*
 ( cd "$DISTRO/pkg/bite-os" && GPGKEY="$KEYID" makepkg -f --sign --noconfirm )
 BITE_PKG="$(cd "$DISTRO/pkg/bite-os" && makepkg --packagelist 2>/dev/null | grep -E '/bite-os-[^/]*\.pkg\.tar' | head -1)"
