@@ -260,14 +260,15 @@ def sfx_manifest(type_override=""):
 
 # ── snippets ──────────────────────────────────────────────────────────────────
 
-LANGS = {".js": "js", ".py": "python", ".sh": "bash"}
+LANGS = {".js": "js", ".py": "python", ".sh": "bash", ".html": "html", ".htm": "html"}
 LEVELS = {"easy": 0, "medium": 1, "hard": 2, "extreme": 3, "game": 4}
 
 
 def snippets():
     """Each file in snippets/ starts with `name:`, `about:` and `level:` comment
-    lines (// in JavaScript, # in Python and Bash); the rest is the code you
-    type. The extension says what it's written in. Drop your own into
+    lines (// in JavaScript, # in Python and Bash, <!-- … --> in HTML); the rest
+    is the code you type. The extension says what it's written in. Drop your own
+    into
     ~/.local/share/bite-os/bitewrite/snippets."""
     dirs = [os.path.join(HERE, "snippets"),
             os.path.join(E("DATA") or "", "snippets")]
@@ -285,7 +286,7 @@ def snippets():
             for line in raw.splitlines():
                 if not body and line.startswith("#!"):
                     continue
-                m = re.match(r"^(?://|#)\s*(name|about|level):\s*(.*)$", line)
+                m = re.match(r"^(?://|#|<!--)\s*(name|about|level):\s*(.*?)(?:\s*-->)?$", line)
                 if m and not body:
                     meta[m.group(1)] = m.group(2).strip()
                 elif body or line.strip():
@@ -294,15 +295,15 @@ def snippets():
                 body.pop()
             out.append({"name": meta.get("name") or os.path.basename(p).rsplit(".", 1)[0],
                         "about": meta.get("about", ""), "level": meta.get("level", ""),
-                        "lang": lang, "code": "\n".join(body)})
-    order = {"js": 0, "python": 1, "bash": 2}
+                        "lang": lang, "file": os.path.basename(p), "code": "\n".join(body)})
+    order = {"js": 0, "html": 1, "python": 2, "bash": 3}
     out.sort(key=lambda s: (order[s["lang"]], LEVELS.get(s["level"], 1)))
     return out
 
 
 # ── running Python and Bash ───────────────────────────────────────────────────
-# JavaScript runs inside the window. Python and Bash print to a terminal, so
-# they get one of their own.
+# JavaScript and HTML stay inside the window. Python and Bash print to a
+# terminal, so they get one of their own.
 
 TERMS = {
     "kitty": ["kitty", "--class", "bitewrite-run", "--title", "{title}", "sh", "-c", "{cmd}"],
@@ -332,6 +333,103 @@ def terminal():
     return ""
 
 
+# ── HTML ──────────────────────────────────────────────────────────────────────
+# Nothing runs it: the page is drawn by Qt's rich-text engine inside the window,
+# so "does it run" means "do the tags close". A browser would paper over a
+# missing </div>; this says which line opened it.
+
+VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+        "meta", "param", "source", "track", "wbr", "!doctype"}
+RAW_TEXT = {"script", "style", "textarea", "title"}
+# a browser closes these itself, and nobody types the closing tag
+OPTIONAL_END = {"p", "li", "dt", "dd", "tr", "td", "th", "thead", "tbody",
+                "tfoot", "option", "colgroup", "rt", "rp"}
+
+
+def check_html(code):
+    if not code.strip():
+        return {"ok": False, "message": "the page is empty", "line": -1}
+    stack, i, line = [], 0, 1
+    while True:
+        j = code.find("<", i)
+        if j < 0:
+            break
+        line += code.count("\n", i, j)
+        i = j
+        if code.startswith("<!--", i):
+            end = code.find("-->", i + 4)
+            if end < 0:
+                return {"ok": False, "message": "a comment is never closed — it needs -->", "line": line}
+            line += code.count("\n", i, end)
+            i = end + 3
+            continue
+        m = re.match(r"<\s*(/?)\s*([a-zA-Z!][\w:-]*)", code[i:])
+        if not m:
+            i += 1
+            continue
+        # quotes are allowed to hold a > of their own
+        k, quote = i + 1, ""
+        while k < len(code):
+            c = code[k]
+            if quote:
+                if c == quote:
+                    quote = ""
+            elif c in "\"'":
+                quote = c
+            elif c == ">":
+                break
+            k += 1
+        if k >= len(code):
+            return {"ok": False,
+                    "message": ("a quote is never closed inside <%s>" % m.group(2).lower()) if quote
+                               else ("<%s is never closed — it needs a >" % m.group(2).lower()),
+                    "line": line}
+        end = k
+        tag, closing = m.group(2).lower(), m.group(1) == "/"
+        inner = code[i:end + 1]
+        line_of_tag = line
+        line += code.count("\n", i, end + 1)
+        i = end + 1
+        if tag.startswith("!"):
+            continue
+        if closing:
+            if tag in OPTIONAL_END and (not stack or stack[-1][0] != tag):
+                continue
+            if not stack:
+                return {"ok": False, "message": "</%s> closes something that was never opened" % tag,
+                        "line": line_of_tag}
+            while stack and stack[-1][0] in OPTIONAL_END and stack[-1][0] != tag:
+                stack.pop()
+            if not stack:
+                return {"ok": False, "message": "</%s> closes something that was never opened" % tag,
+                        "line": line_of_tag}
+            if stack[-1][0] != tag:
+                open_tag, open_line = stack[-1]
+                return {"ok": False,
+                        "message": "</%s> came first, but <%s> from line %d is still open"
+                                   % (tag, open_tag, open_line),
+                        "line": line_of_tag}
+            stack.pop()
+            continue
+        if tag in VOID or inner.rstrip().endswith("/>"):
+            continue
+        if tag in RAW_TEXT:
+            m2 = re.compile(r"</\s*%s\s*>" % re.escape(tag), re.I).search(code, i)
+            if not m2:
+                return {"ok": False, "message": "<%s> is never closed" % tag, "line": line_of_tag}
+            line += code.count("\n", i, m2.end())
+            i = m2.end()
+            continue
+        if tag in OPTIONAL_END and stack and stack[-1][0] == tag:
+            stack.pop()
+        stack.append((tag, line_of_tag))
+    for tag, ln in reversed(stack):
+        if tag in OPTIONAL_END:
+            continue
+        return {"ok": False, "message": "<%s> is never closed" % tag, "line": ln}
+    return {"ok": True}
+
+
 def check_code(lang, code):
     if lang == "python":
         try:
@@ -349,10 +447,15 @@ def check_code(lang, code):
         m = re.search(r"line (\d+): (.*)", err[0] if err else "")
         return {"ok": False, "message": m.group(2) if m else (err[0] if err else "syntax error"),
                 "line": int(m.group(1)) if m else -1}
+    if lang == "html":
+        return check_html(code)
     return {"ok": False, "message": "can't check " + str(lang), "line": -1}
 
 
 def run_code(lang, code):
+    if lang == "html":
+        # HTML never leaves the window — Write.qml draws it in its own browser
+        return {"ok": False, "error": "html is shown in the window, not run in a terminal"}
     term = TERMINAL or terminal()
     if not term:
         return {"ok": False, "error": "no terminal found — set terminal= in bitewrite's settings file"}
@@ -372,14 +475,90 @@ def run_code(lang, code):
     return {"ok": True, "terminal": term}
 
 
-def delete_note(nid):
-    if not re.fullmatch(r"\d{10,16}", str(nid or "")):
-        return {"ok": False, "error": "bad note id"}
+# QML can write a file but not delete one — notes and CODE files are dropped
+# here. The id is always a timestamp, and the folder is one of two names, so
+# nothing outside bitewrite's own data folder can be named.
+SAVED = {"notes", "code"}
+
+
+# ── taking it out of the toy ──────────────────────────────────────────────────
+# "install" means: put what you wrote somewhere it can be used. Pages and
+# programs are written into Documents/bitewrite, keeping the folders you made,
+# and a Python or Bash file is also dropped into ~/.local/bin without its
+# extension and made executable, so its name becomes a command you can run.
+# Nothing is ever written outside those two places.
+
+SHEBANG = {".py": "#!/usr/bin/env python3", ".sh": "#!/usr/bin/env bash"}
+
+
+def safe_rel(name, default="untitled"):
+    """A relative path that cannot climb out of the folder it is written into."""
+    parts = []
+    for part in str(name or "").replace("\\", "/").split("/"):
+        part = part.strip().strip(".")
+        part = re.sub(r'[\x00-\x1f<>:"|?*]', "-", part)
+        if part and part not in (".", ".."):
+            parts.append(part[:80])
+    return "/".join(parts[:8]) or default
+
+
+def install_one(item, root, done):
+    kind = item.get("kind") or "code"
+    rel = safe_rel(item.get("name"), "untitled.txt")
+    if kind == "notes" and not os.path.splitext(rel)[1]:
+        rel += ".txt"
+    text = item.get("text") or ""
+    path = os.path.join(root, kind, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text if text.endswith("\n") else text + "\n")
+    done["files"].append(path)
+    # a script becomes a command
+    ext = os.path.splitext(rel)[1].lower()
+    if kind == "code" and ext in SHEBANG:
+        binroot = os.path.join(HOME, ".local", "bin")
+        os.makedirs(binroot, exist_ok=True)
+        cmd = os.path.basename(rel)[: -len(ext)]
+        dest = os.path.join(binroot, cmd)
+        body = text if text.startswith("#!") else SHEBANG[ext] + "\n" + text
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(body if body.endswith("\n") else body + "\n")
+        os.chmod(dest, 0o755)
+        done["commands"].append(cmd)
+
+
+def install(req):
+    items = req.get("items") or []
+    if not items:
+        return {"ok": False, "error": "nothing to install"}
+    root = os.path.join(E("DOCS") or HOME, "bitewrite")
+    done = {"files": [], "commands": []}
     try:
-        os.remove(os.path.join(E("DATA") or "", "notes", nid + ".txt"))
-    except FileNotFoundError:
-        pass
+        for item in items:
+            install_one(item, root, done)
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    onpath = os.path.join(HOME, ".local", "bin") in (E("PATH") or "").split(":")
+    return {"ok": True, "root": root, "count": len(done["files"]),
+            "where": done["files"][0] if len(done["files"]) == 1 else root,
+            "commands": done["commands"], "onpath": onpath}
+
+
+def delete_saved(where, nid):
+    if where not in SAVED:
+        return {"ok": False, "error": "bad folder"}
+    if not re.fullmatch(r"\d{10,16}", str(nid or "")):
+        return {"ok": False, "error": "bad id"}
+    for suffix in (".txt", ".ran.txt"):
+        try:
+            os.remove(os.path.join(E("DATA") or "", where, nid + suffix))
+        except FileNotFoundError:
+            pass
     return {"ok": True}
+
+
+def delete_note(nid):
+    return delete_saved("notes", nid)
 
 
 def rtl_font():
@@ -444,6 +623,7 @@ def prep(rundir):
         "volume": num("VOLUME", 10, 0, 10),
         "ghost": num("GHOST", 3, 0, 10),
         "strict": on("STRICT", "off"),
+        "lines": on("LINES", "on"),
         "flow": E("TOY_FLOW") or "follow",
         "lead": num("LEAD", 0, 0, 3),
         "autoline": on("AUTOLINE", "on"),
@@ -453,6 +633,7 @@ def prep(rundir):
         "speedText": E("TOY_SPEED_TEXT") or "words",
         "bests": os.path.join(E("DATA"), "speed-best.json"),
         "notesDir": os.path.join(E("DATA"), "notes"),
+        "codeDir": os.path.join(E("DATA"), "code"),
         "direction": E("TOY_DIRECTION") or "auto",
         "fontRtl": rtl_font(),
         "terminal": terminal(),
@@ -465,6 +646,7 @@ def prep(rundir):
         "sfx": sfx,
     }
     os.makedirs(opts["notesDir"], exist_ok=True)
+    os.makedirs(opts["codeDir"], exist_ok=True)
     dump(os.path.join(rundir, "opts.json"), opts)
     dump(os.path.join(rundir, "snippets.json"), snippets())
     dump(os.path.join(rundir, "speed.json"), speed_lists())
@@ -749,6 +931,7 @@ def serve(rundir):
     reqf, statf = os.path.join(rundir, "request.json"), os.path.join(rundir, "status.json")
     nowf = os.path.join(rundir, "now.json")
     last, watch, next_poll = None, "", 0
+    busy = None                  # the request being answered, if one is
     parent = os.getppid()
     while True:
         try:
@@ -761,6 +944,7 @@ def serve(rundir):
                 except Exception:
                     time.sleep(0.03); last = None; continue
                 a = req.get("action")
+                busy = req.get("seq", 0), a
                 if a == "quit":
                     return 0
                 if a == "songs":
@@ -777,6 +961,10 @@ def serve(rundir):
                     res = run_code(req.get("lang", ""), req.get("code", ""))
                 elif a == "delete_note":
                     res = delete_note(req.get("id", ""))
+                elif a == "delete_saved":
+                    res = delete_saved(req.get("where", ""), req.get("id", ""))
+                elif a == "install":
+                    res = install(req)
                 elif a == "set":
                     # a batch, so arrowing through the panel can't outrun us
                     pairs = req.get("pairs") or {req.get("key", ""): req.get("value", "")}
@@ -786,6 +974,7 @@ def serve(rundir):
                 res["seq"] = req.get("seq", 0)
                 res["action"] = a
                 dump(statf, res)
+                busy = None
             if watch and time.time() >= next_poll:
                 dump(nowf, player_now(watch))
                 next_poll = time.time() + 0.25
@@ -793,11 +982,16 @@ def serve(rundir):
         except KeyboardInterrupt:
             return 0
         except Exception as e:
+            # Answer the request that broke, under its own number: the window
+            # waits for exactly that number, and an answer it can't match left
+            # it — and everything queued behind it — hanging for 25 seconds.
             try:
-                dump(statf, {"ok": False, "error": str(e)[:200], "seq": -1})
+                seq, a = busy if busy else (-1, "")
+                dump(statf, {"ok": False, "error": str(e)[:200], "seq": seq, "action": a})
             except Exception:
                 pass
-            time.sleep(0.2)
+            busy = None
+            time.sleep(0.05)
 
 
 if __name__ == "__main__":

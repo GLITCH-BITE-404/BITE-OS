@@ -47,6 +47,10 @@ width=60
 # @choices auto,ltr,rtl
 direction=auto
 
+# Line numbers down the side of the page in CODE.
+# @choices on,off
+lines=on
+
 # ── feel ─────────────────────────────────────────────────────────────────────
 
 # A little burst of sparks from every letter you type.

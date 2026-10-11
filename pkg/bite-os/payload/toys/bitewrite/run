@@ -22,7 +22,7 @@ fi
 command -v qml6 >/dev/null 2>&1 || die "qml6 is missing — sudo pacman -S qt6-declarative"
 [[ -f "$HERE/Write.qml" ]] || die "Write.qml is missing from $HERE"
 
-mkdir -p "$RUNDIR" "$DATA/snippets" "$DATA/songs"
+mkdir -p "$RUNDIR" "$DATA/snippets" "$DATA/songs" "$DATA/code"
 rm -f "$RUNDIR"/*.qml "$RUNDIR"/*.js "$RUNDIR/request.json" "$RUNDIR/status.json" "$RUNDIR/now.json"
 cp -f "$HERE"/*.qml "$HERE"/*.js "$RUNDIR/"
 

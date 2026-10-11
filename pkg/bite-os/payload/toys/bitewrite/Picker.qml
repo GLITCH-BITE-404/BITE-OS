@@ -11,6 +11,10 @@ Item {
     property var items: []          // {title, sub, tag}
     property var shownItems: []
     property bool shown: false
+    // The list scrolls under a mouse that never moved, and the row sliding
+    // past would take the selection with it — so hover only claims the
+    // selection again once the mouse itself has actually moved.
+    property bool hoverLive: false
     signal chosen(var item)
     signal cancelled()
 
@@ -20,6 +24,7 @@ Item {
     Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
 
     function open(t, list, n) {
+        pk.hoverLive = false;
         pk.title = t;
         pk.note = n || "";
         pk.items = list || [];
@@ -93,8 +98,8 @@ Item {
                 selectionColor: Qt.alpha(w.cAccent, 0.4)
                 onTextEdited: { pk.refilter(); w.sfx.play("key", text.slice(-1)); }
                 Keys.onPressed: function(e) {
-                    if (e.key === Qt.Key_Down) { list.incrementCurrentIndex(); w.sfx.play("space"); }
-                    else if (e.key === Qt.Key_Up) { list.decrementCurrentIndex(); w.sfx.play("space"); }
+                    if (e.key === Qt.Key_Down) { pk.hoverLive = false; list.incrementCurrentIndex(); w.sfx.play("space"); }
+                    else if (e.key === Qt.Key_Up) { pk.hoverLive = false; list.decrementCurrentIndex(); w.sfx.play("space"); }
                     else if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) {
                         if (pk.shownItems.length) { pk.close(); pk.chosen(pk.shownItems[list.currentIndex]); }
                     } else if (e.key === Qt.Key_Escape) { pk.close(); pk.cancelled(); }
@@ -130,6 +135,7 @@ Item {
                     x: 12; y: 8
                     width: parent.width - 110
                     elide: Text.ElideRight
+                    textFormat: Text.PlainText
                     text: modelData.title
                     font.family: w.fontFamily
                     font.pixelSize: 15
@@ -139,6 +145,7 @@ Item {
                     x: 12; y: 30
                     width: parent.width - 24
                     elide: Text.ElideRight
+                    textFormat: Text.PlainText
                     text: modelData.sub || ""
                     font.family: w.fontFamily
                     font.pixelSize: 11
@@ -158,7 +165,8 @@ Item {
                     anchors.fill: parent
                     onClicked: { pk.close(); pk.chosen(modelData); }
                     hoverEnabled: true
-                    onEntered: list.currentIndex = index
+                    onEntered: if (pk.hoverLive) list.currentIndex = index
+                    onPositionChanged: { pk.hoverLive = true; list.currentIndex = index; }
                 }
             }
         }

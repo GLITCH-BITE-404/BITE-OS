@@ -48,6 +48,7 @@ Item {
         { head: "code" },
         { key: "ghost", label: "ghost code", range: [0, 10], about: "how visible the code you're copying is" },
         { key: "strict", label: "strict", choices: ["off", "on"], about: "refuse wrong keys instead of typing them" },
+        { key: "lines", label: "line numbers", choices: ["on", "off"], about: "down the side of the page in CODE" },
         { head: "lyrics" },
         { key: "flow", label: "flow", choices: ["follow", "drive", "karaoke"],
           about: "follow: the song waits for you at every line · drive: plays while you type · karaoke: you race it" },

@@ -3,8 +3,10 @@
 // Five modes behind one page:
 //   WRITE   free writing, kept between sessions
 //   NOTES   as many notes as you like, saved as you type
-//   CODE    write a program in JavaScript, Python or Bash (or type one over
-//           its ghost); Ctrl+Enter runs whatever you wrote
+//   CODE    write a program in JavaScript, Python or Bash, or a page in HTML
+//           (or type one over its ghost); Ctrl+Enter runs whatever you wrote —
+//           JavaScript on a canvas, HTML in a tabbed browser drawn in this
+//           window
 //   LYRICS  a song's lyrics as the ghost; your typing drives the song
 //   SPEED   a typing test with your speed live at the bottom
 //
@@ -97,7 +99,7 @@ Window {
     // LYRICS and SPEED: every key fills the next slot of the ghost and the
     // line never moves (see align.js slots())
     readonly property bool slotMode: win.ghosted && (win.mode === "lyrics" || win.mode === "speed")
-    readonly property var langNames: ({ js: "javascript", python: "python", bash: "bash" })
+    readonly property var langNames: ({ js: "javascript", html: "html", python: "python", bash: "bash" })
 
     // ── grid ────────────────────────────────────────────────────────────────
     readonly property int longest: win.ghostCells
@@ -111,8 +113,14 @@ Window {
     readonly property real lineH: Math.round(win.fontPx * 1.7)
     readonly property real padX: Math.round(win.fontPx * 1.3)
     readonly property real padY: Math.round(win.fontPx * 0.9)
-    readonly property real sideRoom: notes.active && win.width > 900 ? 260 : 0
-    readonly property int fitCols: Math.max(8, Math.floor((win.width - 96 - win.sideRoom - 2 * win.padX) / win.slot))
+    property bool lineNums: true
+    // the widest line number there will be, plus a little air on each side
+    readonly property int lastTextRow: Math.max(win.endRow, win.ghostLines.length - 1)
+    readonly property real gutterW: win.mode === "code" && win.lineNums
+        ? Math.round(win.charW * (String(Math.max(10, win.lastTextRow + 1)).length + 2.2)) : 0
+
+    readonly property real sideRoom: (notes.active || files.active) && win.width > 900 ? 260 : 0
+    readonly property int fitCols: Math.max(8, Math.floor((win.width - 96 - win.sideRoom - win.gutterW - 2 * win.padX) / win.slot))
     readonly property int cols: win.ghosted ? Math.max(win.longest + 1, 8)
                               : (win.mode === "code" ? win.fitCols : Math.min(win.maxCols, win.fitCols))
     function fitColsAt(px) { return Math.floor((win.width - 150) / (px * 0.62)) - 3; }
@@ -166,9 +174,34 @@ Window {
         x.open("GET", fileUrl(path));
         x.send();
     }
+    // One write at a time per file. Two PUTs to the same path in the same
+    // moment don't queue behind each other in Qt — the second lands on top of
+    // the first without shortening the file, so a list that just got smaller
+    // keeps the tail of the bigger one it replaced and no longer parses. The
+    // newest text wins; anything it overtook was already out of date.
+    property var writing: ({})
+    property var pendingWrite: ({})
     function writeFile(path, text, done) {
+        // a write that never came back (it shouldn't happen, but if it did,
+        // request.json would never be written again and every question to
+        // the engine would hang) stops counting after a few seconds
+        if (win.writing[path] && Date.now() - win.writing[path] > 3000) win.writing[path] = 0;
+        if (win.writing[path]) {
+            win.pendingWrite[path] = { text: text, done: done };
+            return;
+        }
+        win.writing[path] = Date.now();
         var x = new XMLHttpRequest();
-        x.onreadystatechange = function() { if (x.readyState === XMLHttpRequest.DONE && done) done(); };
+        x.onreadystatechange = function() {
+            if (x.readyState !== XMLHttpRequest.DONE) return;
+            win.writing[path] = 0;
+            var next = win.pendingWrite[path];
+            if (next) {
+                delete win.pendingWrite[path];
+                win.writeFile(path, next.text, next.done);
+            }
+            if (done) done();
+        };
         x.open("PUT", fileUrl(path));
         x.send(text);
     }
@@ -251,12 +284,14 @@ Window {
             win.fontRtl = o.fontRtl || "";
             if (o.radius !== undefined) win.radius = o.radius;
             win.shellVolume = o.shellVolume !== undefined ? o.shellVolume : 1;
+            win.lineNums = o.lines !== false;
             win.draftPath = o.draft || "";
             win.bestsPath = o.bests || "";
             win.docsDir = o.docs || "";
             win.homeDir = o.home || "";
             win.terminalName = o.terminal || "";
             notes.dir = o.notesDir || "";
+            files.dir = o.codeDir || "";
             sfxObj.manifest = o.sfx || {};
 
             var packs = Object.keys(o.sfx || {}).sort(function(a, b) {
@@ -286,9 +321,10 @@ Window {
             });
             speed.load();
             if (notes.dir) notes.load();
+            if (files.dir) files.load();
 
             openAnim.start();
-            ed.forceActiveFocus();
+            win.focusPage();
             if (win.keep && win.draftPath) {
                 readFile(win.draftPath, function(txt) { if (txt.length) setText(txt); win.ready = true; });
             } else {
@@ -321,6 +357,7 @@ Window {
             break;
         case "volume": sfxObj.volume = Math.max(0, Math.min(1, win.shellVolume * Number(value) / 10)); break;
         case "ghost": win.ghostLevel = Number(value); break;
+        case "lines": win.lineNums = String(value) !== "off"; break;
         case "strict": win.strict = value === "on"; break;
         case "flow":
             win.flow = value;
@@ -817,6 +854,18 @@ Window {
             }
         }
 
+        // CODE with no ghost: a closing tag typed on an empty indented line
+        // steps back out one level — the "/" of "</" is the giveaway
+        if (win.mode === "code" && !win.ghosted && t === "/" && win.codeLang === "html") {
+            var hs = ed.text, hi = ed.cursorPosition, hls = hs.lastIndexOf("\n", hi - 1) + 1;
+            var hbefore = hs.substring(hls, hi);
+            if (/^\s+<$/.test(hbefore) && hbefore.length >= 3) {
+                win.quiet = true;
+                ed.remove(hi - 3, hi - 1);
+                win.quiet = false;
+            }
+        }
+
         // CODE with no ghost: a closing brace on an empty indented line steps
         // back out one level, like any editor
         if (win.mode === "code" && !win.ghosted && t === "}" && win.codeLang !== "python") {
@@ -913,6 +962,7 @@ Window {
         if (win.mode === "code" && kind === "enter") autoIndent();
         if (win.mode === "code") compileCheck.restart();
         if (win.mode === "notes") notes.changed(ed.text);
+        if (win.mode === "code") files.changed(ed.text);
         if (win.mode === "lyrics") songAlive();
         if (win.mode === "speed") {
             if (ch.ins >= 1) speed.onKey(kind);
@@ -924,6 +974,20 @@ Window {
     // CODE: Enter lands on the next line already indented — like the ghost
     // when there is one, otherwise like the line above, one deeper after a
     // line that opens a block
+    // HTML: does this line leave a tag open? <div> does, <br> and <img> don't,
+    // and <li>one</li> opened and closed again on one line doesn't either.
+    readonly property var voidTags: ["area", "base", "br", "col", "embed", "hr", "img", "input",
+                                     "link", "meta", "param", "source", "track", "wbr"]
+    function opensTag(line) {
+        var re = /<\s*(\/?)\s*([a-zA-Z][\w:-]*)[^>]*?(\/?)>/g, depth = 0, m;
+        while ((m = re.exec(line)) !== null) {
+            var tag = m[2].toLowerCase();
+            if (win.voidTags.indexOf(tag) >= 0 || m[3] === "/") continue;
+            depth += m[1] === "/" ? -1 : 1;
+        }
+        return depth > 0;
+    }
+
     function autoIndent() {
         var i = ed.cursorPosition, s = ed.text;
         var before = s.substr(0, i).split("\n"), row = before.length - 1, pad = "";
@@ -934,6 +998,7 @@ Window {
             var prev = row > 0 ? before[row - 1] : "";
             pad = prev.substr(0, prev.length - prev.replace(/^\s+/, "").length);
             if (win.codeLang === "python") { if (/:\s*(#.*)?$/.test(prev)) pad += "    "; }
+            else if (win.codeLang === "html") { if (win.opensTag(prev)) pad += "  "; }
             else if (/[{\[(]\s*$/.test(prev) || (win.codeLang === "bash" && /\b(then|do|else)\s*$/.test(prev))) pad += "  ";
         }
         if (pad.length && s.substr(i, pad.length) !== pad) {
@@ -1042,6 +1107,7 @@ Window {
         if ((win.flow === "drive" || (win.flow === "follow" && !win.synced)) && !win.complete) graceTimer.restart();
     }
     function songPlay() {
+        if (!win.song) return;              // LYRICS with nothing picked yet
         win.songPlaying = true;
         if (win.song.kind === "file") {
             var m = makeMedia(); if (!m) return;
@@ -1193,6 +1259,7 @@ Window {
     function leaveMode(next) {
         if (win.mode === "write") win.writeText = ed.text;
         if (win.mode === "notes") notes.flush();
+        if (win.mode === "code") files.flush();
         if (win.mode === "lyrics" && next !== "lyrics") songStop();
     }
 
@@ -1219,14 +1286,9 @@ Window {
             win.pieceName = "";
             startSpeed();
         } else if (m === "code") {
-            var blank = ["js", "python", "bash"].map(function(l) {
-                return { title: "✎ blank page — " + win.langNames[l], sub: "write your own · ctrl+enter runs whatever you wrote",
-                         tag: l, blank: true, lang: l };
-            });
-            picker.open("CODE — pick something to type, or start blank", blank.concat(win.snippetList.map(function(s) {
-                return { title: s.name, sub: s.about, tag: s.lang + " · " + s.level, snippet: s };
-            })), "");
-            picker.purpose = "code";
+            leaveMode(m);
+            if (files.ready) { enterCode(); return; }
+            files.load(enterCode);
         } else if (m === "lyrics") {
             picker.open("LYRICS — pick a song", [], "looking for players and songs…");
             picker.purpose = "lyrics";
@@ -1245,27 +1307,206 @@ Window {
     }
 
     function pickerChosen(item) {
-        if (picker.purpose === "notes") { openNote(item.id); ed.forceActiveFocus(); return; }
+        if (picker.purpose === "notes") { openNote(item.id); win.focusPage(); return; }
+        if (picker.purpose === "files") { openCodeFile(item.id); win.focusPage(); return; }
+        if (picker.purpose === "diff") {
+            if (item.ran) files.ranOf(files.current, function(t) { win.showDiff(t, files.nameFor(files.current) + "   ·   as it ran"); });
+            else win.showDiff(files.textOf(item.id), item.title);
+            return;
+        }
         leaveMode(picker.purpose);
         if (picker.purpose === "code") {
             win.mode = "code";
             if (item.blank) {
-                win.codeLang = item.lang;
-                win.pieceName = "blank page";
-                startPiece("");
-                toast("write anything in " + win.langNames[item.lang] + " — ctrl+enter runs it"
-                      + (item.lang === "js" ? " (define function frame(t) and draw with ctx)" : " in " + (win.terminalName || "a terminal")));
+                var base = item.lang === "html" ? "page" : item.lang === "js" ? "sketch" : "script";
+                showCode(files.create(base, item.lang, "", ""));
+                toast(item.lang === "html"
+                      ? "a new page — ctrl+enter opens it in a tab of the little browser in this window"
+                      : "a new file — ctrl+enter runs it"
+                        + (item.lang === "js" ? " (define function frame(t) and draw with ctx)"
+                                              : " in " + (win.terminalName || "a terminal")));
             } else {
-                win.codeLang = item.snippet.lang;
-                win.pieceName = item.snippet.name;
-                startPiece(item.snippet.code);
+                showCode(files.create(files.slug(item.snippet.name), item.snippet.lang, "", item.snippet.code));
                 toast("type it over the ghost, or ctrl+f to finish it and edit — ctrl+enter runs whatever you wrote");
             }
-        } else {
+        } else if (picker.purpose === "lyrics" && item.song) {
             win.mode = "lyrics";
             openLyrics(item.song);
         }
-        ed.forceActiveFocus();
+        win.focusPage();
+    }
+
+    // CODE is a folder now, not a page: F3 comes back to whatever you were
+    // writing, and every file keeps its own name, language and ghost.
+    function enterCode() {
+        win.mode = "code";
+        if (!files.files.length) { newCodeFile(); return; }
+        var id = files.current && files.nameFor(files.current) ? files.current : files.files[0].id;
+        showCode(id);
+    }
+    function showCode(id) {
+        win.mode = "code";
+        files.open(id, function(txt) {
+            if (win.mode !== "code" || files.current !== id) return;
+            win.codeLang = files.langFor(id);
+            win.pieceName = files.nameFor(id);
+            win.compileState = null;
+            setText("");
+            setGhost(files.ghostFor(id));
+            win.ghostHidden = false;
+            win.combo = 0;
+            flick.contentX = 0;
+            setText(txt);
+            Qt.callLater(win.relayout);
+            compileCheck.restart();
+        });
+    }
+    function openCodeFile(id) {
+        if (win.mode !== "code") { win.mode = "code"; }
+        files.flush();
+        showCode(id);
+        win.focusPage();
+    }
+    function newCodeFile() {
+        var blank = ["js", "html", "python", "bash"].map(function(l) {
+            return { title: "✎ blank " + (l === "html" ? "page" : "file") + " — " + win.langNames[l],
+                     sub: l === "html" ? "write your own page · ctrl+enter shows it in the little browser"
+                                       : "write your own · ctrl+enter runs whatever you wrote",
+                     tag: l, blank: true, lang: l };
+        });
+        picker.open("CODE — a new file: pick something to type, or start blank",
+                    blank.concat(win.snippetList.map(function(s) {
+                        return { title: s.name, sub: s.about, tag: s.lang + " · " + s.level, snippet: s };
+                    })), "");
+        picker.purpose = "code";
+    }
+    function deleteCodeFile(id) {
+        var name = files.nameFor(id);
+        var was = id === files.current;
+        var next = was ? (files.neighbor(1) || files.neighbor(-1)) : "";
+        files.remove(id);
+        ask({ action: "delete_saved", where: "code", id: id }, null);
+        toast("deleted " + name);
+        if (!was) return;
+        files.current = "";
+        if (next) showCode(next); else newCodeFile();
+    }
+    // a folder goes when everything in it goes
+    function deleteCodeFolder(name) {
+        var doomed = files.inFolder(name);
+        var hadCurrent = false;
+        for (var i = 0; i < doomed.length; i++) {
+            if (doomed[i].id === files.current) hadCurrent = true;
+            files.remove(doomed[i].id);
+            ask({ action: "delete_saved", where: "code", id: doomed[i].id }, null);
+        }
+        toast("deleted " + name + "/ and " + doomed.length + (doomed.length === 1 ? " file" : " files"));
+        if (!hadCurrent) return;
+        files.current = "";
+        if (files.files.length) showCode(files.files[0].id); else newCodeFile();
+    }
+
+    property string codeArmed: ""
+    Timer { id: codeDisarm; interval: 2500; onTriggered: win.codeArmed = "" }
+    function deleteCurrentCodeFile() {
+        var id = files.current;
+        if (!id) return;
+        if (win.codeArmed === id) { win.codeArmed = ""; deleteCodeFile(id); return; }
+        win.codeArmed = id;
+        codeDisarm.restart();
+        toast("press it again to delete " + files.nameFor(id));
+    }
+    // The keyboard belongs to whatever is on top: the browser, a running
+    // program, the diff — and only then the page. Everything that used to
+    // grab it for the page asks here instead, so a late callback can't pull
+    // it out from under an overlay that's still open.
+    function focusPage() {
+        if (browser.running) browser.forceActiveFocus();
+        else if (stage.running) stage.forceActiveFocus();
+        else if (diff.shown) diff.forceActiveFocus();
+        else ed.forceActiveFocus();
+    }
+
+    // CODE: compare this file with the last version you ran, or with another
+    // file of yours
+    function openDiff() {
+        if (win.mode !== "code" || !files.current) { toast("ctrl+d compares a CODE file with another"); return; }
+        files.flush();
+        var items = [];
+        if (files.ranAt(files.current))
+            items.push({ title: "the last time you ran this", ran: true,
+                         sub: files.ago(files.ranAt(files.current)) + " ago   ·   what you've changed since it ran",
+                         tag: "changes" });
+        for (var i = 0; i < files.files.length; i++) {
+            var f = files.files[i];
+            if (f.id === files.current) continue;
+            items.push({ title: f.name, id: f.id,
+                         sub: win.langNames[f.lang] + "   ·   " + files.ago(f.updated), tag: "file" });
+        }
+        picker.open("CODE — compare " + files.nameFor(files.current) + " with…", items,
+                    "run this file once, or make another one, and there'll be something to compare it with");
+        picker.purpose = "diff";
+    }
+    function showDiff(oldText, oldName) {
+        diff.open(oldText, oldName, ed.text, files.nameFor(files.current) + "   ·   now");
+    }
+
+    // ── taking it out of the toy ────────────────────────────────────────────
+    // Pages and programs land in Documents/bitewrite with the folders you made;
+    // a .py or .sh also lands in ~/.local/bin without its extension, so its
+    // name becomes a command. Nothing is written anywhere else.
+    function installItems(items, what) {
+        if (!items.length) { toast("there's nothing to install yet"); sfxObj.play("error"); return; }
+        ask({ action: "install", items: items }, function(r) {
+            if (!r || !r.ok) { toast((r && r.error) || "couldn't install it"); sfxObj.play("error"); return; }
+            var msg = what + " → " + pretty(r.where);
+            if (r.commands && r.commands.length) {
+                msg += "   ·   " + (r.commands.length === 1
+                    ? "run it with " + r.commands[0]
+                    : r.commands.length + " of them are commands now");
+                if (!r.onpath) msg += " (put ~/.local/bin on your PATH)";
+            }
+            toast(msg);
+            sfxObj.play("done");
+        });
+    }
+    function noteName(id) {
+        var f = notes.folderFor(id), t = notes.titleFor(id) || "untitled";
+        return (f ? f + "/" : "") + t;
+    }
+    function installCurrent() {
+        if (win.mode === "code") {
+            if (!files.current) { toast("there's nothing to install yet"); return; }
+            files.flush();
+            var name = files.nameFor(files.current);
+            installItems([{ kind: "code", name: name, text: ed.text }], "installed " + name);
+        } else if (win.mode === "notes") {
+            if (!notes.current) { toast("there's nothing to install yet"); return; }
+            notes.flush();
+            installItems([{ kind: "notes", name: noteName(notes.current), text: ed.text }],
+                         "installed " + noteName(notes.current));
+        } else {
+            toast("ctrl+i installs a CODE file or a note · ctrl+shift+i installs everything");
+        }
+    }
+    function installAll() {
+        files.flush();
+        notes.flush();
+        notes.loadAll(function() {
+            var items = [], i;
+            for (i = 0; i < files.files.length; i++) {
+                var f = files.files[i];
+                items.push({ kind: "code", name: f.name,
+                             text: f.id === files.current && win.mode === "code" ? ed.text : files.textOf(f.id) });
+            }
+            for (i = 0; i < notes.notes.length; i++) {
+                var n = notes.notes[i];
+                items.push({ kind: "notes", name: win.noteName(n.id),
+                             text: n.id === notes.current && win.mode === "notes" ? ed.text : notes.textOf(n.id) });
+            }
+            win.installItems(items, "installed everything — " + items.length
+                             + (items.length === 1 ? " thing" : " things"));
+        });
     }
 
     // CODE: fill in the rest of the ghost and hand the program over to edit
@@ -1277,6 +1518,7 @@ Window {
         Qt.callLater(win.relayout);
         win.complete = true;
         compileCheck.restart();
+        if (files.current) { files.set(files.current, { ghost: "" }); files.changed(t); }
         sfxObj.play("done");
         celebrate();
         toast("finished — it's all yours to change · ctrl+enter runs it");
@@ -1290,19 +1532,52 @@ Window {
             var c = stage.check(code);
             if (!c.ok) { brokenCode(c); return; }
             sfxObj.play("run");
+            files.snapshot(files.current, code);
             stage.run(code);
             return;
         }
         ask({ action: "check", lang: win.codeLang, code: code }, function(r) {
             if (!r.ok) { brokenCode(r); return; }
             sfxObj.play("run");
+            // HTML never leaves the window: no browser is started, no file is
+            // opened — the page is drawn here, chrome and all
+            files.snapshot(files.current, code);
+            if (win.codeLang === "html") {
+                browser.site = win.pageSite(code);
+                browser.open(code, files.nameFor(files.current) || "your-page.html");
+                if (browser.tabs.length > 1) toast("another tab — ctrl+tab switches, ctrl+w closes this one");
+                return;
+            }
             ask({ action: "run", lang: win.codeLang, code: code }, function(x) {
                 toast(x.ok ? "running in " + x.terminal + " — close it when you're done" : (x.error || "couldn't start a terminal"));
             });
         });
     }
+    // Every page this little browser can reach: what you just wrote, and each
+    // HTML snippet, under its own file name — so a link from one to another
+    // really does go there.
+    function pageSite(code) {
+        files.flush();
+        var list = [];
+        for (var i = 0; i < files.files.length; i++) {
+            var f = files.files[i];
+            if (f.lang !== "html") continue;
+            var raw = f.id === files.current ? code : files.textOf(f.id);
+            list.push({ file: f.name, title: f.name, about: "yours   ·   " + files.ago(f.updated),
+                        group: "yours", raw: raw });
+        }
+        for (var j = 0; j < win.snippetList.length; j++) {
+            var s = win.snippetList[j];
+            if (s.lang !== "html") continue;
+            list.push({ file: s.file || (s.name + ".html"), title: s.name, about: s.about,
+                        group: "samples", raw: s.code });
+        }
+        return list;
+    }
+
     function brokenCode(c) {
-        toast("it doesn't run — " + (c.line > 0 ? "line " + c.line + ": " : "") + (c.message || c.error || "")
+        toast((win.codeLang === "html" ? "it won't draw — " : "it doesn't run — ")
+              + (c.line > 0 ? "line " + c.line + ": " : "") + (c.message || c.error || "")
               + (win.codeLang === "js" && !(c.line > 0) ? " · check brackets, quotes and commas" : ""));
         sfxObj.play("error");
         shakePage(4);
@@ -1326,7 +1601,7 @@ Window {
         notes.create();
         setText("");
         toast("a new note — its first line is its title");
-        ed.forceActiveFocus();
+        win.focusPage();
     }
     function deleteNote(id) {
         var title = notes.titleFor(id);
@@ -1339,6 +1614,20 @@ Window {
         notes.current = "";
         if (next) openNote(next); else newNote();
     }
+    function deleteNotesFolder(name) {
+        var doomed = notes.inFolder(name);
+        var hadCurrent = false;
+        for (var i = 0; i < doomed.length; i++) {
+            if (doomed[i].id === notes.current) hadCurrent = true;
+            notes.remove(doomed[i].id);
+            ask({ action: "delete_saved", where: "notes", id: doomed[i].id }, null);
+        }
+        toast("deleted " + name + "/ and " + doomed.length + (doomed.length === 1 ? " note" : " notes"));
+        if (!hadCurrent) return;
+        notes.current = "";
+        if (notes.notes.length) openNote(notes.notes[0].id); else newNote();
+    }
+
     property string deleteArmed: ""
     Timer { id: deleteDisarm; interval: 2500; onTriggered: win.deleteArmed = "" }
     function deleteCurrentNote() {
@@ -1380,7 +1669,8 @@ Window {
     function saveCopy() {
         if (!ed.text.trim().length) { toast("nothing to save yet"); return; }
         var d = new Date(), z = function(v) { return (v < 10 ? "0" : "") + v; };
-        var ext = win.mode !== "code" ? ".txt" : win.codeLang === "python" ? ".py" : win.codeLang === "bash" ? ".sh" : ".js";
+        var ext = win.mode !== "code" ? ".txt" : win.codeLang === "python" ? ".py"
+                : win.codeLang === "bash" ? ".sh" : win.codeLang === "html" ? ".html" : ".js";
         var name = "bitewrite-" + d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()) + "-" +
                    z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds()) + ext;
         var path = (win.docsDir || win.homeDir) + "/" + name;
@@ -1480,9 +1770,12 @@ Window {
                 if (win.mode === "speed") win.startSpeed();
                 else if (win.ghosted) win.startPiece(win.target);
             }
+            else if (ctrl && shift && e.key === Qt.Key_N && win.mode === "code") files.startFolder();
+            else if (ctrl && shift && e.key === Qt.Key_N && win.mode === "notes") notes.startFolder();
             else if (ctrl && e.key === Qt.Key_N) {
                 if (win.mode === "speed") win.startSpeed();
                 else if (win.mode === "notes") win.newNote();
+                else if (win.mode === "code") win.newCodeFile();
                 else if (win.mode !== "write") win.setMode(win.mode);
             }
             else if (ctrl && e.key === Qt.Key_K && win.mode === "notes") {
@@ -1491,11 +1784,32 @@ Window {
                 }), "no notes yet");
                 picker.purpose = "notes";
             }
+            else if (ctrl && e.key === Qt.Key_K && win.mode === "code") {
+                picker.open("CODE — find a file", files.files.map(function(f) {
+                    return { title: f.name, sub: win.langNames[f.lang] + "   ·   " + files.ago(f.updated),
+                             tag: f.id === files.current ? "open" : "", id: f.id };
+                }), "no files yet");
+                picker.purpose = "files";
+            }
+            else if (ctrl && e.key === Qt.Key_E && win.mode === "code") {
+                if (files.current) files.startRename(files.current);
+            }
+            else if (ctrl && e.key === Qt.Key_E && win.mode === "notes") {
+                if (notes.current) notes.startMove(notes.current);
+            }
             else if (alt && (e.key === Qt.Key_Up || e.key === Qt.Key_Down) && win.mode === "notes") {
                 var nb = notes.neighbor(e.key === Qt.Key_Up ? -1 : 1);
                 if (nb) win.openNote(nb);
             }
+            else if (alt && (e.key === Qt.Key_Up || e.key === Qt.Key_Down) && win.mode === "code") {
+                var fb = files.neighbor(e.key === Qt.Key_Up ? -1 : 1);
+                if (fb) win.openCodeFile(fb);
+            }
             else if (ctrl && shift && (e.key === Qt.Key_Delete || e.key === Qt.Key_Backspace) && win.mode === "notes") win.deleteCurrentNote();
+            else if (ctrl && shift && (e.key === Qt.Key_Delete || e.key === Qt.Key_Backspace) && win.mode === "code") win.deleteCurrentCodeFile();
+            else if (ctrl && e.key === Qt.Key_D && win.mode === "code") win.openDiff();
+            else if (ctrl && shift && e.key === Qt.Key_I) win.installAll();
+            else if (ctrl && e.key === Qt.Key_I) win.installCurrent();
             else if (ctrl && e.key === Qt.Key_H) win.ghostHidden = !win.ghostHidden;
             else if (ctrl && e.key === Qt.Key_S) win.saveCopy();
             else if (ctrl && e.key === Qt.Key_L) { if (ed.length) ed.remove(0, ed.length); }
@@ -1557,8 +1871,10 @@ Window {
         horizontalAlignment: Text.AlignHCenter
         elide: Text.ElideRight
         visible: win.mode !== "speed"
+        textFormat: Text.PlainText
         text: win.mode === "notes" ? notes.titleFor(notes.current)
-            : win.mode === "code" ? (win.pieceName ? win.pieceName + "   ·   " : "") + win.langNames[win.codeLang]
+            : win.mode === "code" ? (files.nameFor(files.current) || win.pieceName || "untitled")
+              + "   ·   " + win.langNames[win.codeLang]
             : win.pieceName + (win.mode === "lyrics" && win.song
               ? (win.followWait ? "   ‖ waiting for you" : win.songPlaying ? "   ♪" : "   ‖") : "")
         font.family: win.fontFamily
@@ -1576,9 +1892,11 @@ Window {
         readonly property bool broken: win.mode === "code" && win.compileState !== null && !win.compileState.ok
         text: win.mode === "speed" ? "best " + (speed.bests[speed.bestKey] || "—")
             : win.mode === "code"
-            ? (win.ghosted && win.wrong ? win.wrong + (win.wrong === 1 ? " word differs   ·   " : " words differ   ·   ") : "")
-              + (win.compileState === null ? "" : win.compileState.ok ? "✓ runs"
-                 : "✗ doesn't run" + (win.compileState.line > 0 ? " (line " + win.compileState.line + ")" : ""))
+            ? (files.files.length > 1 ? files.files.length + " files   ·   " : "")
+              + (win.ghosted && win.wrong ? win.wrong + (win.wrong === 1 ? " word differs   ·   " : " words differ   ·   ") : "")
+              + (win.compileState === null ? "" : win.compileState.ok ? (win.codeLang === "html" ? "✓ draws" : "✓ runs")
+                 : (win.codeLang === "html" ? "✗ won't draw" : "✗ doesn't run")
+                   + (win.compileState.line > 0 ? " (line " + win.compileState.line + ")" : ""))
             : win.ghosted
             ? Math.min(ed.length, win.target.length) + " / " + win.target.length + (win.wrong ? "   ·   " + win.wrong + " wrong" : "")
             : counts.words + (counts.words === 1 ? " word" : " words") + "   ·   " + (win.endRow + 1) + (win.endRow === 0 ? " line" : " lines")
@@ -1615,13 +1933,13 @@ Window {
             color: win.cAccent
         }
         HoverHandler { id: finishHover }
-        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { win.finishCode(); ed.forceActiveFocus(); } }
+        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { win.finishCode(); win.focusPage(); } }
     }
 
     Rectangle {
         id: page
         readonly property real comboHeat: win.comboOn ? Math.min(1, win.combo / 60) : 0
-        width: Math.min(win.cols * win.slot + 2 * win.padX, win.width - 40 - win.sideRoom)
+        width: Math.min(win.cols * win.slot + 2 * win.padX + win.gutterW, win.width - 40 - win.sideRoom)
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.horizontalCenterOffset: win.sideRoom / 2
         anchors.top: parent.top
@@ -1650,11 +1968,44 @@ Window {
             NumberAnimation { target: page; property: "scale"; to: 1.0; duration: 380; easing.type: Easing.OutQuint }
         }
 
+        // Line numbers: outside the Flickable, so a long line scrolling
+        // sideways doesn't take them with it, but following contentY so they
+        // stay beside their own line.
+        Item {
+            id: gutter
+            visible: win.gutterW > 0
+            x: 0
+            y: win.padY
+            width: win.gutterW
+            height: parent.height - 2 * win.padY
+            clip: true
+            Repeater {
+                model: gutter.visible ? win.lastTextRow + 1 : 0
+                delegate: Text {
+                    required property int index
+                    readonly property real rowTop: index * win.lineH - flick.contentY
+                    visible: rowTop > -win.lineH && rowTop < gutter.height
+                    x: 0
+                    y: rowTop
+                    width: gutter.width - Math.round(win.charW)
+                    height: win.lineH
+                    horizontalAlignment: Text.AlignRight
+                    verticalAlignment: Text.AlignVCenter
+                    text: index + 1
+                    font.family: win.fontFamily
+                    font.pixelSize: Math.max(9, Math.round(win.fontPx * 0.72))
+                    color: index === win.caretRow ? win.cAccent : win.cSub
+                    opacity: index === win.caretRow ? 0.95 : 0.4
+                }
+            }
+        }
+
         Flickable {
             id: flick
             anchors.fill: parent
             anchors.topMargin: win.padY
             anchors.bottomMargin: win.padY
+            anchors.leftMargin: win.gutterW
             // lines that don't wrap make the page scroll sideways, following
             // the caret, instead of running off the edge where you lose them
             contentWidth: win.nowrap ? Math.max(width, 2 * win.padX + (Math.max(win.longest, win.typedMax) + 1) * win.slot) : width
@@ -1672,7 +2023,7 @@ Window {
 
                 TapHandler {
                     onTapped: function(ev) {
-                        ed.forceActiveFocus();
+                        win.focusPage();
                         ed.deselect();
                         ed.cursorPosition = win.indexAt(ev.position.x, ev.position.y);
                     }
@@ -1680,7 +2031,8 @@ Window {
 
                 Text {
                     text: win.mode === "code" ? (win.codeLang === "js" ? "write some code — define function frame(t) and draw with ctx"
-                                                                      : "write some " + win.langNames[win.codeLang] + " — ctrl+enter runs it")
+                        : win.codeLang === "html" ? "write a page — ctrl+enter opens it in a browser"
+                        : "write some " + win.langNames[win.codeLang] + " — ctrl+enter runs it")
                         : win.mode === "notes" ? "a new note — the first line is its title"
                         : "just write."
                     x: win.padX
@@ -1844,6 +2196,7 @@ Window {
     }
     Text {
         id: toastText
+        textFormat: Text.PlainText
         anchors.horizontalCenter: parent.horizontalCenter
         // SPEED keeps its live stats where the hints go, so toasts sit inside
         // the bottom of the page there instead
@@ -1865,6 +2218,12 @@ Window {
     // ── overlays ────────────────────────────────────────────────────────────
     Notes {
         id: notes
+        w: win
+        page: page
+    }
+
+    Files {
+        id: files
         w: win
         page: page
     }
@@ -1891,18 +2250,31 @@ Window {
         w: win
         property string purpose: ""
         onChosen: function(item) { win.pickerChosen(item); }
-        onCancelled: ed.forceActiveFocus()
+        onCancelled: win.focusPage()
+    }
+
+    Diff {
+        id: diff
+        w: win
+        onClosed: win.focusPage()
+    }
+
+    Browser {
+        id: browser
+        w: win
+        anchors.fill: parent
+        onStopped: win.focusPage()
     }
 
     Stage {
         id: stage
         w: win
         anchors.fill: parent
-        onStopped: ed.forceActiveFocus()
+        onStopped: win.focusPage()
         onFailed: function(msg, line) {
             win.toast((line > 0 ? "line " + line + ": " : "") + msg);
             sfxObj.play("error");
-            ed.forceActiveFocus();
+            win.focusPage();
         }
     }
 }

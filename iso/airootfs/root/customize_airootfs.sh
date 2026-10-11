@@ -552,13 +552,23 @@ cat > /etc/sudoers.d/bite-spaceship <<'SUDO_EOF'
 SUDO_EOF
 chmod 440 /etc/sudoers.d/bite-spaceship
 
+# BITE-OS power modes: glitch-power.sh caps the CPU / sets the governor / toggles
+# turbo when you pick a mode in the battery panel. Without this they silently no-op.
+cat > /etc/sudoers.d/bite-power <<'SUDO_EOF'
+# BITE-OS power modes (glitch-power.sh, run from the battery/system panel):
+# CPU frequency cap, governor and turbo, without a password prompt.
+# Group-based so it works for any installed username.
+%wheel ALL=(root) NOPASSWD: /usr/bin/cpupower frequency-set -u *, /usr/bin/cpupower frequency-set -g *, /usr/bin/tee /sys/devices/system/cpu/intel_pstate/no_turbo
+SUDO_EOF
+chmod 440 /etc/sudoers.d/bite-power
+
 # scx_lavd as the default sched-ext scheduler (great for busy interactive desktops)
 cat > /etc/scx_loader.toml <<'SCX_EOF'
 default_sched = "scx_lavd"
 default_mode = "Auto"
 SCX_EOF
 systemctl enable scx_loader.service 2>/dev/null || true
-echo "[customize_airootfs] perf stack wired — bite-spaceship-power + sudoers + scx_lavd"
+echo "[customize_airootfs] perf stack wired — bite-spaceship-power + power-mode sudoers + scx_lavd"
 
 # 3f. Fish shell: make glitch-fetch the fetch tool for new users. cachyos-fish-config
 #     OWNS /etc/skel/.config/fish/config.fish, so the bite-os package cannot ship it
