@@ -207,8 +207,17 @@ PanelWindow {
 
     visible: isVisible
 
+    // BITE-OS modification: for draggable popups use animContainer's resting
+    // rect, not the item. Region{item} maps the item WITH its transforms but only
+    // re-measures on geometry changes, so a popup opened with a BITE-OS motion
+    // (PopupMotion, e.g. Drop starts 110px higher) kept the first frame's click
+    // area and clicks on its lower part fell through to the window behind.
     mask: Region {
-        item: masterWindow.isCurrentDraggable ? animContainer : topBarHole
+        item: masterWindow.isCurrentDraggable ? null : topBarHole
+        x: masterWindow.isCurrentDraggable ? animContainer.x : 0
+        y: masterWindow.isCurrentDraggable ? animContainer.y : 0
+        width: masterWindow.isCurrentDraggable ? animContainer.width : 0
+        height: masterWindow.isCurrentDraggable ? animContainer.height : 0
         intersection: masterWindow.isCurrentDraggable ? Intersection.Combine : Intersection.Xor
     }
 

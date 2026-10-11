@@ -5,6 +5,7 @@ pragma Singleton
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import Quickshell.Services.UPower
 
 Singleton {
     id: root
@@ -18,6 +19,11 @@ Singleton {
     property string notifFx: "bite"       // bite | slice | static | pixel
     property string lockStyle: "dedsec"   // dedsec | matrix   (lockLayer = on/off)
     property string unlockFx: "unzip"     // unzip | crt
+    // calm mode: on power saver, decorative desktop widgets (matrix rain,
+    // visualizer) freeze into a still frame so popups stay smooth
+    property bool calmSaver: true
+    readonly property bool powerSaver: PowerProfiles.profile === PowerProfile.PowerSaver
+    readonly property bool calm: calmSaver && powerSaver
 
     readonly property bool glitchOn: glitch === "subtle" || glitch === "loud"
     readonly property bool glitchLoud: glitch === "loud"
@@ -36,12 +42,13 @@ Singleton {
         root.notifFx = ["bite", "slice", "static", "pixel"].indexOf(o.notifFx) >= 0 ? o.notifFx : "bite";
         root.lockStyle = o.lockStyle === "matrix" ? "matrix" : "dedsec";
         root.unlockFx = o.unlockFx === "crt" ? "crt" : "unzip";
+        root.calmSaver = o.calmSaver !== false;
     }
 
     function save(key, value) {
         let o = { glitch: root.glitch, lockLayer: root.lockLayer,
                   popupFx: root.popupFx, popupAnim: root.popupAnim, notifFx: root.notifFx,
-                  lockStyle: root.lockStyle, unlockFx: root.unlockFx };
+                  lockStyle: root.lockStyle, unlockFx: root.unlockFx, calmSaver: root.calmSaver };
         o[key] = value;
         root[key] = value;
         let json = JSON.stringify(o, null, 2);

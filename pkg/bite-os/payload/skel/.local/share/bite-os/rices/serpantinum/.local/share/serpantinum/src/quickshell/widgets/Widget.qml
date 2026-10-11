@@ -156,12 +156,39 @@ PanelWindow {
         root.effectiveHeight = h;
     }
 
+    // ── BITE-OS modification ─────────────────────────────────────────────
+    // A widget at 0% opacity stops rendering (it used to keep animating
+    // unseen). In calm mode (power saver, BITE-OS Style tab) the decorative
+    // animated widgets freeze into a still snapshot so their CPU goes to the
+    // popups; they resume when power saver ends. Live-info widgets (clock,
+    // stats) keep running.
+    readonly property bool biteFreezable: ["matrix", "visualizer"].indexOf(root.wType) >= 0
+    readonly property bool biteFrozen: BiteStyle.calm && biteFreezable && !root.isRedacting
+    property bool biteSnapReady: false
+    onBiteFrozenChanged: {
+        if (biteFrozen) { biteSnap.scheduleUpdate(); biteSnapDelay.restart(); }
+        else { biteSnapDelay.stop(); biteSnapReady = false; }
+    }
+    Timer { id: biteSnapDelay; interval: 60; onTriggered: root.biteSnapReady = true }
+    ShaderEffectSource {
+        id: biteSnap
+        // shown (under the live face) as soon as we freeze, so it can capture;
+        // the live face is hidden only once the capture has happened
+        visible: root.biteFrozen
+        sourceItem: faceLoader.item
+        live: false
+        width: faceLoader.width; height: faceLoader.height
+        anchors.centerIn: parent
+        rotation: faceLoader.rotation
+        opacity: faceLoader.opacity
+    }
+
     Loader {
         id: faceLoader
         property string wImagePath: root.wImagePath
         property string imagePath: root.wImagePath
         property string path: root.wImagePath
-        visible: root.visible
+        visible: root.visible && (root.wOpacity > 0.01 || root.isRedacting) && !root.biteSnapReady
         source: WidgetRegistry.faceFile(root.wType, root.wVariant)
         width: root.effectiveWidth
         height: root.effectiveHeight

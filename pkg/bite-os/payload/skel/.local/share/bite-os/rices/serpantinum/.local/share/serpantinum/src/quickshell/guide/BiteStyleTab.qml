@@ -73,6 +73,15 @@ Item {
 
         StyleChoice {
             rootObj: styleTabRoot.rootObj
+            label: "Calm on saver"
+            options: [{ value: "on", text: "On" }, { value: "off", text: "Off" }]
+            current: BiteStyle.calmSaver ? "on" : "off"
+            onPicked: (v) => BiteStyle.save("calmSaver", v === "on")
+        }
+        Hint { font.pixelSize: rootObj.s(11); text: "On power saver, matrix rain and visualizer widgets freeze into a still frame so popups stay smooth. They come back to life when you leave power saver." }
+
+        StyleChoice {
+            rootObj: styleTabRoot.rootObj
             label: "Popup effect"
             options: [{ value: "blast", text: "Blast" }, { value: "scan", text: "Scan" }, { value: "hex", text: "Hex" }]
             current: BiteStyle.popupFx

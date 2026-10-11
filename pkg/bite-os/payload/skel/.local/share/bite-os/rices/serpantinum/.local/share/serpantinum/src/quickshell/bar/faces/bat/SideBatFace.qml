@@ -97,6 +97,13 @@ Item {
         }
     }
 
+    // BITE-OS modification: upstream's start() calls override `running:`, so
+    // stop the wave explicitly when calm mode (power saver) switches on
+    Connections {
+        target: BiteStyle
+        function onCalmChanged() { if (BiteStyle.calm) waveAnimation.stop(); }
+    }
+
     NumberAnimation {
         id: waveAnimation
         target: root
@@ -105,12 +112,12 @@ Item {
         to: Math.PI * 2
         duration: root.isCharging ? 1200 : 2200
         loops: Animation.Infinite
-        running: root.visible && (!root.isDesktop) && root.batStyle !== "text" && (typeof batBtn !== "undefined" && batBtn ? (batBtn.fillRatio > 0.0 && batBtn.fillRatio < 1.0) : false) && root.isActivelyCharging
+        running: root.visible && (!root.isDesktop) && root.batStyle !== "text" && (typeof batBtn !== "undefined" && batBtn ? (batBtn.fillRatio > 0.0 && batBtn.fillRatio < 1.0) : false) && root.isActivelyCharging && !BiteStyle.calm  // BITE-OS: calm mode (power saver) holds the wave still
     }
 
     onIsChargingChanged: {
         if (isCharging && visible && !isDesktop && root.batStyle !== "text" && typeof batBtn !== "undefined" && batBtn && batBtn.fillRatio > 0.0 && batBtn.fillRatio < 1.0) {
-            waveAnimation.start();
+            if (!BiteStyle.calm) waveAnimation.start();  // BITE-OS: calm mode
             waveSettleTimer.restart();
         } else if (!isCharging) {
             waveSettleTimer.restart();
@@ -122,7 +129,7 @@ Item {
             waveAnimation.stop();
             waveSettleTimer.stop();
         } else if (isActivelyCharging && !isDesktop && root.batStyle !== "text" && typeof batBtn !== "undefined" && batBtn && batBtn.fillRatio > 0.0 && batBtn.fillRatio < 1.0) {
-            waveAnimation.start();
+            if (!BiteStyle.calm) waveAnimation.start();  // BITE-OS: calm mode
         }
     }
 
@@ -270,7 +277,7 @@ Item {
 
             onFillRatioChanged: {
                 if (root.visible && (!root.isDesktop) && fillRatio > 0.0 && fillRatio < 1.0) {
-                    if (!waveAnimation.running) waveAnimation.start();
+                    if (!waveAnimation.running) if (!BiteStyle.calm) waveAnimation.start();  // BITE-OS: calm mode
                     if (!root.isActivelyCharging) waveSettleTimer.restart();
                 }
             }

@@ -1474,6 +1474,10 @@ Item {
                                     if (idx === 0) PowerProfiles.profile = PowerProfile.PowerSaver;
                                     else PowerProfiles.profile = PowerProfile.Balanced;
                                 }
+                                // BITE-OS modification: also apply the full BITE-OS power mode
+                                // (CPU cap, turbo, governor, eye-candy), like caelestia's battery popup
+                                let mode = idx === 0 ? "saver" : ((idx === 1 || !PowerProfiles.hasPerformanceProfile) ? "balanced" : "perf");
+                                Quickshell.execDetached(["sh", "-c", Quickshell.env("HOME") + "/.config/glitch/bin/glitch-power.sh " + mode]);
                             }
                         }
                     }

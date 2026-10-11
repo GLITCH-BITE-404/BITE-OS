@@ -59,6 +59,13 @@ Item {
         }
     }
 
+    // BITE-OS modification: upstream's start() calls override `running:`, so
+    // stop the wave explicitly when calm mode (power saver) switches on
+    Connections {
+        target: BiteStyle
+        function onCalmChanged() { if (BiteStyle.calm) waveAnimation.stop(); }
+    }
+
     NumberAnimation {
         id: waveAnimation
         target: root
@@ -67,12 +74,12 @@ Item {
         to: Math.PI * 2
         duration: root.isCharging ? 1200 : 2200
         loops: Animation.Infinite
-        running: root.visible && root.hasBattery && root.fillLevel > 0.0 && root.fillLevel < 1.0 && root.isActivelyCharging
+        running: root.visible && root.hasBattery && root.fillLevel > 0.0 && root.fillLevel < 1.0 && root.isActivelyCharging && !BiteStyle.calm  // BITE-OS: calm mode (power saver) holds the wave still
     }
 
     onAnimCapacityChanged: {
         if (root.visible && root.hasBattery && root.fillLevel > 0.0 && root.fillLevel < 1.0) {
-            if (!waveAnimation.running) waveAnimation.start();
+            if (!waveAnimation.running) if (!BiteStyle.calm) waveAnimation.start();  // BITE-OS: calm mode
             if (!root.isActivelyCharging) waveSettleTimer.restart();
         }
     }
@@ -82,13 +89,13 @@ Item {
             waveAnimation.stop();
             waveSettleTimer.stop();
         } else if (isActivelyCharging && hasBattery && fillLevel > 0.0 && fillLevel < 1.0) {
-            waveAnimation.start();
+            if (!BiteStyle.calm) waveAnimation.start();  // BITE-OS: calm mode
         }
     }
 
     onIsChargingChanged: {
         if (isCharging && visible && hasBattery && fillLevel > 0.0 && fillLevel < 1.0) {
-            waveAnimation.start();
+            if (!BiteStyle.calm) waveAnimation.start();  // BITE-OS: calm mode
             waveSettleTimer.restart();
         } else if (!isCharging) {
             waveSettleTimer.restart();
