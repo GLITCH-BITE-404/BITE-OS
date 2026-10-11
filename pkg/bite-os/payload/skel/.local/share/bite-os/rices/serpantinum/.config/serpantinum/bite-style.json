@@ -1,0 +1,9 @@
+{
+  "glitch": "loud",
+  "lockLayer": true,
+  "popupFx": "blast",
+  "popupAnim": "drop",
+  "notifFx": "bite",
+  "lockStyle": "matrix",
+  "unlockFx": "unzip"
+}

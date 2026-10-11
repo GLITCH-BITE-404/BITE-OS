@@ -15,6 +15,9 @@ The integration of this shell into BITE-OS is BITE-OS work:
   serpantinum's CLI (`serpantinum msg toggle …`, `msg workspace …`)
 - the BITE-OS branding, wallpaper stack (awww), perf tuning and localised
   XDG handling this rice inherits
+- the BITE-OS Style effects (`src/quickshell/biteos/`, `src/assets/shaders/biteos/`):
+  popup effects and motion, notification entrances, the Dedsec/Matrix lock screen
+- the BITE-OS desktop widgets, widget saves/undo and their settings tabs
 
 ## Upstream
 
@@ -25,7 +28,7 @@ https://github.com/ilyamiro/serpantinum
 Licensed under the **GNU Affero General Public License v3** (or later).
 The shell in `~/.local/share/serpantinum/` is upstream's work, **modified** by
 BITE-OS: every change is marked `BITE-OS modification` in the source, and the
-BITE-OS and Keybinds settings tabs are BITE-OS additions. Its LICENSE.md ships
+BITE-OS, Keybinds, Widgets and BITE-OS Style settings tabs are BITE-OS additions. Its LICENSE.md ships
 with it and must be kept intact.
 
 Serpantinum's own credits: the material SDDM theme is by Darkall44/Qylock —
@@ -33,4 +36,5 @@ note that BITE-OS does NOT install that theme, keeping its own SDDM theme.
 
 ## Version
 
-serpantinum 2.1.4 · integrated into BITE-OS 2026-09-07, updated 2026-09-10
+serpantinum 2.2.7 · integrated into BITE-OS 2026-09-07, updated 2026-09-10,
+2026-09-14 and 2026-10-11

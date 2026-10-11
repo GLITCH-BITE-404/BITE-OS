@@ -24,7 +24,7 @@ PanelWindow {
     Shortcut {
         sequence: "Escape"
         context: Qt.WindowShortcut
-        enabled: masterWindow.isVisible
+        enabled: masterWindow.isVisible && !masterWindow.isClosing
         onActivated: switchWidget("hidden", "")
     }
 
@@ -54,13 +54,26 @@ PanelWindow {
     }
 
     function reportWidgetState() {
-        if (!Caching.runDir) return;
+        if (typeof Caching === "undefined" || !Caching.runDir) return;
         let sName = (masterWindow.currentActive === "hidden" || !masterWindow.screen) ? "" : (masterWindow.screen.name || "");
         let payload = JSON.stringify({
             widget: masterWindow.currentActive,
             screen: sName
         });
         Quickshell.execDetached(["bash", "-c", "echo '" + payload + "' > " + Caching.runDir + "/current_widget"]);
+    }
+
+    Process {
+        id: startupResetProcess
+        command: ["bash", "-c", `[ -n "${Caching.runDir}" ] && echo '{"widget":"hidden","screen":""}' > "${Caching.runDir}/current_widget"`]
+        running: true
+    }
+
+    Connections {
+        target: (typeof Caching !== "undefined") ? Caching : null
+        function onRunDirChanged() {
+            masterWindow.reportWidgetState();
+        }
     }
 
     IpcHandler {
@@ -194,7 +207,10 @@ PanelWindow {
 
     visible: isVisible
 
-    mask: Region { item: topBarHole; intersection: Intersection.Xor }
+    mask: Region {
+        item: masterWindow.isCurrentDraggable ? animContainer : topBarHole
+        intersection: masterWindow.isCurrentDraggable ? Intersection.Combine : Intersection.Xor
+    }
 
     property var rawBarSettings: (typeof Config !== "undefined" && Config.rawSettings && Config.rawSettings.bar) ? Config.rawSettings.bar : ({})
     property string barPosition: (rawBarSettings && rawBarSettings.position !== undefined) ? rawBarSettings.position : "top"
@@ -211,6 +227,10 @@ PanelWindow {
 
     readonly property bool isBarEffectivelyHidden: barAutohide || isFullscreenActive
     readonly property bool screenReady: masterWindow.width >= 100 && masterWindow.height >= 100
+    readonly property bool isCurrentDraggable: {
+        let t = getLayout(masterWindow.currentActive);
+        return Boolean(t && t.draggable) || masterWindow.currentActive === "guide";
+    }
 
     Item {
         id: topBarHole
@@ -284,7 +304,7 @@ PanelWindow {
 
     MouseArea {
         anchors.fill: parent
-        enabled: masterWindow.isVisible
+        enabled: masterWindow.isVisible && !masterWindow.isCurrentDraggable && !masterWindow.isClosing
         onClicked: switchWidget("hidden", "")
     }
 
@@ -295,15 +315,6 @@ PanelWindow {
 
     property var widgetCache: ({})
     property var componentCache: ({})
-    property var _allWidgetNames: ["battery", "network", "volume", "guide", "calendar", "wallpaper", "music", "movies", "notifications", "system"]
-
-    // BITE-OS: preloading every widget at boot instantiated the 1200x750 guide,
-    // the wallpaper picker and the 1427-line system panel whether or not they
-    // were ever opened. executeSwitch() already calls ensureWidgetItem(), so
-    // anything left out here is simply built on first open (~50-310ms, once).
-    // Add names back if a specific widget feels sluggish on first use.
-    property var _preloadWidgetNames: []
-    property int _preloadIndex: 0
 
     function widgetNameForItem(item) {
         for (let name in widgetCache) {
@@ -330,34 +341,29 @@ PanelWindow {
         }
 
         let item = comp.createObject(preloaderContainer);
-        if (item) widgetCache[name] = item;
+        if (item) {
+            item.visible = false;
+            widgetCache[name] = item;
+        }
         return item;
     }
 
-    function preloadWidget(name) {
-        let t = getLayout(name);
-        if (!t || !t.comp) return;
-        ensureWidgetItem(name, t);
-    }
-
     Component.onCompleted: {
-        preloadStaggerTimer.start();
+        applyConfigSettings();
+        reportWidgetState();
+        Qt.callLater(function() {
+            if (masterWindow.currentActive === "hidden") {
+                let t = masterWindow.getLayout("guide");
+                if (t) masterWindow.ensureWidgetItem("guide", t);
+                let w = masterWindow.getLayout("wallpaper");
+                if (w) masterWindow.ensureWidgetItem("wallpaper", w);
+            }
+        });
     }
 
-    Timer {
-        id: preloadStaggerTimer
-        interval: 150
-        repeat: true
-        onTriggered: {
-            if (masterWindow._preloadIndex >= masterWindow._preloadWidgetNames.length) {
-                preloadStaggerTimer.stop();
-                return;
-            }
-            if (masterWindow.currentActive !== "hidden") {
-                return;
-            }
-            preloadWidget(masterWindow._preloadWidgetNames[masterWindow._preloadIndex]);
-            masterWindow._preloadIndex++;
+    Component.onDestruction: {
+        if (typeof Caching !== "undefined" && Caching.runDir) {
+            Quickshell.execDetached(["bash", "-c", "echo '{\"widget\":\"hidden\",\"screen\":\"\"}' > " + Caching.runDir + "/current_widget"]);
         }
     }
 
@@ -369,15 +375,18 @@ PanelWindow {
     }
 
     onScreenChanged: {
+        applyConfigSettings();
         if (currentActive !== "hidden") {
             reportWidgetState();
         }
     }
 
     property bool isVisible: false
+    property bool isClosing: false
     property string activeArg: ""
     property bool disableMorph: true
     property int switchGeneration: 0
+    property bool userMoved: false
 
     property int morphDuration:       300
     property int morphDurationSwitch: 300
@@ -397,63 +406,31 @@ PanelWindow {
         id: osdPopups
     }
 
-    Process {
-        id: settingsReader
-        command: ["bash", "-c", `cat "${Config.settingsJsonPath}" 2>/devnull || echo '{}'`]
-        running: true
-        stdout: StdioCollector {
-            onStreamFinished: {
-                try {
-                    if (this.text && this.text.trim().length > 0 && this.text.trim() !== "{}") {
-                        let parsed = JSON.parse(this.text);
-                        let sName = masterWindow.screen ? masterWindow.screen.name : "";
-                        let sVal = undefined;
+    function applyConfigSettings() {
+        let parsed = (typeof Config !== "undefined" && Config.rawSettings) ? Config.rawSettings : {};
+        let sVal = undefined;
 
-                        if (sName !== "" && parsed.display && parsed.display.monitors && parsed.display.monitors[sName] && parsed.display.monitors[sName].scale !== undefined) {
-                            sVal = parsed.display.monitors[sName].scale;
-                        } else if (parsed.general && parsed.general.uiScale !== undefined) {
-                            sVal = parsed.general.uiScale;
-                        } else if (parsed.uiScale !== undefined) {
-                            sVal = parsed.uiScale;
-                        }
-
-                        if (sVal !== undefined && masterWindow.globalUiScale !== sVal) {
-                            masterWindow.globalUiScale = sVal;
-                        }
-
-                        if (parsed.bar) {
-                            masterWindow.rawBarSettings = parsed.bar;
-                            if (parsed.bar.position !== undefined) masterWindow.barPosition = parsed.bar.position;
-                            if (parsed.bar.autohide !== undefined) masterWindow.barAutohide = Boolean(parsed.bar.autohide);
-                        }
-                    }
-                } catch (e) {
-                }
-            }
+        if (parsed.general && parsed.general.uiScale !== undefined) {
+            sVal = parsed.general.uiScale;
+        } else if (parsed.uiScale !== undefined) {
+            sVal = parsed.uiScale;
         }
-    }
 
-    Process {
-        id: settingsWatcher
-        command: ["bash", "-c", `while [ ! -f "${Config.settingsJsonPath}" ]; do sleep 1; done; inotifywait -qq -e modify,close_write "${Config.settingsJsonPath}"`]
-        running: true
-        stdout: StdioCollector {
-            onStreamFinished: {
-                settingsReader.running = false;
-                settingsReader.running = true;
-                settingsWatcher.running = false;
-                settingsWatcher.running = true;
-            }
+        let targetScale = (sVal !== undefined && typeof sVal === "number" && !isNaN(sVal) && sVal > 0) ? sVal : 1.0;
+        if (masterWindow.globalUiScale !== targetScale) {
+            masterWindow.globalUiScale = targetScale;
         }
+
+        let b = parsed.bar || {};
+        masterWindow.rawBarSettings = b;
+        if (b.position !== undefined) masterWindow.barPosition = b.position;
+        if (b.autohide !== undefined) masterWindow.barAutohide = Boolean(b.autohide);
     }
 
     Connections {
         target: (typeof Config !== "undefined") ? Config : null
         function onSettingsLoaded() {
-            let b = (Config.rawSettings && Config.rawSettings.bar) ? Config.rawSettings.bar : {};
-            masterWindow.rawBarSettings = b;
-            masterWindow.barPosition = (b && b.position !== undefined) ? b.position : "top";
-            masterWindow.barAutohide = (b && b.autohide !== undefined) ? Boolean(b.autohide) : false;
+            masterWindow.applyConfigSettings();
         }
     }
 
@@ -476,7 +453,8 @@ PanelWindow {
                 h: result.h,
                 rx: result.rx,
                 ry: result.ry,
-                comp: result.comp
+                comp: result.comp,
+                draggable: result.draggable
             };
 
             if (bp === "top") {
@@ -529,8 +507,10 @@ PanelWindow {
 
     onTargetLayoutChanged: {
         if (!targetLayout || masterWindow.currentActive === "hidden" || !masterWindow.isVisible) return;
-        masterWindow._animX = targetLayout.x;
-        masterWindow._animY = targetLayout.y;
+        if (!masterWindow.userMoved || !masterWindow.isCurrentDraggable) {
+            masterWindow._animX = targetLayout.x;
+            masterWindow._animY = targetLayout.y;
+        }
         masterWindow._animW = targetLayout.w;
         masterWindow._animH = targetLayout.h;
         masterWindow._stageW = targetLayout.w;
@@ -538,16 +518,90 @@ PanelWindow {
     }
 
     onIsVisibleChanged: {
-        if (isVisible) widgetStack.forceActiveFocus();
+        if (isVisible) {
+            widgetStack.forceActiveFocus();
+        } else if (currentActive === "hidden" && !delayedClear.running) {
+            for (let k in widgetCache) {
+                let it = widgetCache[k];
+                if (it) it.visible = false;
+            }
+        }
+    }
+
+    // BITE-OS modification: VFX around a popup when it opens or switches
+    // (the popup keeps upstream's own animation). BITE-OS Style tab.
+    PopupVfx {
+        id: bitePopupVfx
+        anchors.fill: parent
+        z: 1
+        frame: Qt.rect(animContainer.x, animContainer.y, animContainer.width, animContainer.height)
+        radius: ThemeBackend.borderRadius
+        sc: masterWindow.globalUiScale || 1.0
+        style: BiteStyle.popupFx
+        label: "> " + masterWindow.currentActive
+    }
+    Timer { id: bitePopupVfxDelay; interval: 110; property real strength: 1.0; onTriggered: bitePopupVfx.fire(strength) }
+    // BITE-OS modification: choosable open/close motion for popups (BiteStyle.popupAnim)
+    PopupMotion { id: bitePopupMotion; sc: masterWindow.globalUiScale || 1.0 }
+    Connections {
+        target: masterWindow
+        function onIsVisibleChanged() {
+            if (masterWindow.isVisible) { bitePopupMotion.open(); bitePopupVfxDelay.strength = 1.0; bitePopupVfxDelay.restart(); }
+            else bitePopupMotion.close();
+        }
+        function onCurrentActiveChanged() { if (masterWindow.isVisible && masterWindow.currentActive !== "hidden") { bitePopupVfxDelay.strength = 0.6; bitePopupVfxDelay.restart(); } }
     }
 
     Item {
         id: animContainer
+        // BITE-OS modification: popup open motion (neutral unless a style is picked)
+        transform: [
+            Translate { x: bitePopupMotion.tx; y: bitePopupMotion.ty },
+            Scale {
+                origin.x: bitePopupMotion.originLeft ? 0 : animContainer.width / 2
+                origin.y: bitePopupMotion.originTop ? 0 : animContainer.height / 2
+                xScale: bitePopupMotion.sx; yScale: bitePopupMotion.sy
+            },
+            Rotation {
+                origin.x: bitePopupMotion.originLeft ? 0 : animContainer.width / 2
+                origin.y: bitePopupMotion.originTop ? 0 : animContainer.height / 2
+                axis: bitePopupMotion.axis
+                angle: bitePopupMotion.angle
+            }
+        ]
         x: masterWindow._animX
         y: masterWindow._animY
         width: masterWindow._animW
         height: masterWindow._animH
         clip: true
+
+        DragHandler {
+            id: windowDragHandler
+            target: null
+            acceptedButtons: Qt.LeftButton
+            enabled: masterWindow.isCurrentDraggable
+
+            property real startX: 0
+            property real startY: 0
+
+            onActiveChanged: {
+                if (active) {
+                    masterWindow.disableMorph = true;
+                    startX = masterWindow._animX;
+                    startY = masterWindow._animY;
+                } else {
+                    masterWindow.disableMorph = false;
+                }
+            }
+
+            onTranslationChanged: {
+                if (active) {
+                    masterWindow.userMoved = true;
+                    masterWindow._animX = startX + translation.x;
+                    masterWindow._animY = startY + translation.y;
+                }
+            }
+        }
 
         Item {
             id: contentStage
@@ -566,6 +620,7 @@ PanelWindow {
             }
 
             opacity: masterWindow.isVisible ? 1.0 : 0.0
+            visible: masterWindow.isVisible || opacity > 0
             Behavior on opacity {
                 NumberAnimation {
                     duration: masterWindow.isVisible ? 200 : 140
@@ -621,21 +676,50 @@ PanelWindow {
         let gen = masterWindow.switchGeneration;
         masterWindow.targetActive = newWidget;
 
+        if (newWidget !== "guide") {
+            masterWindow.userMoved = false;
+        }
+
         if (delayedClear.running) {
             delayedClear.stop();
         }
+        if (exitSafetyTimer.running) {
+            exitSafetyTimer.stop();
+        }
 
         if (newWidget === "hidden") {
-            if (currentActive !== "hidden") {
-                masterWindow.currentActive = "hidden";
-                masterWindow.morphDuration = masterWindow.exitDuration;
-                masterWindow.disableMorph = true;
-                masterWindow.isVisible = false;
+            if (currentActive !== "hidden" && !masterWindow.isClosing) {
+                let closingGen = gen;
+                masterWindow.isClosing = true;
+                masterWindow.targetActive = "hidden";
 
-                delayedClear.scheduledGeneration = gen;
-                delayedClear.restart();
+                let activeItem = widgetCache[currentActive] || widgetStack.currentItem;
+
+                let finalizeClose = function() {
+                    if (closingGen !== masterWindow.switchGeneration) return;
+                    masterWindow.isClosing = false;
+                    masterWindow.currentActive = "hidden";
+                    masterWindow.morphDuration = masterWindow.exitDuration;
+                    masterWindow.disableMorph = true;
+                    masterWindow.isVisible = false;
+
+                    for (let k in widgetCache) {
+                        let it = widgetCache[k];
+                        if (it) it.visible = false;
+                    }
+                    reportWidgetState();
+                };
+
+                if (activeItem && typeof activeItem.startExit === "function") {
+                    exitSafetyTimer.scheduledGeneration = closingGen;
+                    exitSafetyTimer.restart();
+                    activeItem.startExit(finalizeClose);
+                } else {
+                    finalizeClose();
+                }
             }
         } else {
+            masterWindow.isClosing = false;
             let targetScreen = resolveTargetScreen();
             if (targetScreen && masterWindow.screen !== targetScreen) {
                 masterWindow.screen = targetScreen;
@@ -687,8 +771,10 @@ PanelWindow {
         let finalX = (finalW !== t.w) ? recenterX(t, finalW) : t.rx;
         let finalY = t.ry;
 
-        masterWindow._animX = finalX;
-        masterWindow._animY = finalY;
+        if (!masterWindow.userMoved || !masterWindow.isCurrentDraggable) {
+            masterWindow._animX = finalX;
+            masterWindow._animY = finalY;
+        }
         masterWindow._animW = finalW;
         masterWindow._animH = finalH;
         masterWindow._stageW = finalW;
@@ -710,6 +796,14 @@ PanelWindow {
             widgetStack.replace(cachedItem, {}, StackView.Immediate);
         }
 
+        for (let k in widgetCache) {
+            let it = widgetCache[k];
+            if (it && it !== cachedItem) {
+                it.visible = false;
+            }
+        }
+        cachedItem.visible = true;
+
         masterWindow.isVisible = true;
 
         if (isComingFromHidden) {
@@ -722,12 +816,36 @@ PanelWindow {
     }
 
     Timer {
+        id: exitSafetyTimer
+        interval: 450
+        property int scheduledGeneration: -1
+        onTriggered: {
+            if (scheduledGeneration === masterWindow.switchGeneration && masterWindow.isClosing) {
+                masterWindow.isClosing = false;
+                masterWindow.currentActive = "hidden";
+                masterWindow.morphDuration = masterWindow.exitDuration;
+                masterWindow.disableMorph = true;
+                masterWindow.isVisible = false;
+                for (let k in widgetCache) {
+                    let it = widgetCache[k];
+                    if (it) it.visible = false;
+                }
+                reportWidgetState();
+            }
+        }
+    }
+
+    Timer {
         id: delayedClear
         interval: 200
         property int scheduledGeneration: -1
         onTriggered: {
             if (masterWindow.currentActive === "hidden" && scheduledGeneration === masterWindow.switchGeneration) {
                 masterWindow.disableMorph = true;
+                for (let k in widgetCache) {
+                    let it = widgetCache[k];
+                    if (it) it.visible = false;
+                }
             }
         }
     }

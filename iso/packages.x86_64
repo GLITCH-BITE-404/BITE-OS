@@ -183,6 +183,7 @@ power-profiles-daemon
 pv
 python
 python-defusedxml
+python-jeepney
 python-packaging
 python-pip
 python-pipx

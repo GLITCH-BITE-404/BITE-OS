@@ -82,6 +82,34 @@ toggle, not a permanent cost.
 
 ---
 
+## BITE-OS Style — glitch effects on the GPU
+
+The **BITE-OS Style** tab in serpantinum's settings: popup effects (Blast / Scan /
+Hex), popup motion (Drop / Zoom / Flip / Unfold / Swing), notification entrances
+(Bite / Slice / Static / Pixel), a Dedsec or Matrix lock screen and two unlock
+effects. How it's built:
+
+- **Written as a layer, not a fork.** Everything lives in its own `biteos/` folder
+  and its own shaders (`assets/shaders/biteos/`). Upstream files only get one-line
+  hooks, so the next serpantinum update merges cleanly instead of fighting dozens of
+  edits.
+- **One shader instead of 25 shapes.** The popup "blast" (RGB-split outline,
+  slivers, corner brackets) is a single fragment-shader pass. Its quad only reaches
+  out where the slivers fly, pixels inside the popup exit on the first line, and
+  slivers live in horizontal lanes so every pixel tests **one** sliver — O(1)
+  instead of O(slivers). About **0.25 ms of GPU time per frame** on Intel UHD
+  integrated graphics, and starting a burst re-randomises existing pieces
+  instead of rebuilding them (~1 ms).
+- **The bite.** Notifications are cut along a zig-zag "teeth" line into two jaws in
+  a shader; the jaws slam shut, rebound, and glitch on impact. Dismissing tears them
+  open — the list's remove transition waits for it, so cards never vanish early.
+- **Nothing runs at rest.** Effects only render through their shader while they
+  play; the lock-screen layer is click-through and only exists while locked.
+- **Live settings.** Choices are a small JSON file the shell watches — pick a style
+  and the next popup uses it, no restart.
+
+---
+
 ## Wallpaper engine
 
 - **VAAPI video wallpapers** that hardware-decode instead of pinning the CPU.

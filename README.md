@@ -77,6 +77,7 @@ BITE-OS isn't a reskin. It ships things stock Arch and CachyOS simply don't have
 - **🛠 Self-repair** — a health check runs at every login and rebuilds a wiped config automatically. The OS fixes itself.
 - **⬆ One-key update** — `SUPER+U` runs a full system update (kernel, apps, AUR, rice) that **keeps it BITE-OS** — branding is re-asserted on every upgrade, so it never decays into vanilla CachyOS.
 - **⚡ Fast** — a full heavy glitch/DEDSEC rice that idles around **5% CPU** and holds **144 fps**. Performance is the whole point.
+- **🎛 BITE-OS Style** — glitch effects for popups, notifications and the lock screen, every one with several versions to pick from in settings.
 - **🌐 Keyless weather, glitch borders, animated everything** — and it still doesn't lag.
 
 ---
@@ -224,6 +225,34 @@ sha256sum bite-os-1.1.31-x86_64.iso
 ```
 
 This build ships **`bite-toys`** and its four toys preinstalled — see [Toys](#-toys).
+
+## ◈ What's new in the next build
+
+> Not in an ISO yet — this is what the next build ships. Once it's released,
+> `SUPER+U` brings it to existing installs too.
+
+**BITE-OS gets its own look for the shell.** A new **BITE-OS Style** tab in settings
+(`SUPER+H`) dresses serpantinum in glitch. Popups open with a **blast** — an
+RGB-split outline and glitch slivers exploding outward while brackets slam onto the
+corners — or a neon **scan** or a burst of **hex**, and they can **drop**, **zoom**,
+**flip** in 3D, **unfold** like an old TV or **swing** open. Notifications **bite**
+their way onto the screen: the card splits along a row of teeth and the jaws slam
+shut with a glitch (or they slice, tune in through static, or build out of pixels).
+Every effect has versions to pick from and an Off / Subtle / Loud switch.
+
+**Two new lock screens.** **Dedsec** puts a HUD in the corners, streams hex down the
+edges, glitches the clock and flashes a red `ACCESS DENIED` when the password is
+wrong. **Matrix** rains green code across the whole screen. Unlocking **unzips** the
+screen from the middle while the HUD decrypts — or switches it off like a CRT.
+
+**serpantinum is updated to 2.2.7**, merged the same way as before so every BITE-OS
+change is kept: lyrics in the music popup and on the desktop, a right-click desktop
+menu, widget presets, search in settings, an emoji picker and 11 new languages.
+
+**Fixes**
+- On a Hebrew system the shell no longer flips itself right-to-left while its text
+  stays English.
+- Icons sit centred again, and the RAM icon is no longer an empty box.
 
 ## ◈ What's new in 20260915
 

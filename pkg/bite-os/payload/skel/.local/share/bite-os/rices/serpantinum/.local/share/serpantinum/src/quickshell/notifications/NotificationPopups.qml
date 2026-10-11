@@ -175,6 +175,17 @@ PanelWindow {
                 }
 
                 remove: Transition {
+                  id: biteRemoveTrans
+                  // BITE-OS modification: let the notification bite tear open
+                  // first (BiteNotifFx), then run upstream's slide-out
+                  SequentialAnimation {
+                    ScriptAction {
+                        script: {
+                            let it = biteRemoveTrans.ViewTransition.item;
+                            if (it && it.biteLeave) it.biteLeave();
+                        }
+                    }
+                    PauseAnimation { duration: BiteStyle.glitchOn ? 470 : 0 }
                     ParallelAnimation {
                         NumberAnimation { property: "opacity"; to: 0.0; duration: 180; easing.type: Easing.OutCubic }
                         NumberAnimation {
@@ -190,6 +201,7 @@ PanelWindow {
                             easing.type: Easing.OutCubic
                         }
                     }
+                  }
                 }
 
                 displaced: Transition {
@@ -253,6 +265,27 @@ PanelWindow {
 
                     function removeThisNotif() {
                         popupWindow.removeNotif(delegateWrapper.popupUid);
+                    }
+
+                    // BITE-OS modification: notifications bite their way in (jaws
+                    // slam shut + glitch) and tear open on dismiss; urgent ones
+                    // bite twice. Off/Subtle/Loud from the BITE-OS Style tab.
+                    layer.enabled: biteFx.active
+                    layer.effect: biteFx.effect
+                    BiteNotifFx {
+                        id: biteFx
+                        target: delegateWrapper
+                        edgeColor: model.urgency === 2 ? ThemeBackend.red : ThemeBackend.mauve
+                    }
+                    Component.onCompleted: {
+                        if (delegateWrapper.isSuppressedByDnd) return;
+                        biteFx.enter();
+                        if (model.urgency === 2) urgentHit.start();
+                    }
+                    Timer { id: urgentHit; interval: 1100; onTriggered: biteFx.enter() }
+                    // called by the remove transition, which waits for it
+                    function biteLeave() {
+                        if (!delegateWrapper.isSuppressedByDnd) biteFx.leave(null);
                     }
 
                     Loader {
